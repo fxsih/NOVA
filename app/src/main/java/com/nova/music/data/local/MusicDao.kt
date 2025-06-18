@@ -56,8 +56,8 @@ interface MusicDao {
     @Query("SELECT * FROM songs WHERE id = :songId")
     suspend fun getSongById(songId: String): Song?
 
-    @Query("UPDATE songs SET playlistIds = :playlistIds WHERE id = :songId")
-    suspend fun updateSongPlaylistIds(songId: String, playlistIds: String)
+    @Query("UPDATE songs SET playlistIds = :newPlaylistIds WHERE id = :songId")
+    suspend fun updateSongPlaylistIds(songId: String, newPlaylistIds: String)
 
     @Query("SELECT * FROM songs WHERE playlistIds LIKE '%' || :playlistId || '%'")
     fun getPlaylistSongs(playlistId: String): Flow<List<Song>>
@@ -72,7 +72,7 @@ interface MusicDao {
     @Transaction
     suspend fun removeSongFromPlaylist(songId: String, playlistId: String) {
         val song = getSongById(songId) ?: return
-        val updatedPlaylistIds = song.removePlaylistId(playlistId)
+        val updatedPlaylistIds = song.getPlaylistIdsList().filter { it != playlistId }.joinToString(",")
         updateSongPlaylistIds(songId, updatedPlaylistIds)
     }
 

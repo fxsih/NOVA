@@ -32,4 +32,5 @@ interface MusicRepository {
     suspend fun addSongToPlaylist(song: Song, playlistId: String)
     suspend fun removeSongFromPlaylist(songId: String, playlistId: String)
     fun getPlaylistSongCount(playlistId: String): Flow<Int>
+    fun getPlaylistSongs(playlistId: String): Flow<List<Song>>
 } 

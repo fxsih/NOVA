@@ -5,7 +5,18 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.PlaylistRemove
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -22,6 +33,8 @@ import com.nova.music.ui.components.PlaylistSelectionDialog
 import com.nova.music.ui.components.RecentlyPlayedItem
 import com.nova.music.ui.viewmodels.LibraryViewModel
 import com.nova.music.ui.viewmodels.HomeViewModel
+import com.nova.music.ui.viewmodels.PlayerViewModel
+import com.nova.music.ui.util.rememberDynamicBottomPadding
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
@@ -33,41 +46,90 @@ fun PlaylistDetailScreen(
     playlistId: String,
     viewModel: HomeViewModel = hiltViewModel(),
     libraryViewModel: LibraryViewModel = hiltViewModel(),
+    playerViewModel: PlayerViewModel = hiltViewModel(),
     onNavigateBack: () -> Unit,
     onNavigateToPlayer: (String) -> Unit
 ) {
     val scope = rememberCoroutineScope()
     val playlists by libraryViewModel.playlists.collectAsState()
     val likedSongs by libraryViewModel.likedSongs.collectAsState()
-    val playlist = if (playlistId == "liked_songs") null else playlists.find { it.id == playlistId }
+    val currentPlaylist = playlists.find { it.id == playlistId }
+    val playlistSongs by if (playlistId == "liked_songs") {
+        libraryViewModel.likedSongs
+    } else {
+        libraryViewModel.getPlaylistSongs(playlistId)
+    }.collectAsState(initial = emptyList())
     var selectedSong by remember { mutableStateOf<Song?>(null) }
     var showPlaylistDialog by remember { mutableStateOf(false) }
-    var showCreatePlaylistDialog by remember { mutableStateOf(false) }
+    var showCreateDialog by remember { mutableStateOf(false) }
+    var showRenameDialog by remember { mutableStateOf(false) }
+    var showDeleteDialog by remember { mutableStateOf(false) }
+    var showMenu by remember { mutableStateOf(false) }
+    var showDetailsDialog by remember { mutableStateOf(false) }
+    var detailsSong by remember { mutableStateOf<Song?>(null) }
     var isShuffleEnabled by remember { mutableStateOf(false) }
+    
+    // Use the player's actual playing state instead of local state
+    val isPlaying by playerViewModel.isPlaying.collectAsState()
+    val currentSongId by playerViewModel.currentSong.collectAsState()
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color(0xFF121212))
-            .statusBarsPadding()
-    ) {
-        // Top Bar with back button
+    val bottomPadding by rememberDynamicBottomPadding()
+
+    Scaffold(
+        topBar = {
         TopAppBar(
-            title = { },
+                title = { 
+                    Text(
+                        text = if (playlistId == "liked_songs") "Liked Songs" else (currentPlaylist?.name ?: ""),
+                        style = MaterialTheme.typography.titleLarge
+                    )
+                },
             navigationIcon = {
                 IconButton(onClick = onNavigateBack) {
                     Icon(
                         imageVector = Icons.Default.ArrowBack,
-                        contentDescription = "Back",
-                        tint = Color.White
-                    )
+                            contentDescription = "Back"
+                        )
+                    }
+                },
+                actions = {
+                    if (playlistId != "liked_songs") {
+                        IconButton(onClick = { showMenu = true }) {
+                            Icon(
+                                imageVector = Icons.Default.MoreVert,
+                                contentDescription = "More Options"
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = showMenu,
+                            onDismissRequest = { showMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Rename Playlist") },
+                                onClick = {
+                                    showRenameDialog = true
+                                    showMenu = false
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Delete Playlist") },
+                                onClick = {
+                                    showDeleteDialog = true
+                                    showMenu = false
+                                }
+                            )
+                        }
+                    }
                 }
-            },
-            colors = TopAppBarDefaults.topAppBarColors(
-                containerColor = Color.Transparent
             )
-        )
-
+        }
+    ) { paddingValues ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
+                .background(MaterialTheme.colorScheme.background)
+        ) {
         // Playlist Header
         Column(
             modifier = Modifier
@@ -95,7 +157,7 @@ fun PlaylistDetailScreen(
 
             // Playlist Name
             Text(
-                text = if (playlistId == "liked_songs") "Liked Songs" else (playlist?.name ?: ""),
+                    text = if (playlistId == "liked_songs") "Liked Songs" else (currentPlaylist?.name ?: ""),
                 style = MaterialTheme.typography.headlineMedium,
                 color = Color.White,
                 fontWeight = FontWeight.Bold
@@ -105,7 +167,7 @@ fun PlaylistDetailScreen(
 
             // Song Count
             Text(
-                text = "${if (playlistId == "liked_songs") likedSongs.size else playlist?.songs?.size ?: 0} songs",
+                    text = "${playlistSongs.size} songs",
                 style = MaterialTheme.typography.bodyLarge,
                 color = Color.Gray
             )
@@ -114,47 +176,73 @@ fun PlaylistDetailScreen(
 
             // Control Buttons
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 // Play Button
                 Button(
                     onClick = {
-                        val songs = if (playlistId == "liked_songs") likedSongs else playlist?.songs
-                        songs?.firstOrNull()?.let { onNavigateToPlayer(it.id) }
+                        playlistSongs.firstOrNull()?.let { song ->
+                            // If the current song is already from this playlist, just toggle play/pause
+                            // Otherwise, start playing the first song from this playlist
+                            if (currentSongId?.id == song.id) {
+                                playerViewModel.togglePlayPause()
+                            } else {
+                                onNavigateToPlayer(song.id)
+                            }
+                        }
                     },
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(56.dp),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFFBB86FC)
-                    ),
-                    contentPadding = PaddingValues(horizontal = 32.dp, vertical = 16.dp)
+                        containerColor = if (playlistId == "liked_songs") 
+                            Color(0xFFBB86FC) else Color(0xFF1DB954)
+                    )
                 ) {
                     Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalArrangement = Arrangement.Center,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Icon(
-                            imageVector = Icons.Default.PlayArrow,
-                            contentDescription = "Play",
+                            imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                            contentDescription = if (isPlaying) "Pause" else "Play",
+                            tint = Color.Black,
                             modifier = Modifier.size(24.dp)
                         )
-                        Text("Play")
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = if (isPlaying) "Pause" else "Play",
+                            color = Color.Black,
+                            style = MaterialTheme.typography.bodyLarge
+                        )
                     }
                 }
 
                 // Shuffle Button
-                IconButton(
+                Button(
                     onClick = { 
                         isShuffleEnabled = !isShuffleEnabled
-                        val songs = if (playlistId == "liked_songs") likedSongs else playlist?.songs
-                        songs?.shuffled()?.firstOrNull()?.let { onNavigateToPlayer(it.id) }
+                        if (isShuffleEnabled) {
+                            playlistSongs.shuffled().firstOrNull()?.let { song ->
+                                onNavigateToPlayer(song.id)
+                            }
+                        }
                     },
                     modifier = Modifier
-                        .size(56.dp)
-                        .background(
-                            color = if (isShuffleEnabled) Color(0xFFBB86FC) else Color(0xFF282828),
-                            shape = CircleShape
-                        )
+                        .weight(1f)
+                        .height(56.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isShuffleEnabled) 
+                            (if (playlistId == "liked_songs") Color(0xFFBB86FC) else Color(0xFF1DB954))
+                        else Color(0xFF282828)
+                    )
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
                 ) {
                     Icon(
                         imageVector = Icons.Default.Shuffle,
@@ -162,20 +250,26 @@ fun PlaylistDetailScreen(
                         tint = if (isShuffleEnabled) Color.Black else Color.White,
                         modifier = Modifier.size(24.dp)
                     )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Shuffle",
+                            color = if (isShuffleEnabled) Color.Black else Color.White,
+                            style = MaterialTheme.typography.bodyLarge
+                        )
+                    }
                 }
             }
 
             Spacer(modifier = Modifier.height(24.dp))
-            Divider(color = Color(0xFF282828))
+                HorizontalDivider(color = Color(0xFF282828))
         }
 
         // Songs List
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(vertical = 16.dp)
+            contentPadding = PaddingValues(bottom = bottomPadding.dp)
         ) {
-            val songs = if (playlistId == "liked_songs") likedSongs else (playlist?.songs ?: emptyList())
-            items(songs) { song ->
+                items(playlistSongs) { song ->
                 val isLiked = likedSongs.any { it.id == song.id }
                 RecentlyPlayedItem(
                     song = song,
@@ -195,8 +289,20 @@ fun PlaylistDetailScreen(
                         showPlaylistDialog = true
                     },
                     isLiked = isLiked,
-                    modifier = Modifier.padding(horizontal = 16.dp)
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                    onDetailsClick = { 
+                        detailsSong = song
+                        showDetailsDialog = true
+                    },
+                        onRemoveFromPlaylist = if (playlistId != "liked_songs") {
+                            {
+                        scope.launch {
+                            libraryViewModel.removeSongFromPlaylist(song.id, playlistId)
+                        }
+                    }
+                        } else null
                 )
+                }
             }
         }
     }
@@ -208,9 +314,9 @@ fun PlaylistDetailScreen(
                 showPlaylistDialog = false
                 selectedSong = null
             },
-            onPlaylistSelected = { playlist ->
+            onPlaylistSelected = { selectedPlaylist ->
                 scope.launch {
-                    if (playlist.id == "liked_songs") {
+                    if (selectedPlaylist.id == "liked_songs") {
                         val isLiked = likedSongs.any { it.id == selectedSong!!.id }
                         if (isLiked) {
                             libraryViewModel.removeSongFromLiked(selectedSong!!.id)
@@ -218,7 +324,7 @@ fun PlaylistDetailScreen(
                             libraryViewModel.addSongToLiked(selectedSong!!)
                         }
                     } else {
-                        libraryViewModel.addSongToPlaylist(selectedSong!!, playlist.id)
+                        libraryViewModel.addSongToPlaylist(selectedSong!!, selectedPlaylist.id)
                     }
                 }
             },
@@ -231,33 +337,33 @@ fun PlaylistDetailScreen(
                     }
                 }
             },
-            onRenamePlaylist = { playlist, newName ->
+            onRenamePlaylist = { selectedPlaylist, newName ->
                 scope.launch {
-                    libraryViewModel.renamePlaylist(playlist.id, newName)
+                    libraryViewModel.renamePlaylist(selectedPlaylist.id, newName)
                 }
             },
             playlists = playlists,
             selectedPlaylistIds = buildSet {
                 addAll(playlists
-                    .filter { playlist -> playlist.songs.any { it.id == selectedSong!!.id } }
+                    .filter { p -> p.songs.any { it.id == selectedSong!!.id } }
                     .map { it.id })
                 if (likedSongs.any { it.id == selectedSong!!.id }) add("liked_songs")
             }
         )
     }
 
-    if (showCreatePlaylistDialog) {
+    // Create Playlist Dialog
+    if (showCreateDialog) {
         var playlistName by remember { mutableStateOf("") }
         AlertDialog(
-            onDismissRequest = { showCreatePlaylistDialog = false },
+            onDismissRequest = { showCreateDialog = false },
             title = { Text("Create New Playlist") },
             text = {
                 OutlinedTextField(
                     value = playlistName,
                     onValueChange = { playlistName = it },
                     label = { Text("Playlist Name") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+                    singleLine = true
                 )
             },
             confirmButton = {
@@ -266,15 +372,8 @@ fun PlaylistDetailScreen(
                         if (playlistName.isNotBlank()) {
                             scope.launch {
                                 libraryViewModel.createPlaylist(playlistName)
-                                // If we have a selected song, add it to the new playlist
-                                selectedSong?.let { song ->
-                                    // We need to wait for the playlist to be created and get its ID
-                                    playlists.firstOrNull { it.name == playlistName }?.let { newPlaylist ->
-                                        libraryViewModel.addSongToPlaylist(song, newPlaylist.id)
-                                    }
-                                }
+                                showCreateDialog = false
                             }
-                            showCreatePlaylistDialog = false
                         }
                     }
                 ) {
@@ -282,10 +381,101 @@ fun PlaylistDetailScreen(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showCreatePlaylistDialog = false }) {
+                TextButton(onClick = { showCreateDialog = false }) {
                     Text("Cancel")
                 }
             }
         )
     }
+
+    // Rename Playlist Dialog
+    if (showRenameDialog) {
+        var newName by remember { mutableStateOf(currentPlaylist?.name ?: "") }
+        AlertDialog(
+            onDismissRequest = { showRenameDialog = false },
+            title = { Text("Rename Playlist") },
+            text = {
+                OutlinedTextField(
+                    value = newName,
+                    onValueChange = { newName = it },
+                    label = { Text("New Name") },
+                    singleLine = true
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        if (newName.isNotBlank()) {
+                            scope.launch {
+                                libraryViewModel.renamePlaylist(playlistId, newName)
+                                showRenameDialog = false
+                            }
+                        }
+                    }
+                ) {
+                    Text("Rename")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRenameDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // Delete Playlist Dialog
+    if (showDeleteDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeleteDialog = false },
+            title = { Text("Delete Playlist") },
+            text = { Text("Are you sure you want to delete this playlist?") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        scope.launch {
+                            libraryViewModel.deletePlaylist(playlistId)
+                            showDeleteDialog = false
+                            onNavigateBack()
+                        }
+                    }
+                ) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // Song Details Dialog
+    if (showDetailsDialog && detailsSong != null) {
+        AlertDialog(
+            onDismissRequest = { showDetailsDialog = false },
+            title = { Text("Song Details") },
+            text = {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Text("Title: ${detailsSong!!.title}")
+                    Text("Artist: ${detailsSong!!.artist}")
+                    Text("Album: ${detailsSong!!.album}")
+                    Text("Duration: ${formatDuration(detailsSong!!.duration)}")
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showDetailsDialog = false }) {
+                    Text("Close")
+                }
+            }
+        )
+    }
+}
+
+private fun formatDuration(durationMs: Long): String {
+    val totalSeconds = durationMs / 1000
+    val minutes = totalSeconds / 60
+    val seconds = totalSeconds % 60
+    return String.format("%d:%02d", minutes, seconds)
 } 

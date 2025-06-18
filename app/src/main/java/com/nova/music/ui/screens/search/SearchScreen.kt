@@ -17,20 +17,27 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.navigation.NavController
 import com.nova.music.data.model.Song
 import com.nova.music.ui.viewmodels.HomeViewModel
 import com.nova.music.ui.viewmodels.LibraryViewModel
 import com.nova.music.ui.components.SongItem
+import com.nova.music.ui.components.RecentlyPlayedItem
 import com.nova.music.ui.components.PlaylistSelectionDialog
 import com.nova.music.ui.components.SearchBar
 import com.nova.music.ui.viewmodels.SearchViewModel
+import com.nova.music.ui.util.rememberDynamicBottomPadding
 import kotlinx.coroutines.launch
+import com.nova.music.util.TimeUtils.formatDuration
+import androidx.compose.foundation.BorderStroke
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SearchScreen(
+    viewModel: SearchViewModel = hiltViewModel(),
+    libraryViewModel: LibraryViewModel = hiltViewModel(),
     onSongClick: (String) -> Unit,
-    viewModel: SearchViewModel = hiltViewModel()
+    navController: NavController
 ) {
     val searchResults by viewModel.searchResults.collectAsState(initial = emptyList())
     val recentSearches by viewModel.recentSearches.collectAsState(initial = emptyList())
@@ -38,11 +45,19 @@ fun SearchScreen(
     var isSearchActive by remember { mutableStateOf(false) }
     var hasSearched by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    var showDetailsDialog by remember { mutableStateOf(false) }
+    var detailsSong by remember { mutableStateOf<Song?>(null) }
+    val playlists by libraryViewModel.playlists.collectAsState()
+    val likedSongs by libraryViewModel.likedSongs.collectAsState()
+    var showPlaylistDialog by remember { mutableStateOf(false) }
+    var selectedSong by remember { mutableStateOf<Song?>(null) }
+    
+    val bottomPadding by rememberDynamicBottomPadding()
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF121212))
+            .background(MaterialTheme.colorScheme.background)
             .statusBarsPadding()
     ) {
         SearchBar(
@@ -77,36 +92,34 @@ fun SearchScreen(
                     // Show search results
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(vertical = 16.dp),
+                        contentPadding = PaddingValues(top = 16.dp, bottom = bottomPadding.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         items(searchResults) { song ->
-                            Card(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable { onSongClick(song.id) },
-                                colors = CardDefaults.cardColors(
-                                    containerColor = Color(0xFF282828)
-                                ),
-                                shape = RoundedCornerShape(12.dp)
-                            ) {
-                                ListItem(
-                                    headlineContent = {
-                                        Text(
-                                            text = song.title,
-                                            color = Color.White,
-                                            style = MaterialTheme.typography.bodyLarge
-                                        )
-                                    },
-                                    supportingContent = {
-                                        Text(
-                                            text = song.artist,
-                                            color = Color.Gray,
-                                            style = MaterialTheme.typography.bodyMedium
-                                        )
+                            val isLiked = likedSongs.any { it.id == song.id }
+                            RecentlyPlayedItem(
+                                song = song,
+                                onClick = { onSongClick(song.id) },
+                                onLikeClick = {
+                                    scope.launch {
+                                        if (isLiked) {
+                                            libraryViewModel.removeSongFromLiked(song.id)
+                                        } else {
+                                            libraryViewModel.addSongToLiked(song)
+                                        }
                                     }
-                                )
-                            }
+                                },
+                                onAddToPlaylist = {
+                                    selectedSong = song
+                                    showPlaylistDialog = true
+                                },
+                                isLiked = isLiked,
+                                onDetailsClick = {
+                                    detailsSong = song
+                                    showDetailsDialog = true
+                                },
+                                onRemoveFromPlaylist = null
+                            )
                         }
                     }
                 }
@@ -114,7 +127,7 @@ fun SearchScreen(
                     // Show recent searches
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(vertical = 16.dp),
+                        contentPadding = PaddingValues(top = 16.dp, bottom = bottomPadding.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         item {
@@ -130,8 +143,9 @@ fun SearchScreen(
                             Card(
                                 modifier = Modifier.fillMaxWidth(),
                                 colors = CardDefaults.cardColors(
-                                    containerColor = Color(0xFF282828)
+                                    containerColor = Color(0xFF000000)
                                 ),
+                                border = BorderStroke(1.dp, Color(0xFF2A2A2A)),
                                 shape = RoundedCornerShape(12.dp)
                             ) {
                                 Row(
@@ -187,4 +201,77 @@ fun SearchScreen(
             }
         }
     }
+
+    // Song Details Dialog
+    if (showDetailsDialog && detailsSong != null) {
+        AlertDialog(
+            onDismissRequest = { showDetailsDialog = false },
+            title = { Text("Song Details") },
+            text = {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Text("Title: ${detailsSong!!.title}")
+                    Text("Artist: ${detailsSong!!.artist}")
+                    Text("Album: ${detailsSong!!.album}")
+                    Text("Duration: ${formatDuration(detailsSong!!.duration)}")
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showDetailsDialog = false }) {
+                    Text("Close")
+                }
+            }
+        )
+    }
+
+    // Add to Playlist Dialog
+    if (showPlaylistDialog && selectedSong != null) {
+        PlaylistSelectionDialog(
+            onDismiss = { 
+                showPlaylistDialog = false
+                selectedSong = null
+            },
+            onPlaylistSelected = { playlist ->
+                scope.launch {
+                    if (playlist.id == "liked_songs") {
+                        val isLiked = likedSongs.any { it.id == selectedSong!!.id }
+                        if (isLiked) {
+                            libraryViewModel.removeSongFromLiked(selectedSong!!.id)
+                        } else {
+                            libraryViewModel.addSongToLiked(selectedSong!!)
+                        }
+                    } else {
+                        libraryViewModel.addSongToPlaylist(selectedSong!!, playlist.id)
+                    }
+                }
+            },
+            onCreateNewPlaylist = { name ->
+                scope.launch {
+                    libraryViewModel.createPlaylist(name)
+                    // Wait for the playlist to be created and get its ID
+                    playlists.firstOrNull { it.name == name }?.let { newPlaylist ->
+                        libraryViewModel.addSongToPlaylist(selectedSong!!, newPlaylist.id)
+                    }
+                }
+            },
+            onRenamePlaylist = { playlist, newName ->
+                scope.launch {
+                    libraryViewModel.renamePlaylist(playlist.id, newName)
+                }
+            },
+            playlists = playlists,
+            selectedPlaylistIds = buildSet {
+                addAll(playlists
+                    .filter { playlist -> playlist.songs.any { it.id == selectedSong!!.id } }
+                    .map { it.id })
+                if (likedSongs.any { it.id == selectedSong!!.id }) add("liked_songs")
+            }
+        )
+    }
+}
+
+private fun formatDuration(durationMs: Long): String {
+    val totalSeconds = durationMs / 1000
+    val minutes = totalSeconds / 60
+    val seconds = totalSeconds % 60
+    return String.format("%d:%02d", minutes, seconds)
 } 

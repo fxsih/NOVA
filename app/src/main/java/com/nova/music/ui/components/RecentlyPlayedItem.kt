@@ -12,6 +12,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
@@ -28,7 +29,9 @@ fun RecentlyPlayedItem(
     onLikeClick: () -> Unit,
     onAddToPlaylist: () -> Unit,
     isLiked: Boolean,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onDetailsClick: (() -> Unit)? = null,
+    onRemoveFromPlaylist: (() -> Unit)? = null
 ) {
     var showMenu by remember { mutableStateOf(false) }
 
@@ -36,15 +39,17 @@ fun RecentlyPlayedItem(
         modifier = modifier
             .fillMaxWidth()
             .padding(vertical = 4.dp)
+            .clip(RoundedCornerShape(16.dp))
             .clickable(onClick = onClick),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
-            containerColor = Color(0xFF282828)
+            containerColor = Color.Transparent
         ),
         elevation = CardDefaults.cardElevation(
-            defaultElevation = 2.dp
+            defaultElevation = 0.dp
         )
     ) {
+        Box {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -100,7 +105,21 @@ fun RecentlyPlayedItem(
                     )
                 }
                 
+                // Like Button
+                IconButton(
+                    onClick = onLikeClick,
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        imageVector = if (isLiked) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                        contentDescription = if (isLiked) "Unlike" else "Like",
+                        tint = if (isLiked) Color.Red else Color.White,
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+                
                 // Menu Button
+                    Box {
                 IconButton(
                     onClick = { showMenu = true },
                     modifier = Modifier.size(36.dp)
@@ -111,7 +130,6 @@ fun RecentlyPlayedItem(
                         tint = Color.White,
                         modifier = Modifier.size(24.dp)
                     )
-                }
             }
 
             // Dropdown Menu
@@ -126,7 +144,7 @@ fun RecentlyPlayedItem(
                             Icon(
                                 imageVector = if (isLiked) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                                 contentDescription = if (isLiked) "Unlike" else "Like",
-                                tint = if (isLiked) Color(0xFFBB86FC) else Color.White,
+                                tint = if (isLiked) Color.Red else Color.White,
                                 modifier = Modifier.size(20.dp)
                             )
                             Spacer(modifier = Modifier.width(12.dp))
@@ -163,6 +181,59 @@ fun RecentlyPlayedItem(
                         showMenu = false
                     }
                 )
+                
+                // Details Option
+                if (onDetailsClick != null) {
+                    DropdownMenuItem(
+                        text = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.Info,
+                                    contentDescription = "Details",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Text(
+                                    text = "Details",
+                                    color = Color.White
+                                )
+                            }
+                        },
+                        onClick = {
+                            onDetailsClick()
+                            showMenu = false
+                        }
+                    )
+                }
+                
+                // Remove from Playlist Option
+                if (onRemoveFromPlaylist != null) {
+                    DropdownMenuItem(
+                        text = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.Delete,
+                                    contentDescription = "Remove from Playlist",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Text(
+                                    text = "Remove from Playlist",
+                                    color = Color.White
+                                )
+                            }
+                        },
+                        onClick = {
+                            onRemoveFromPlaylist()
+                            showMenu = false
+                        }
+                    )
+                            }
+                        }
+                    }
+                }
             }
         }
     }

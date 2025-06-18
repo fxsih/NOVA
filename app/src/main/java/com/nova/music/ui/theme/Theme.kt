@@ -13,8 +13,8 @@ import androidx.core.view.WindowCompat
 
 private val DarkColorScheme = darkColorScheme(
     primary = Color(0xFFBB86FC),  // Purple primary
-    background = Color(0xFF121212),  // Pure black background
-    surface = Color(0xFF121212),  // Pure black surface
+    background = Color(0xFF000000),  // AMOLED black background
+    surface = Color(0xFF000000),  // AMOLED black surface
     secondary = Color(0xFF03DAC6),  // Teal secondary
     onBackground = Color(0xFFFFFFFF),  // White text
     onSurface = Color(0xFFFFFFFF),  // White text
@@ -36,7 +36,7 @@ fun NovaTheme(
     if (!view.isInEditMode) {
         SideEffect {
             val window = (view.context as Activity).window
-            window.statusBarColor = Color(0xFF121212).toArgb()  // Pure black status bar
+            window.statusBarColor = Color(0xFF000000).toArgb()  // AMOLED black status bar
             WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = false
         }
     }

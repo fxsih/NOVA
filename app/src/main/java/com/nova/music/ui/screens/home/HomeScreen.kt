@@ -38,7 +38,9 @@ import com.nova.music.ui.components.RecentlyPlayedItem
 import com.nova.music.ui.components.RecommendedSongCard
 import com.nova.music.ui.components.PlaylistSelectionDialog
 import com.nova.music.ui.components.AddToPlaylistDialog
+import com.nova.music.ui.util.rememberDynamicBottomPadding
 import kotlinx.coroutines.launch
+import com.nova.music.util.TimeUtils.formatDuration
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -57,11 +59,15 @@ fun HomeScreen(
     var selectedSong by remember { mutableStateOf<Song?>(null) }
     var showPlaylistDialog by remember { mutableStateOf(false) }
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
+    var showDetailsDialog by remember { mutableStateOf(false) }
+    var detailsSong by remember { mutableStateOf<Song?>(null) }
+    
+    val bottomPadding by rememberDynamicBottomPadding()
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF121212))
+            .background(MaterialTheme.colorScheme.background)
             .statusBarsPadding()
     ) {
         // Top Bar
@@ -80,7 +86,7 @@ fun HomeScreen(
 
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 80.dp)
+            contentPadding = PaddingValues(bottom = bottomPadding.dp)
         ) {
             item {
                 Text(
@@ -114,7 +120,12 @@ fun HomeScreen(
                                 selectedSong = song
                                 showPlaylistDialog = true
                             },
-                            isLiked = isLiked
+                            isLiked = isLiked,
+                            onDetailsClick = {
+                                detailsSong = song
+                                showDetailsDialog = true
+                            },
+                            onRemoveFromPlaylist = null
                         )
                     }
                 }
@@ -147,7 +158,12 @@ fun HomeScreen(
                         showPlaylistDialog = true
                     },
                     isLiked = isLiked,
-                    modifier = Modifier.padding(horizontal = 16.dp)
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                    onDetailsClick = {
+                        detailsSong = song
+                        showDetailsDialog = true
+                    },
+                    onRemoveFromPlaylist = null
                 )
             }
 
@@ -180,7 +196,12 @@ fun HomeScreen(
                         showPlaylistDialog = true
                     },
                     isLiked = isLiked,
-                    modifier = Modifier.padding(horizontal = 16.dp)
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                    onDetailsClick = {
+                        detailsSong = song
+                        showDetailsDialog = true
+                    },
+                    onRemoveFromPlaylist = null
                 )
             }
         }
@@ -268,6 +289,27 @@ fun HomeScreen(
             }
         )
     }
+
+    // Song Details Dialog
+    if (showDetailsDialog && detailsSong != null) {
+        AlertDialog(
+            onDismissRequest = { showDetailsDialog = false },
+            title = { Text("Song Details") },
+            text = {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Text("Title: ${detailsSong!!.title}")
+                    Text("Artist: ${detailsSong!!.artist}")
+                    Text("Album: ${detailsSong!!.album}")
+                    Text("Duration: ${formatDuration(detailsSong!!.duration)}")
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showDetailsDialog = false }) {
+                    Text("Close")
+                }
+            }
+        )
+    }
 }
 
 @Composable
@@ -277,6 +319,8 @@ fun RecommendedSongCard(
     onLikeClick: () -> Unit,
     onAddToPlaylist: () -> Unit,
     isLiked: Boolean,
+    onDetailsClick: () -> Unit,
+    onRemoveFromPlaylist: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -361,7 +405,9 @@ fun RecentlyPlayedItem(
     onLikeClick: () -> Unit,
     onAddToPlaylist: () -> Unit,
     isLiked: Boolean,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onDetailsClick: () -> Unit,
+    onRemoveFromPlaylist: (Song?) -> Unit
 ) {
     Row(
         modifier = modifier
