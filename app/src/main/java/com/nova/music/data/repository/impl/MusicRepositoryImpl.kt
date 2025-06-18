@@ -104,6 +104,9 @@ class MusicRepositoryImpl @Inject constructor(
         }
     }.distinctUntilChanged()
 
+    override fun getPlaylistSongs(playlistId: String): Flow<List<Song>> = 
+        musicDao.getPlaylistSongs(playlistId)
+
     override suspend fun createPlaylist(name: String) {
         val playlist = Playlist(
             id = "playlist_${System.currentTimeMillis()}",

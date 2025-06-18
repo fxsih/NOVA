@@ -2,336 +2,233 @@ package com.nova.music.ui.screens.player
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.FavoriteBorder
+import androidx.compose.material.icons.outlined.Repeat
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
-import com.nova.music.ui.viewmodels.HomeViewModel
+import com.nova.music.ui.viewmodels.PlayerViewModel
 import com.nova.music.ui.viewmodels.LibraryViewModel
-import com.nova.music.ui.components.PlaylistSelectionDialog
-import kotlinx.coroutines.launch
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.ui.platform.LocalContext
-import android.app.Activity
-import android.view.WindowInsets
-import android.view.WindowInsetsController
-import android.os.Build
-import android.view.WindowManager
+import com.nova.music.ui.viewmodels.RepeatMode
+import java.util.concurrent.TimeUnit
+import androidx.compose.ui.layout.ContentScale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PlayerScreen(
     songId: String,
-    viewModel: HomeViewModel = hiltViewModel(),
+    viewModel: PlayerViewModel = hiltViewModel(),
     libraryViewModel: LibraryViewModel = hiltViewModel(),
     onNavigateBack: () -> Unit
 ) {
-    val scope = rememberCoroutineScope()
-    val songs by viewModel.songs.collectAsState()
+    val currentSong by viewModel.currentSong.collectAsState()
+    val isPlaying by viewModel.isPlaying.collectAsState()
+    val isShuffle by viewModel.isShuffle.collectAsState()
+    val repeatMode by viewModel.repeatMode.collectAsState()
+    val progress by viewModel.progress.collectAsState()
+    val duration by viewModel.duration.collectAsState()
     val likedSongs by libraryViewModel.likedSongs.collectAsState()
-    val playlists by libraryViewModel.playlists.collectAsState()
-    var showPlaylistDialog by remember { mutableStateOf(false) }
-    var isPlaying by remember { mutableStateOf(false) }
-    var isShuffleOn by remember { mutableStateOf(false) }
-    var isRepeatOn by remember { mutableStateOf(false) }
 
-    val song = songs.find { it.id == songId }
-    val isLiked = likedSongs.any { it.id == songId }
+    val isLiked = currentSong?.let { song -> likedSongs.any { it.id == song.id } } ?: false
 
-    // Hide system bars
-    val activity = LocalContext.current as Activity
-    DisposableEffect(Unit) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            activity.window.setDecorFitsSystemWindows(false)
-            val controller = activity.window.insetsController
-            controller?.let {
-                it.hide(WindowInsets.Type.systemBars())
-                it.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-            }
-        } else {
-            @Suppress("DEPRECATION")
-            activity.window.addFlags(
-                WindowManager.LayoutParams.FLAG_FULLSCREEN or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                WindowManager.LayoutParams.FLAG_TRANSLUCENT_NAVIGATION
-            )
-        }
-        
-        onDispose {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                activity.window.setDecorFitsSystemWindows(true)
-                val controller = activity.window.insetsController
-                controller?.let {
-                    it.show(WindowInsets.Type.systemBars())
-                    it.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_BARS_BY_TOUCH
-                }
-            } else {
-                @Suppress("DEPRECATION")
-                activity.window.clearFlags(
-                    WindowManager.LayoutParams.FLAG_FULLSCREEN or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                    WindowManager.LayoutParams.FLAG_TRANSLUCENT_NAVIGATION
-                )
-            }
-        }
-    }
+    // Colors (use your theme or adjust as needed)
+    val backgroundColor = Color(0xFF192040) // Deep navy
+    val cardColor = MaterialTheme.colorScheme.surface // Use your theme's surface color
+    val accentColor = Color.White
+    val secondaryTextColor = Color(0xFFD3E0C8)
+    val progressColor = Color.White
+    val progressInactiveColor = Color.White.copy(alpha = 0.2f)
+    val sliderThumbColor = Color.White
+    val controlIconColor = Color.White
 
-    if (song == null) {
+    if (currentSong == null) {
         onNavigateBack()
         return
     }
 
-    Column(
+    Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF121212))
-            .statusBarsPadding()
-            .padding(16.dp)
+            .background(cardColor)
+            .verticalScroll(rememberScrollState())
+            .padding(bottom = 160.dp),
+        contentAlignment = Alignment.Center
     ) {
-        // Top Bar
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 32.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(onClick = onNavigateBack) {
-                Icon(
-                    imageVector = Icons.Default.ArrowBack,
-                    contentDescription = "Back",
-                    tint = Color.White
-                )
-            }
-
-            Text(
-                text = "Now Playing",
-                style = MaterialTheme.typography.titleLarge,
-                color = Color.White
-            )
-
-            // Empty box for alignment
-            Box(modifier = Modifier.size(48.dp))
-        }
-
-        // Album Art
-        AsyncImage(
-            model = song.albumArt,
-            contentDescription = "Album Art",
-            contentScale = ContentScale.Crop,
-            modifier = Modifier
-                .fillMaxWidth()
-                .aspectRatio(1f)
-                .clip(RoundedCornerShape(16.dp))
-        )
-
-        // Song Info
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(vertical = 24.dp),
+                .padding(16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Text(
-                text = song.title,
-                style = MaterialTheme.typography.headlineMedium,
-                color = Color.White,
-                textAlign = TextAlign.Center,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                text = song.artist,
-                style = MaterialTheme.typography.titleMedium,
-                color = Color.White.copy(alpha = 0.7f),
-                modifier = Modifier.padding(top = 8.dp)
-            )
-        }
-
-        // Progress Bar (Mock)
-        LinearProgressIndicator(
-            progress = 0.3f,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp),
-            color = Color(0xFFBB86FC),
-            trackColor = Color(0xFF2A2A2A)
-        )
-
-        // Time Labels
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Text(
-                text = "1:23",
-                style = MaterialTheme.typography.bodyMedium,
-                color = Color.White.copy(alpha = 0.7f)
-            )
-            Text(
-                text = "3:45",
-                style = MaterialTheme.typography.bodyMedium,
-                color = Color.White.copy(alpha = 0.7f)
-            )
-        }
-
-        Spacer(modifier = Modifier.weight(1f))
-
-        // Main Playback Controls
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 16.dp),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(
-                onClick = { isShuffleOn = !isShuffleOn }
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Shuffle,
-                    contentDescription = "Shuffle",
-                    tint = if (isShuffleOn) Color(0xFFBB86FC) else Color.White,
-                    modifier = Modifier.size(24.dp)
-                )
-            }
-
-            IconButton(onClick = { /* Skip Previous */ }) {
-                Icon(
-                    imageVector = Icons.Default.SkipPrevious,
-                    contentDescription = "Previous",
-                    tint = Color.White,
-                    modifier = Modifier.size(32.dp)
-                )
-            }
-
-            IconButton(
-                onClick = { isPlaying = !isPlaying },
+            // Minimize button
+            Row(
                 modifier = Modifier
-                    .size(64.dp)
-                    .background(Color(0xFFBB86FC), RoundedCornerShape(32.dp))
+                    .fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center
             ) {
-                Icon(
-                    imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                    contentDescription = if (isPlaying) "Pause" else "Play",
-                    tint = Color.White,
-                    modifier = Modifier.size(32.dp)
-                )
-            }
-
-            IconButton(onClick = { /* Skip Next */ }) {
-                Icon(
-                    imageVector = Icons.Default.SkipNext,
-                    contentDescription = "Next",
-                    tint = Color.White,
-                    modifier = Modifier.size(32.dp)
-                )
-            }
-
-            IconButton(
-                onClick = { isRepeatOn = !isRepeatOn }
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Repeat,
-                    contentDescription = "Repeat",
-                    tint = if (isRepeatOn) Color(0xFFBB86FC) else Color.White,
-                    modifier = Modifier.size(24.dp)
-                )
-            }
-        }
-
-        // Additional Controls
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 32.dp, vertical = 16.dp),
-            horizontalArrangement = Arrangement.SpaceEvenly
-        ) {
-            IconButton(
-                onClick = {
-                    if (isLiked) {
-                        libraryViewModel.removeSongFromLiked(songId)
-                    } else {
-                        libraryViewModel.addSongToLiked(song)
-                    }
+                IconButton(onClick = onNavigateBack) {
+                    Icon(
+                        imageVector = Icons.Default.ExpandMore,
+                        contentDescription = "Minimize Player",
+                        tint = Color.White
+                    )
                 }
-            ) {
-                Icon(
-                    imageVector = if (isLiked) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                    contentDescription = if (isLiked) "Unlike" else "Like",
-                    tint = if (isLiked) Color(0xFFBB86FC) else Color.White,
-                    modifier = Modifier.size(28.dp)
-                )
             }
-
-            IconButton(
-                onClick = { showPlaylistDialog = true }
+            // Album Art
+            AsyncImage(
+                model = currentSong?.albumArt,
+                contentDescription = "Album Art",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(1f)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(secondaryTextColor)
+            )
+            Spacer(modifier = Modifier.height(16.dp)) // Reduced height
+            // Song Info and Like Button
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
             ) {
-                Icon(
-                    imageVector = Icons.Default.PlaylistAdd,
-                    contentDescription = "Add to Playlist",
-                    tint = Color.White,
-                    modifier = Modifier.size(28.dp)
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-    }
-
-    // Add to Playlist Dialog
-    if (showPlaylistDialog) {
-        PlaylistSelectionDialog(
-            onDismiss = { showPlaylistDialog = false },
-            onPlaylistSelected = { playlist ->
-                scope.launch {
-                    if (playlist.id == "liked_songs") {
-                        if (isLiked) {
-                            libraryViewModel.removeSongFromLiked(songId)
-                        } else {
-                            libraryViewModel.addSongToLiked(song)
+                Column(
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(
+                        text = currentSong?.title ?: "",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        color = accentColor,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = currentSong?.artist ?: "",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = secondaryTextColor,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                IconButton(
+                    onClick = {
+                        if (currentSong != null) {
+                            if (isLiked) libraryViewModel.removeSongFromLiked(currentSong!!.id)
+                            else libraryViewModel.addSongToLiked(currentSong!!)
                         }
-                    } else {
-                        libraryViewModel.addSongToPlaylist(song, playlist.id)
                     }
+                ) {
+                    Icon(
+                        imageVector = if (isLiked) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
+                        contentDescription = if (isLiked) "Unlike" else "Like",
+                        tint = if (isLiked) Color.Red else accentColor
+                    )
                 }
-            },
-            onCreateNewPlaylist = { name ->
-                scope.launch {
-                    libraryViewModel.createPlaylist(name)
-                    // Wait for the playlist to be created and get its ID
-                    playlists.firstOrNull { it.name == name }?.let { newPlaylist ->
-                        libraryViewModel.addSongToPlaylist(song, newPlaylist.id)
-                    }
-                }
-            },
-            onRenamePlaylist = { playlist, newName ->
-                scope.launch {
-                    libraryViewModel.renamePlaylist(playlist.id, newName)
-                }
-            },
-            playlists = playlists,
-            selectedPlaylistIds = buildSet {
-                addAll(playlists
-                    .filter { playlist -> playlist.songs.any { it.id == songId } }
-                    .map { it.id })
-                if (isLiked) add("liked_songs")
             }
-        )
+            Spacer(modifier = Modifier.height(8.dp))
+            // Progress bar & times
+            Column {
+                Slider(
+                    value = progress.coerceIn(0f, 1f),
+                    onValueChange = { value -> viewModel.seekTo(value) },
+                    valueRange = 0f..1f,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = SliderDefaults.colors(
+                        thumbColor = sliderThumbColor,
+                        activeTrackColor = progressColor,
+                        inactiveTrackColor = progressInactiveColor
+                    )
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = formatDuration((progress * duration).toLong()),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = secondaryTextColor
+                    )
+                    Text(
+                        text = "-${formatDuration(duration - (progress * duration).toLong())}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = secondaryTextColor
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(16.dp))
+            // Playback Controls
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = { viewModel.toggleShuffle() }) {
+                    Icon(
+                        imageVector = Icons.Default.Shuffle,
+                        contentDescription = "Shuffle",
+                        tint = if (isShuffle) accentColor else controlIconColor.copy(alpha = 0.6f)
+                    )
+                }
+                IconButton(onClick = { viewModel.skipToPrevious() }) {
+                    Icon(
+                        imageVector = Icons.Default.SkipPrevious,
+                        contentDescription = "Previous",
+                        tint = controlIconColor
+                    )
+                }
+                IconButton(
+                    onClick = { viewModel.togglePlayPause() },
+                    modifier = Modifier
+                        .size(56.dp)
+                        .background(accentColor, shape = CircleShape)
+                ) {
+                    Icon(
+                        imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        contentDescription = if (isPlaying) "Pause" else "Play",
+                        tint = cardColor,
+                        modifier = Modifier.size(36.dp)
+                    )
+                }
+                IconButton(onClick = { viewModel.skipToNext() }) {
+                    Icon(
+                        imageVector = Icons.Default.SkipNext,
+                        contentDescription = "Next",
+                        tint = controlIconColor
+                    )
+                }
+                IconButton(onClick = { viewModel.toggleRepeatMode() }) {
+                    Icon(
+                        imageVector = when (repeatMode) {
+                            RepeatMode.ONE -> Icons.Default.RepeatOne
+                            RepeatMode.ALL -> Icons.Default.Repeat
+                            else -> Icons.Outlined.Repeat
+                        },
+                        contentDescription = "Repeat",
+                        tint = if (repeatMode != RepeatMode.OFF) accentColor else controlIconColor.copy(alpha = 0.6f)
+                    )
+                }
+            }
+        }
     }
+}
+
+private fun formatDuration(durationMs: Long): String {
+    val minutes = TimeUnit.MILLISECONDS.toMinutes(durationMs)
+    val seconds = TimeUnit.MILLISECONDS.toSeconds(durationMs) % 60
+    return "%d:%02d".format(minutes, seconds)
 }

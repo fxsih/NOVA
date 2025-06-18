@@ -2,12 +2,18 @@ package com.nova.music.ui.components
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -25,14 +31,20 @@ fun SongItem(
     onLikeClick: () -> Unit,
     onAddToPlaylist: () -> Unit,
     isLiked: Boolean,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onDetailsClick: (() -> Unit)? = null,
+    onRemoveFromPlaylist: (() -> Unit)? = null
 ) {
+    var showMenu by remember { mutableStateOf(false) }
+    
     Card(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick),
         shape = RoundedCornerShape(12.dp),
-        border = BorderStroke(1.dp, Color(0xFF2A2A2A)),
         colors = CardDefaults.cardColors(
-            containerColor = Color(0xFF1A1A1A)
+            containerColor = Color.Transparent
         )
     ) {
         Row(
@@ -94,19 +106,109 @@ fun SongItem(
                     )
                 }
                 
-                IconButton(onClick = onLikeClick) {
+                IconButton(
+                    onClick = { showMenu = true },
+                    modifier = Modifier.size(36.dp)
+                ) {
                     Icon(
-                        imageVector = if (isLiked) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                        contentDescription = if (isLiked) "Unlike" else "Like",
-                        tint = if (isLiked) Color.Red else Color.White
+                        imageVector = Icons.Default.MoreVert,
+                        contentDescription = "More options",
+                        tint = Color.White,
+                        modifier = Modifier.size(24.dp)
                     )
                 }
-                
-                IconButton(onClick = onAddToPlaylist) {
-                    Icon(
-                        imageVector = Icons.Default.Add,
-                        contentDescription = "Add to Playlist",
-                        tint = Color.White
+            }
+            DropdownMenu(
+                expanded = showMenu,
+                onDismissRequest = { showMenu = false },
+                modifier = Modifier.background(Color(0xFF282828))
+            ) {
+                DropdownMenuItem(
+                    text = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = if (isLiked) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                contentDescription = if (isLiked) "Unlike" else "Like",
+                                tint = if (isLiked) Color.Red else Color.White,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Text(
+                                text = if (isLiked) "Remove from Liked" else "Add to Liked",
+                                color = Color.White
+                            )
+                        }
+                    },
+                    onClick = {
+                        onLikeClick()
+                        showMenu = false
+                    }
+                )
+                DropdownMenuItem(
+                    text = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.PlaylistAdd,
+                                contentDescription = "Add to Playlist",
+                                tint = Color.White,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Text(
+                                text = "Add to Playlist",
+                                color = Color.White
+                            )
+                        }
+                    },
+                    onClick = {
+                        onAddToPlaylist()
+                        showMenu = false
+                    }
+                )
+                if (onDetailsClick != null) {
+                    DropdownMenuItem(
+                        text = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.Info,
+                                    contentDescription = "Details",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Text(
+                                    text = "Details",
+                                    color = Color.White
+                                )
+                            }
+                        },
+                        onClick = {
+                            onDetailsClick()
+                            showMenu = false
+                        }
+                    )
+                }
+                if (onRemoveFromPlaylist != null) {
+                    DropdownMenuItem(
+                        text = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.Delete,
+                                    contentDescription = "Remove from Playlist",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Text(
+                                    text = "Remove from Playlist",
+                                    color = Color.White
+                                )
+                            }
+                        },
+                        onClick = {
+                            onRemoveFromPlaylist()
+                            showMenu = false
+                        }
                     )
                 }
             }

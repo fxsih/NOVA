@@ -1,5 +1,6 @@
 package com.nova.music.ui.components
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -26,17 +27,20 @@ fun RecommendedSongCard(
     onLikeClick: () -> Unit,
     onAddToPlaylist: () -> Unit,
     isLiked: Boolean,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onDetailsClick: (() -> Unit)? = null,
+    onRemoveFromPlaylist: (() -> Unit)? = null
 ) {
     var showMenu by remember { mutableStateOf(false) }
 
     Card(
         modifier = modifier
             .width(180.dp)
+            .clip(RoundedCornerShape(8.dp))
             .clickable(onClick = onClick),
         shape = RoundedCornerShape(8.dp),
         colors = CardDefaults.cardColors(
-            containerColor = Color(0xFF282828)
+            containerColor = Color.Transparent
         )
     ) {
         Column(
@@ -87,7 +91,7 @@ fun RecommendedSongCard(
                                     Icon(
                                         imageVector = if (isLiked) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                                         contentDescription = if (isLiked) "Unlike" else "Like",
-                                        tint = if (isLiked) Color(0xFFBB86FC) else Color.White,
+                                        tint = if (isLiked) Color.Red else Color.White,
                                         modifier = Modifier.size(20.dp)
                                     )
                                     Spacer(modifier = Modifier.width(12.dp))
@@ -124,6 +128,56 @@ fun RecommendedSongCard(
                                 showMenu = false
                             }
                         )
+
+                        // Details Option
+                        if (onDetailsClick != null) {
+                            DropdownMenuItem(
+                                text = {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(
+                                            imageVector = Icons.Default.Info,
+                                            contentDescription = "Details",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(12.dp))
+                                        Text(
+                                            text = "Details",
+                                            color = Color.White
+                                        )
+                                    }
+                                },
+                                onClick = {
+                                    onDetailsClick()
+                                    showMenu = false
+                                }
+                            )
+                        }
+
+                        // Remove from Playlist Option
+                        if (onRemoveFromPlaylist != null) {
+                            DropdownMenuItem(
+                                text = {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(
+                                            imageVector = Icons.Default.Delete,
+                                            contentDescription = "Remove from Playlist",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(12.dp))
+                                        Text(
+                                            text = "Remove from Playlist",
+                                            color = Color.White
+                                        )
+                                    }
+                                },
+                                onClick = {
+                                    onRemoveFromPlaylist()
+                                    showMenu = false
+                                }
+                            )
+                        }
                     }
                 }
             }

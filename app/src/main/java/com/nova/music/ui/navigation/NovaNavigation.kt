@@ -29,6 +29,13 @@ import com.nova.music.ui.screens.library.LibraryScreen
 import com.nova.music.ui.screens.library.PlaylistDetailScreen
 import com.nova.music.ui.screens.search.SearchScreen
 import com.nova.music.ui.screens.player.PlayerScreen
+import com.nova.music.ui.components.MiniPlayerBar
+import com.nova.music.ui.viewmodels.PlayerViewModel
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.compose.runtime.collectAsState
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 
 sealed class Screen(val route: String) {
     object Home : Screen("home")
@@ -47,6 +54,8 @@ fun NovaNavigation(
     navController: NavHostController,
     startDestination: String = Screen.Home.route
 ) {
+    val playerViewModel: PlayerViewModel = hiltViewModel()
+
     NavHost(
         navController = navController,
         startDestination = startDestination
@@ -54,7 +63,7 @@ fun NovaNavigation(
         composable(Screen.Home.route) {
             HomeScreen(
                 onNavigateToPlayer = { songId ->
-                    navController.navigate(Screen.Player.createRoute(songId))
+                    playerViewModel.loadSong(songId)
                 },
                 onNavigateToSearch = {
                     navController.navigate(Screen.Search.route)
@@ -65,15 +74,19 @@ fun NovaNavigation(
         composable(Screen.Search.route) {
             SearchScreen(
                 onSongClick = { songId ->
-                    navController.navigate(Screen.Player.createRoute(songId))
-                }
+                    playerViewModel.loadSong(songId)
+                },
+                navController = navController
             )
         }
 
         composable(Screen.Library.route) {
             LibraryScreen(
-                onPlaylistClick = { playlistId ->
-                    navController.navigate(Screen.PlaylistDetail.createRoute(playlistId))
+                onNavigateToPlaylist = { playlistId ->
+                    navController.navigate("playlist/$playlistId")
+                },
+                onNavigateToPlayer = { songId ->
+                    playerViewModel.loadSong(songId)
                 }
             )
         }
@@ -102,7 +115,7 @@ fun NovaNavigation(
                 playlistId = playlistId,
                 onNavigateBack = { navController.popBackStack() },
                 onNavigateToPlayer = { songId ->
-                    navController.navigate(Screen.Player.createRoute(songId))
+                    playerViewModel.loadSong(songId)
                 }
             )
         }
@@ -121,31 +134,55 @@ fun NovaNavigation() {
     Box(modifier = Modifier.fillMaxSize()) {
         NovaNavigation(navController)
 
-        // Custom Navigation Bar
-        Box(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(start = 24.dp, end = 24.dp, bottom = 24.dp)
-                .clip(RoundedCornerShape(24.dp))
-                .background(Color(0xFF1E1E1E))
-        ) {
+        val navBackStackEntry by navController.currentBackStackEntryAsState()
+        val currentRoute = navBackStackEntry?.destination?.route
+
+        // Only show mini player and bottom nav if not on PlayerScreen
+        val isPlayerScreen = currentRoute?.startsWith("player/") == true
+
+        // Get current song from PlayerViewModel
+        val playerViewModel: PlayerViewModel = hiltViewModel()
+        val currentSong by playerViewModel.currentSong.collectAsState()
+
+        val navBarHeight = 80.dp
+        val miniPlayerGap = 8.dp
+
+        // Mini player hovers above nav bar
+        if (currentSong != null && !isPlayerScreen) {
+            MiniPlayerBar(
+                onTap = {
+                    currentSong?.id?.let { songId ->
+                        navController.navigate(Screen.Player.createRoute(songId))
+                    }
+                },
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(start = 24.dp, end = 24.dp, bottom = navBarHeight + miniPlayerGap)
+                    .fillMaxWidth()
+                    .height(navBarHeight)
+                    .clip(RoundedCornerShape(24.dp))
+            )
+        }
+
+        // Navigation bar at the very bottom
+        if (!isPlayerScreen) {
             Row(
                 modifier = Modifier
-                    .height(80.dp)
-                    .fillMaxWidth(),
+                    .align(Alignment.BottomCenter)
+                    // No horizontal padding, stretch edge-to-edge
+                    .fillMaxWidth()
+                    .height(navBarHeight)
+                    .clip(RoundedCornerShape(24.dp))
+                    .background(Color(0xFF1E1E1E)),
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                val navBackStackEntry by navController.currentBackStackEntryAsState()
-                val currentRoute = navBackStackEntry?.destination?.route
-
                 items.forEach { item ->
                     val selected = when (currentRoute) {
                         "player/${navBackStackEntry?.arguments?.getString("songId")}" -> item.route == Screen.Home.route
                         "playlist/${navBackStackEntry?.arguments?.getString("playlistId")}" -> item.route == Screen.Library.route
                         else -> currentRoute == item.route
                     }
-
                     val iconSize by animateDpAsState(
                         targetValue = if (selected) 24.dp else 20.dp,
                         animationSpec = tween(
@@ -153,7 +190,6 @@ fun NovaNavigation() {
                             easing = FastOutSlowInEasing
                         )
                     )
-
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         modifier = Modifier
@@ -172,12 +208,11 @@ fun NovaNavigation() {
                             imageVector = if (selected) item.selectedIcon else item.unselectedIcon,
                             contentDescription = item.label,
                             modifier = Modifier.size(iconSize),
-                            tint = if (selected) 
-                                Color(0xFFBB86FC)  // Purple accent
-                            else 
-                                Color(0xFFCCCCDF).copy(alpha = 0.5f)  // Dimmed white
+                            tint = if (selected)
+                                Color(0xFFBB86FC)
+                            else
+                                Color(0xFFCCCCDF).copy(alpha = 0.5f)
                         )
-                        
                         AnimatedVisibility(
                             visible = selected,
                             enter = fadeIn(
@@ -196,10 +231,10 @@ fun NovaNavigation() {
                             Text(
                                 text = item.label,
                                 style = MaterialTheme.typography.labelSmall,
-                                color = if (selected) 
-                                    Color(0xFFBB86FC)  // Purple accent
-                                else 
-                                    Color(0xFFCCCCDF).copy(alpha = 0.5f),  // Dimmed white
+                                color = if (selected)
+                                    Color(0xFFBB86FC)
+                                else
+                                    Color(0xFFCCCCDF).copy(alpha = 0.5f),
                                 textAlign = TextAlign.Center,
                                 modifier = Modifier.padding(top = 4.dp)
                             )
