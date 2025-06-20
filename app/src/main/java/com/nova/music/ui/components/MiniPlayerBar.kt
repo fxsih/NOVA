@@ -3,6 +3,9 @@ package com.nova.music.ui.components
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -13,15 +16,17 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.nova.music.ui.viewmodels.PlayerViewModel
@@ -29,11 +34,15 @@ import com.nova.music.ui.viewmodels.LibraryViewModel
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.compose.runtime.collectAsState
 import android.os.Build
+import android.view.WindowManager
+import androidx.compose.animation.core.*
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.remember
 import kotlin.math.absoluteValue
+import kotlin.math.roundToInt
 import androidx.compose.foundation.border
+import kotlinx.coroutines.launch
 
 @Composable
 fun MiniPlayerBar(
@@ -46,6 +55,23 @@ fun MiniPlayerBar(
     val isPlaying by viewModel.isPlaying.collectAsState()
     val likedSongs by libraryViewModel.likedSongs.collectAsState()
     val isLiked = currentSong?.let { song -> likedSongs.any { it.id == song.id } } ?: false
+    
+    var offsetX by remember { mutableStateOf(0f) }
+    val dismissThreshold = with(LocalDensity.current) { 100.dp.toPx() }
+    val coroutineScope = rememberCoroutineScope()
+    val animatedOffset = remember { Animatable(0f) }
+    
+    // Get actual screen width using WindowManager
+    val context = LocalContext.current
+    val windowManager = remember { context.getSystemService(WindowManager::class.java) }
+    val screenWidth = remember {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            windowManager.currentWindowMetrics.bounds.width()
+        } else {
+            @Suppress("DEPRECATION")
+            windowManager.defaultDisplay.width
+        }.toFloat()
+    }
 
     if (currentSong == null) return
 
@@ -65,9 +91,60 @@ fun MiniPlayerBar(
         colors[currentSong?.id?.hashCode()?.absoluteValue?.rem(colors.size) ?: 0]
     }
 
+    LaunchedEffect(offsetX) {
+        if (offsetX.absoluteValue >= dismissThreshold) {
+            // Stop playback and clear current song
+            viewModel.stopPlayback()
+            viewModel.clearCurrentSong()
+        }
+    }
+
     Surface(
         modifier = modifier
-            .clickable(onClick = onTap),
+            .fillMaxWidth()
+            .offset { IntOffset(animatedOffset.value.roundToInt(), 0) }
+            .clickable(onClick = onTap)
+            .draggable(
+                orientation = Orientation.Horizontal,
+                state = rememberDraggableState { delta ->
+                    coroutineScope.launch {
+                        // Limit the drag to screen width
+                        val newValue = (animatedOffset.value + delta).coerceIn(-screenWidth, screenWidth)
+                        animatedOffset.snapTo(newValue)
+                    }
+                },
+                onDragStarted = { },
+                onDragStopped = {
+                    coroutineScope.launch {
+                        if (animatedOffset.value.absoluteValue < dismissThreshold) {
+                            // Snap back if not dragged far enough
+                            animatedOffset.animateTo(
+                                targetValue = 0f,
+                                animationSpec = spring(
+                                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                                    stiffness = Spring.StiffnessLow
+                                )
+                            )
+                        } else {
+                            // Dismiss to the edge of the screen
+                            val targetValue = if (animatedOffset.value > 0) {
+                                screenWidth
+                            } else {
+                                -screenWidth
+                            }
+                            animatedOffset.animateTo(
+                                targetValue = targetValue,
+                                animationSpec = tween(
+                                    durationMillis = 300,
+                                    easing = FastOutSlowInEasing
+                                )
+                            )
+                            viewModel.stopPlayback()
+                            viewModel.clearCurrentSong()
+                        }
+                    }
+                }
+            ),
         color = Color(0xFF282828),
         shape = RoundedCornerShape(24.dp)
     ) {

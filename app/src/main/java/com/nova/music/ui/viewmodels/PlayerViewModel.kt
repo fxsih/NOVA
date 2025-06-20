@@ -148,6 +148,19 @@ class PlayerViewModel @Inject constructor(
         }
     }
 
+    fun stopPlayback() {
+        viewModelScope.launch {
+            musicPlayerService.stop()
+            _isPlaying.value = false
+        }
+    }
+
+    fun clearCurrentSong() {
+        viewModelScope.launch {
+            _currentSong.value = null
+        }
+    }
+
     override fun onCleared() {
         super.onCleared()
         exoPlayer.release()
