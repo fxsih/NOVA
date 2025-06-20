@@ -26,6 +26,7 @@ import com.nova.music.ui.viewmodels.LibraryViewModel
 import com.nova.music.ui.viewmodels.RepeatMode
 import java.util.concurrent.TimeUnit
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -45,9 +46,12 @@ fun PlayerScreen(
 
     val isLiked = currentSong?.let { song -> likedSongs.any { it.id == song.id } } ?: false
 
-    // Colors (use your theme or adjust as needed)
-    val backgroundColor = Color(0xFF192040) // Deep navy
-    val cardColor = MaterialTheme.colorScheme.surface // Use your theme's surface color
+    // Get screen height to calculate better spacing
+    val screenHeight = LocalConfiguration.current.screenHeightDp.dp
+    val topSpacing = screenHeight * 0.05f // 5% of screen height for top spacing
+
+    // Colors
+    val backgroundColor = Color(0xFF000000) // AMOLED black background for consistency
     val accentColor = Color.White
     val secondaryTextColor = Color(0xFFD3E0C8)
     val progressColor = Color.White
@@ -63,22 +67,26 @@ fun PlayerScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(cardColor)
-            .verticalScroll(rememberScrollState())
-            .padding(bottom = 160.dp),
-        contentAlignment = Alignment.Center
+            .background(backgroundColor)
+            .systemBarsPadding(), // Add system bars padding for better edge-to-edge experience
+        contentAlignment = Alignment.TopCenter
     ) {
         Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(bottom = 32.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            // Add top spacing to prevent feeling constrained
+            Spacer(modifier = Modifier.height(topSpacing))
+            
             // Minimize button
-            Row(
+            Box(
                 modifier = Modifier
-                    .fillMaxWidth(),
-                horizontalArrangement = Arrangement.Center
+                    .fillMaxWidth()
+                    .padding(bottom = 16.dp),
+                contentAlignment = Alignment.Center
             ) {
                 IconButton(onClick = onNavigateBack) {
                     Icon(
@@ -88,36 +96,47 @@ fun PlayerScreen(
                     )
                 }
             }
-            // Album Art
-            AsyncImage(
-                model = currentSong?.albumArt,
-                contentDescription = "Album Art",
-                contentScale = ContentScale.Crop,
+            
+            // Album Art with improved sizing
+            Box(
                 modifier = Modifier
-                    .fillMaxWidth()
+                    .fillMaxWidth(0.85f) // Make album art slightly smaller than full width
                     .aspectRatio(1f)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(secondaryTextColor)
-            )
-            Spacer(modifier = Modifier.height(16.dp)) // Reduced height
+                    .clip(RoundedCornerShape(24.dp)) // Larger corner radius
+                    .background(Color(0xFF1E1E1E)), // Slightly lighter background for album art container
+                contentAlignment = Alignment.Center
+            ) {
+                AsyncImage(
+                    model = currentSong?.albumArt,
+                    contentDescription = "Album Art",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+            
+            Spacer(modifier = Modifier.height(32.dp)) // Increased spacing
+            
             // Song Info and Like Button
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier
+                    .fillMaxWidth(0.85f) // Match album art width
+                    .padding(horizontal = 8.dp)
             ) {
                 Column(
                     modifier = Modifier.weight(1f)
                 ) {
                     Text(
                         text = currentSong?.title ?: "",
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
                         color = accentColor,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
+                    Spacer(modifier = Modifier.height(4.dp))
                     Text(
                         text = currentSong?.artist ?: "",
-                        style = MaterialTheme.typography.bodySmall,
+                        style = MaterialTheme.typography.bodyLarge,
                         color = secondaryTextColor,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -129,18 +148,26 @@ fun PlayerScreen(
                             if (isLiked) libraryViewModel.removeSongFromLiked(currentSong!!.id)
                             else libraryViewModel.addSongToLiked(currentSong!!)
                         }
-                    }
+                    },
+                    modifier = Modifier.size(48.dp)
                 ) {
                     Icon(
                         imageVector = if (isLiked) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
                         contentDescription = if (isLiked) "Unlike" else "Like",
-                        tint = if (isLiked) Color.Red else accentColor
+                        tint = if (isLiked) Color.Red else accentColor,
+                        modifier = Modifier.size(28.dp)
                     )
                 }
             }
-            Spacer(modifier = Modifier.height(8.dp))
+            
+            Spacer(modifier = Modifier.height(24.dp))
+            
             // Progress bar & times
-            Column {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth(0.85f) // Match album art width
+                    .padding(horizontal = 8.dp)
+            ) {
                 Slider(
                     value = progress.coerceIn(0f, 1f),
                     onValueChange = { value -> viewModel.seekTo(value) },
@@ -158,60 +185,77 @@ fun PlayerScreen(
                 ) {
                     Text(
                         text = formatDuration((progress * duration).toLong()),
-                        style = MaterialTheme.typography.bodySmall,
+                        style = MaterialTheme.typography.bodyMedium,
                         color = secondaryTextColor
                     )
                     Text(
                         text = "-${formatDuration(duration - (progress * duration).toLong())}",
-                        style = MaterialTheme.typography.bodySmall,
+                        style = MaterialTheme.typography.bodyMedium,
                         color = secondaryTextColor
                     )
                 }
             }
-            Spacer(modifier = Modifier.height(16.dp))
+            
+            Spacer(modifier = Modifier.height(32.dp)) // Increased spacing
+            
             // Playback Controls
             Row(
                 modifier = Modifier
-                    .fillMaxWidth()
+                    .fillMaxWidth(0.85f) // Match album art width
                     .padding(horizontal = 8.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(onClick = { viewModel.toggleShuffle() }) {
+                IconButton(
+                    onClick = { viewModel.toggleShuffle() },
+                    modifier = Modifier.size(48.dp)
+                ) {
                     Icon(
                         imageVector = Icons.Default.Shuffle,
                         contentDescription = "Shuffle",
-                        tint = if (isShuffle) accentColor else controlIconColor.copy(alpha = 0.6f)
+                        tint = if (isShuffle) accentColor else controlIconColor.copy(alpha = 0.6f),
+                        modifier = Modifier.size(24.dp)
                     )
                 }
-                IconButton(onClick = { viewModel.skipToPrevious() }) {
+                IconButton(
+                    onClick = { viewModel.skipToPrevious() },
+                    modifier = Modifier.size(56.dp)
+                ) {
                     Icon(
                         imageVector = Icons.Default.SkipPrevious,
                         contentDescription = "Previous",
-                        tint = controlIconColor
+                        tint = controlIconColor,
+                        modifier = Modifier.size(32.dp)
                     )
                 }
                 IconButton(
                     onClick = { viewModel.togglePlayPause() },
                     modifier = Modifier
-                        .size(56.dp)
+                        .size(72.dp) // Larger play button
                         .background(accentColor, shape = CircleShape)
                 ) {
                     Icon(
                         imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                         contentDescription = if (isPlaying) "Pause" else "Play",
-                        tint = cardColor,
-                        modifier = Modifier.size(36.dp)
+                        tint = backgroundColor, // Use background color for icon to create contrast
+                        modifier = Modifier.size(40.dp)
                     )
                 }
-                IconButton(onClick = { viewModel.skipToNext() }) {
+                IconButton(
+                    onClick = { viewModel.skipToNext() },
+                    modifier = Modifier.size(56.dp)
+                ) {
                     Icon(
                         imageVector = Icons.Default.SkipNext,
                         contentDescription = "Next",
-                        tint = controlIconColor
+                        tint = controlIconColor,
+                        modifier = Modifier.size(32.dp)
                     )
                 }
-                IconButton(onClick = { viewModel.toggleRepeatMode() }) {
+                IconButton(
+                    onClick = { viewModel.toggleRepeatMode() },
+                    modifier = Modifier.size(48.dp)
+                ) {
                     Icon(
                         imageVector = when (repeatMode) {
                             RepeatMode.ONE -> Icons.Default.RepeatOne
@@ -219,10 +263,14 @@ fun PlayerScreen(
                             else -> Icons.Outlined.Repeat
                         },
                         contentDescription = "Repeat",
-                        tint = if (repeatMode != RepeatMode.OFF) accentColor else controlIconColor.copy(alpha = 0.6f)
+                        tint = if (repeatMode != RepeatMode.OFF) accentColor else controlIconColor.copy(alpha = 0.6f),
+                        modifier = Modifier.size(24.dp)
                     )
                 }
             }
+            
+            // Add bottom spacing for better balance
+            Spacer(modifier = Modifier.height(48.dp))
         }
     }
 }
