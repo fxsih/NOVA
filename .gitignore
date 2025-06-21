@@ -41,3 +41,8 @@ yarn-error.log*
 .vscode/
 *.swp
 *.swo
+
+# Backend virtual environment
+backend/venv/
+backend/venv312/
+backend/__pycache__/
