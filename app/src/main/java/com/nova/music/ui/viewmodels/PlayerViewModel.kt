@@ -3,7 +3,6 @@ package com.nova.music.ui.viewmodels
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import androidx.media3.exoplayer.ExoPlayer
 import com.nova.music.data.model.Song
 import com.nova.music.data.repository.MusicRepository
 import com.nova.music.service.IMusicPlayerService
@@ -13,33 +12,25 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 enum class RepeatMode {
-    OFF, ONE, ALL
+    NONE, ONE, ALL
 }
 
 @HiltViewModel
 class PlayerViewModel @Inject constructor(
     private val musicRepository: MusicRepository,
     private val musicPlayerService: IMusicPlayerService,
-    private val exoPlayer: ExoPlayer,
     savedStateHandle: SavedStateHandle
 ) : ViewModel() {
-    private val _currentSong = MutableStateFlow<Song?>(null)
-    val currentSong: StateFlow<Song?> = _currentSong.asStateFlow()
-
-    private val _isPlaying = MutableStateFlow(false)
-    val isPlaying: StateFlow<Boolean> = _isPlaying.asStateFlow()
+    // Use the service's state flows directly
+    val currentSong = musicPlayerService.currentSong
+    val isPlaying = musicPlayerService.isPlaying
+    val progress = musicPlayerService.progress
+    val error = musicPlayerService.error
+    val repeatMode = musicPlayerService.repeatMode
+    val duration = musicPlayerService.duration
 
     private val _isShuffle = MutableStateFlow(false)
     val isShuffle: StateFlow<Boolean> = _isShuffle.asStateFlow()
-
-    private val _repeatMode = MutableStateFlow(RepeatMode.OFF)
-    val repeatMode: StateFlow<RepeatMode> = _repeatMode.asStateFlow()
-
-    private val _progress = MutableStateFlow(0f)
-    val progress: StateFlow<Float> = _progress.asStateFlow()
-
-    private val _duration = MutableStateFlow(0L)
-    val duration: StateFlow<Long> = _duration.asStateFlow()
 
     init {
         // Load initial song if ID is provided
@@ -48,37 +39,16 @@ class PlayerViewModel @Inject constructor(
                 musicRepository.getAllSongs().collect { songs ->
                     val song = songs.find { it.id == songId }
                     if (song != null) {
-                        _currentSong.value = song
-                        musicPlayerService.playSong(song)
-                        musicRepository.addToRecentlyPlayed(song)
+                        loadSong(song)
                     }
                 }
             }
         }
+    }
 
-        // Observe service state
+    fun loadSong(song: Song) {
         viewModelScope.launch {
-            musicPlayerService.currentSong.collect { song ->
-                _currentSong.value = song
-            }
-        }
-
-        viewModelScope.launch {
-            musicPlayerService.isPlaying.collect { playing ->
-                _isPlaying.value = playing
-            }
-        }
-
-        viewModelScope.launch {
-            musicPlayerService.progress.collect { progress ->
-                _progress.value = progress
-            }
-        }
-
-        viewModelScope.launch {
-            musicPlayerService.duration.collect { duration ->
-                _duration.value = duration
-            }
+            musicPlayerService.playSong(song)
         }
     }
 
@@ -87,9 +57,7 @@ class PlayerViewModel @Inject constructor(
             musicRepository.getAllSongs().collect { songs ->
                 val song = songs.find { it.id == songId }
                 if (song != null) {
-                    _currentSong.value = song
-                    musicPlayerService.playSong(song)
-                    musicRepository.addToRecentlyPlayed(song)
+                    loadSong(song)
                 }
             }
         }
@@ -97,7 +65,7 @@ class PlayerViewModel @Inject constructor(
 
     fun togglePlayPause() {
         viewModelScope.launch {
-            if (_isPlaying.value) {
+            if (isPlaying.value) {
                 musicPlayerService.pause()
             } else {
                 musicPlayerService.resume()
@@ -114,12 +82,12 @@ class PlayerViewModel @Inject constructor(
 
     fun toggleRepeatMode() {
         viewModelScope.launch {
-            _repeatMode.value = when (_repeatMode.value) {
-                RepeatMode.OFF -> RepeatMode.ONE
+            val nextMode = when (repeatMode.value) {
+                RepeatMode.NONE -> RepeatMode.ONE
                 RepeatMode.ONE -> RepeatMode.ALL
-                RepeatMode.ALL -> RepeatMode.OFF
+                RepeatMode.ALL -> RepeatMode.NONE
             }
-            musicPlayerService.setRepeatMode(_repeatMode.value)
+            musicPlayerService.setRepeatMode(nextMode)
         }
     }
 
@@ -137,8 +105,12 @@ class PlayerViewModel @Inject constructor(
 
     fun seekTo(position: Float) {
         viewModelScope.launch {
-            val positionMs = (position * _duration.value).toLong()
-            musicPlayerService.seekTo(positionMs)
+            // Calculate position based on the duration from the service
+            val durationMs = duration.value
+            if (durationMs > 0) {
+                val positionMs = (position * durationMs).toLong()
+                musicPlayerService.seekTo(positionMs)
+            }
         }
     }
 
@@ -151,19 +123,17 @@ class PlayerViewModel @Inject constructor(
     fun stopPlayback() {
         viewModelScope.launch {
             musicPlayerService.stop()
-            _isPlaying.value = false
         }
     }
-
+    
     fun clearCurrentSong() {
         viewModelScope.launch {
-            _currentSong.value = null
+            musicPlayerService.clearCurrentSong()
         }
     }
 
     override fun onCleared() {
         super.onCleared()
-        exoPlayer.release()
         viewModelScope.launch {
             musicPlayerService.stop()
         }

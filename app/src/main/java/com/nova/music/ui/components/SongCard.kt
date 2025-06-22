@@ -17,8 +17,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import com.nova.music.R
 import com.nova.music.data.model.Song
 import kotlin.math.absoluteValue
 
@@ -66,10 +68,16 @@ fun SongCard(
             contentAlignment = Alignment.Center
         ) {
             AsyncImage(
-                model = song.albumArt,
+                model = when {
+                    !song.albumArtUrl.isNullOrBlank() -> song.albumArtUrl
+                    !song.albumArt.isBlank() -> song.albumArt
+                    else -> R.drawable.default_album_art
+                },
                 contentDescription = "Album Art",
                 contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier.fillMaxSize(),
+                error = painterResource(id = R.drawable.default_album_art),
+                placeholder = painterResource(id = R.drawable.default_album_art)
             )
         }
 

@@ -27,15 +27,25 @@ import com.nova.music.ui.viewmodels.RepeatMode
 import java.util.concurrent.TimeUnit
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.res.painterResource
+import com.nova.music.R
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PlayerScreen(
-    songId: String,
+    songId: String?,
     viewModel: PlayerViewModel = hiltViewModel(),
     libraryViewModel: LibraryViewModel = hiltViewModel(),
     onNavigateBack: () -> Unit
 ) {
+    // Only load the song if songId is not null (when directly navigating to player)
+    // If songId is null, we're coming from the mini player and should use the current song
+    LaunchedEffect(songId) {
+        if (songId != null) {
+            viewModel.loadSong(songId)
+        }
+    }
+    
     val currentSong by viewModel.currentSong.collectAsState()
     val isPlaying by viewModel.isPlaying.collectAsState()
     val isShuffle by viewModel.isShuffle.collectAsState()
@@ -106,12 +116,18 @@ fun PlayerScreen(
                     .background(Color(0xFF1E1E1E)), // Slightly lighter background for album art container
                 contentAlignment = Alignment.Center
             ) {
-                AsyncImage(
-                    model = currentSong?.albumArt,
-                    contentDescription = "Album Art",
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                )
+            AsyncImage(
+                model = when {
+                    !currentSong?.albumArtUrl.isNullOrBlank() -> currentSong?.albumArtUrl
+                    !currentSong?.albumArt.isNullOrBlank() -> currentSong?.albumArt
+                    else -> R.drawable.default_album_art
+                },
+                contentDescription = "Album Art",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+                error = painterResource(id = R.drawable.default_album_art),
+                placeholder = painterResource(id = R.drawable.default_album_art)
+            )
             }
             
             Spacer(modifier = Modifier.height(32.dp)) // Increased spacing
@@ -189,7 +205,7 @@ fun PlayerScreen(
                         color = secondaryTextColor
                     )
                     Text(
-                        text = "-${formatDuration(duration - (progress * duration).toLong())}",
+                        text = "-${formatDuration((duration - (progress * duration).toLong()).toLong())}",
                         style = MaterialTheme.typography.bodyMedium,
                         color = secondaryTextColor
                     )
@@ -263,7 +279,7 @@ fun PlayerScreen(
                             else -> Icons.Outlined.Repeat
                         },
                         contentDescription = "Repeat",
-                        tint = if (repeatMode != RepeatMode.OFF) accentColor else controlIconColor.copy(alpha = 0.6f),
+                        tint = if (repeatMode != RepeatMode.NONE) accentColor else controlIconColor.copy(alpha = 0.6f),
                         modifier = Modifier.size(24.dp)
                     )
                 }

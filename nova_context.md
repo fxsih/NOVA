@@ -1,7 +1,7 @@
 # NOVA Music Player App Context
 
 ## Project Overview
-NOVA is a modern Android music player app built with Jetpack Compose, following MVVM architecture and clean code principles. The app provides a rich user experience for managing and playing music.
+NOVA is a modern Android music player app built with Jetpack Compose, following MVVM architecture and clean code principles. The app provides a rich user experience for managing and playing music. It now includes a backend service that integrates with YouTube Music for search and streaming capabilities.
 
 ## Technical Stack
 - **UI Framework**: Jetpack Compose
@@ -13,25 +13,21 @@ NOVA is a modern Android music player app built with Jetpack Compose, following 
 - **Media Playback**: ExoPlayer
 - **Data Persistence**: DataStore Preferences
 - **Navigation**: Navigation Compose
+- **Backend**: FastAPI with Python
+- **Music API**: YouTube Music API (ytmusicapi)
+- **Video Download**: yt-dlp
 
 ## Current Development State
 - **Database Version**: 3
 - **Active Branch**: main
-- **Current Focus**: UI/UX improvements and player enhancements
+- **Current Focus**: Backend integration and UI/UX improvements
 - **Last Implemented Features**: 
-  - Dynamic bottom padding for mini player
-  - Improved playlist item design
-  - Marquee text animation for long song titles and artist names
-  - Colored album art backgrounds
-  - Mini player improvements
-  - Enhanced song card design
-  - Improved navigation flow
-  - Real-time song count updates in playlists
-  - Multi-select support in playlist dialogs
-  - Recently played tracks with limit of 10
-  - Search history management
-  - Playlist creation and management
-  - Song details dialog
+  - Dynamic bottom padding for mini player (80dp without mini player, 160dp with it)
+  - Swipe-to-dismiss functionality for mini player
+  - Improved PlayerScreen with AMOLED black background and better spacing
+  - Backend service with YouTube Music integration
+  - Search, streaming, recommendations, and trending music endpoints
+  - Enhanced mini player with improved UI and interactions
 
 ## Key Features Implemented
 1. Music Library Management
@@ -42,6 +38,7 @@ NOVA is a modern Android music player app built with Jetpack Compose, following 
    - Song details view
    - Marquee text for long titles
    - Colored album art backgrounds
+   - YouTube Music integration for expanded library
 
 2. Playlist System
    - Create, rename, and delete playlists
@@ -58,9 +55,10 @@ NOVA is a modern Android music player app built with Jetpack Compose, following 
    - Progress bar and duration display
    - Background playback support
    - Media style notifications
-   - Mini player with marquee text
+   - Mini player with marquee text and swipe-to-dismiss
    - Enhanced visual feedback
    - Dynamic spacing with mini player
+   - AMOLED black background in full player
 
 4. User Interface
    - Material 3 design implementation
@@ -71,8 +69,17 @@ NOVA is a modern Android music player app built with Jetpack Compose, following 
    - Marquee text animations
    - Colored album art backgrounds
    - Enhanced visual hierarchy
-   - Dynamic bottom padding
+   - Dynamic bottom padding (80dp/160dp)
    - Improved scroll behavior
+   - Swipe gestures for mini player
+
+5. Backend Services
+   - FastAPI server for YouTube Music integration
+   - Search endpoint for finding songs
+   - Streaming endpoint for playing music
+   - Recommendations endpoint for discovering new music
+   - Trending music endpoint for popular tracks
+   - Efficient video extraction with yt-dlp
 
 ## Current Implementation Details
 
@@ -82,6 +89,7 @@ NOVA is a modern Android music player app built with Jetpack Compose, following 
 - Repository pattern for data access
 - Direct song count queries for performance
 - DataStore for preferences management
+- Backend API integration for YouTube Music content
 
 ### Database Schema
 ```kotlin
@@ -130,6 +138,7 @@ data class RecentlyPlayed(
    - Handles background operations
    - Provides Flow-based data streams
    - Manages search history
+   - Integrates with backend API for YouTube Music
 
 3. **LibraryViewModel**: 
    - Manages UI state and user actions
@@ -168,6 +177,7 @@ data class RecentlyPlayed(
    - Improved controls layout
    - Better touch targets
    - Dynamic bottom spacing
+   - Swipe-to-dismiss functionality
 
 8. **SongCard**: 
    - Enhanced visual design
@@ -179,10 +189,17 @@ data class RecentlyPlayed(
 
 9. **DynamicBottomPadding**:
    - Handles spacing for mini player
-   - Automatically adjusts content padding
+   - Automatically adjusts content padding (80dp/160dp)
    - Smooth transitions
    - Screen-specific customization
    - Maintains scroll position
+
+10. **Backend Service**:
+    - FastAPI server for YouTube Music integration
+    - Endpoints for search, streaming, recommendations, and trending
+    - Uses yt-dlp for efficient video extraction
+    - Provides audio streaming capabilities
+    - Runs on local network (192.168.29.154)
 
 ## Navigation Structure
 - Home Screen
@@ -215,6 +232,7 @@ val colors = listOf(
    - Proper dependency injection
    - Repository pattern implementation
    - Composable reusability
+   - Backend-frontend separation
 
 2. **UI/UX**
    - Material 3 design system
@@ -226,6 +244,7 @@ val colors = listOf(
    - Colored backgrounds for visual interest
    - Dynamic spacing and layout
    - Responsive design patterns
+   - Gesture-based interactions
 
 3. **Code Quality**
    - Kotlin best practices
@@ -237,17 +256,51 @@ val colors = listOf(
    - State management patterns
    - Composable abstraction
 
+4. **Backend Development**
+   - RESTful API design
+   - Efficient data processing
+   - Error handling and validation
+   - Asynchronous operations
+   - Resource optimization
+   - Proper dependency management
+
 ## Next Steps
-1. Implement user authentication
-2. Add cloud sync functionality
-3. Enhance offline support
-4. Implement music visualization
-5. Add social sharing features
-6. Implement comprehensive testing
-7. Add more animation effects
-8. Enhance accessibility features
-9. Improve performance optimization
-10. Add gesture support
+1. Fix backend compatibility issues with Python dependencies
+2. Complete YouTube Music integration
+3. Implement user authentication
+4. Add cloud sync functionality
+5. Enhance offline support
+6. Implement music visualization
+7. Add social sharing features
+8. Implement comprehensive testing
+9. Add more animation effects
+10. Enhance accessibility features
+11. Improve performance optimization
+12. Add gesture support
+
+## Backend Implementation
+The backend service is built with FastAPI and provides the following endpoints:
+- `/search` - Search for songs on YouTube Music
+- `/stream` - Stream audio from YouTube videos
+- `/recommendations` - Get song recommendations
+- `/trending` - Get trending music
+
+### API Endpoints for App Integration
+The Android app will connect to the backend using these specific endpoints:
+- `GET /search?query={query}&limit={limit}` - Search for songs with the given query
+- `GET /yt_audio?video_id={video_id}` - Stream audio for a specific YouTube video ID
+- `GET /recommended?video_id={video_id}&limit={limit}` - Get recommendations based on a video ID
+- `GET /trending?limit={limit}` - Get current trending music
+- `GET /playlist?playlist_id={playlist_id}&limit={limit}` - Get songs from a specific YouTube Music playlist
+- `GET /featured?limit={limit}` - Get featured playlists
+- `GET /audio_fallback?video_id={video_id}` - Fallback endpoint for audio streaming
+
+Base URL for development: `http://192.168.29.154:8000`
+
+Current backend issues:
+- Compatibility problems with Python 3.13 and pydantic
+- "ForwardRef._evaluate() missing recursive_guard" error during startup
+- Needs downgrade to compatible Python and library versions
 
 ## Testing Strategy
 1. Unit tests for ViewModels and Repository

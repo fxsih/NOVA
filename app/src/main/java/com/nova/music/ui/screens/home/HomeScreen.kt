@@ -1,13 +1,10 @@
 package com.nova.music.ui.screens.home
 
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -16,28 +13,20 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalWindowInfo
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
-import com.nova.music.R
 import com.nova.music.data.model.Song
 import com.nova.music.ui.viewmodels.HomeViewModel
 import com.nova.music.ui.viewmodels.LibraryViewModel
+import com.nova.music.ui.viewmodels.UiState
 import coil.compose.AsyncImage
 import com.nova.music.ui.components.RecentlyPlayedItem
 import com.nova.music.ui.components.RecommendedSongCard
 import com.nova.music.ui.components.PlaylistSelectionDialog
-import com.nova.music.ui.components.AddToPlaylistDialog
 import com.nova.music.ui.util.rememberDynamicBottomPadding
 import kotlinx.coroutines.launch
 import com.nova.music.util.TimeUtils.formatDuration
@@ -52,8 +41,11 @@ fun HomeScreen(
 ) {
     val scope = rememberCoroutineScope()
     val songs by viewModel.songs.collectAsState()
-    val recommendedSongs by viewModel.recommendedSongs.collectAsState()
+    val recommendedSongsState by viewModel.recommendedSongsState.collectAsState()
+    val trendingSongsState by viewModel.trendingSongsState.collectAsState()
     val recentlyPlayed by viewModel.recentlyPlayed.collectAsState()
+    val isLoading by viewModel.isLoading.collectAsState()
+    val errorMessage by viewModel.errorMessage.collectAsState()
     val likedSongs by libraryViewModel.likedSongs.collectAsState()
     val playlists by libraryViewModel.playlists.collectAsState()
     var selectedSong by remember { mutableStateOf<Song?>(null) }
@@ -88,6 +80,102 @@ fun HomeScreen(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(bottom = bottomPadding.dp)
         ) {
+            // Error Message
+            if (errorMessage != null) {
+                item {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.errorContainer
+                        )
+                    ) {
+                        Text(
+                            text = errorMessage ?: "Unknown error occurred",
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.padding(16.dp)
+                        )
+                    }
+                }
+            }
+            
+            // Trending Songs Section
+            item {
+                Text(
+                    text = "Trending Now",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = Color.White,
+                    modifier = Modifier.padding(16.dp)
+                )
+
+                when (val state = trendingSongsState) {
+                    is UiState.Loading -> {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(200.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator()
+                        }
+                    }
+                    is UiState.Success -> {
+                        LazyRow(
+                            contentPadding = PaddingValues(horizontal = 16.dp),
+                            horizontalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            items(state.data.take(10)) { song ->
+                                val isLiked = likedSongs.any { it.id == song.id }
+                                RecommendedSongCard(
+                                    song = song,
+                                    onClick = { 
+                                        viewModel.addToRecentlyPlayed(song)
+                                        onNavigateToPlayer(song.id)
+                                    },
+                                    onLikeClick = {
+                                        if (isLiked) {
+                                            libraryViewModel.removeSongFromLiked(song.id)
+                                        } else {
+                                            libraryViewModel.addSongToLiked(song)
+                                        }
+                                    },
+                                    onAddToPlaylist = {
+                                        selectedSong = song
+                                        showPlaylistDialog = true
+                                    },
+                                    isLiked = isLiked,
+                                    onDetailsClick = {
+                                        detailsSong = song
+                                        showDetailsDialog = true
+                                    },
+                                    onRemoveFromPlaylist = null
+                                )
+                            }
+                        }
+                    }
+                    is UiState.Error -> {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(
+                                    text = state.message,
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Button(onClick = { viewModel.refreshTrendingSongs() }) {
+                                    Text("Try Again")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             item {
                 Text(
                     text = "Recommended",
@@ -97,36 +185,69 @@ fun HomeScreen(
                 )
 
                 // Recommended Songs
-                LazyRow(
-                    contentPadding = PaddingValues(horizontal = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    items(recommendedSongs) { song ->
-                        val isLiked = likedSongs.any { it.id == song.id }
-                        RecommendedSongCard(
-                            song = song,
-                            onClick = { 
-                                viewModel.addToRecentlyPlayed(song)
-                                onNavigateToPlayer(song.id)
-                            },
-                            onLikeClick = {
-                                if (isLiked) {
-                                    libraryViewModel.removeSongFromLiked(song.id)
-                                } else {
-                                    libraryViewModel.addSongToLiked(song)
+                when (val state = recommendedSongsState) {
+                    is UiState.Loading -> {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(200.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator()
+                        }
+                    }
+                    is UiState.Success -> {
+                        LazyRow(
+                            contentPadding = PaddingValues(horizontal = 16.dp),
+                            horizontalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            items(state.data) { song ->
+                                val isLiked = likedSongs.any { it.id == song.id }
+                                RecommendedSongCard(
+                                    song = song,
+                                    onClick = { 
+                                        viewModel.addToRecentlyPlayed(song)
+                                        onNavigateToPlayer(song.id)
+                                    },
+                                    onLikeClick = {
+                                        if (isLiked) {
+                                            libraryViewModel.removeSongFromLiked(song.id)
+                                        } else {
+                                            libraryViewModel.addSongToLiked(song)
+                                        }
+                                    },
+                                    onAddToPlaylist = {
+                                        selectedSong = song
+                                        showPlaylistDialog = true
+                                    },
+                                    isLiked = isLiked,
+                                    onDetailsClick = {
+                                        detailsSong = song
+                                        showDetailsDialog = true
+                                    },
+                                    onRemoveFromPlaylist = null
+                                )
+                            }
+                        }
+                    }
+                    is UiState.Error -> {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(
+                                    text = state.message,
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Button(onClick = { viewModel.refreshRecommendedSongs() }) {
+                                    Text("Try Again")
                                 }
-                            },
-                            onAddToPlaylist = {
-                                selectedSong = song
-                                showPlaylistDialog = true
-                            },
-                            isLiked = isLiked,
-                            onDetailsClick = {
-                                detailsSong = song
-                                showDetailsDialog = true
-                            },
-                            onRemoveFromPlaylist = null
-                        )
+                            }
+                        }
                     }
                 }
 
@@ -176,33 +297,68 @@ fun HomeScreen(
                 )
             }
 
-            items(songs.take(5)) { song ->
-                val isLiked = likedSongs.any { it.id == song.id }
-                RecentlyPlayedItem(
-                    song = song,
-                    onClick = { 
-                        viewModel.addToRecentlyPlayed(song)
-                        onNavigateToPlayer(song.id)
-                    },
-                    onLikeClick = {
-                        if (isLiked) {
-                            libraryViewModel.removeSongFromLiked(song.id)
-                        } else {
-                            libraryViewModel.addSongToLiked(song)
+            when (val state = trendingSongsState) {
+                is UiState.Loading -> {
+                    item {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(100.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator()
                         }
-                    },
-                    onAddToPlaylist = {
-                        selectedSong = song
-                        showPlaylistDialog = true
-                    },
-                    isLiked = isLiked,
-                    modifier = Modifier.padding(horizontal = 16.dp),
-                    onDetailsClick = {
-                        detailsSong = song
-                        showDetailsDialog = true
-                    },
-                    onRemoveFromPlaylist = null
-                )
+                    }
+                }
+                is UiState.Success -> {
+                    items(state.data) { song ->
+                        val isLiked = likedSongs.any { it.id == song.id }
+                        RecentlyPlayedItem(
+                            song = song,
+                            onClick = { 
+                                viewModel.addToRecentlyPlayed(song)
+                                onNavigateToPlayer(song.id)
+                            },
+                            onLikeClick = {
+                                if (isLiked) {
+                                    libraryViewModel.removeSongFromLiked(song.id)
+                                } else {
+                                    libraryViewModel.addSongToLiked(song)
+                                }
+                            },
+                            onAddToPlaylist = {
+                                selectedSong = song
+                                showPlaylistDialog = true
+                            },
+                            isLiked = isLiked,
+                            modifier = Modifier.padding(horizontal = 16.dp),
+                            onDetailsClick = {
+                                detailsSong = song
+                                showDetailsDialog = true
+                            },
+                            onRemoveFromPlaylist = null
+                        )
+                    }
+                }
+                is UiState.Error -> {
+                    item {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                text = state.message,
+                                color = Color.Red
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Button(onClick = { viewModel.refreshTrendingSongs() }) {
+                                Text("Retry")
+                            }
+                        }
+                    }
+                }
             }
         }
     }

@@ -3,7 +3,6 @@ package com.nova.music.ui.navigation
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
@@ -13,7 +12,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -34,15 +32,13 @@ import com.nova.music.ui.viewmodels.PlayerViewModel
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.compose.runtime.collectAsState
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
 
 sealed class Screen(val route: String) {
     object Home : Screen("home")
     object Search : Screen("search")
     object Library : Screen("library")
-    object Player : Screen("player/{songId}") {
-        fun createRoute(songId: String) = "player/$songId"
+    object Player : Screen("player/{songId}?") {
+        fun createRoute(songId: String? = null) = songId?.let { "player/$it" } ?: "player"
     }
     object PlaylistDetail : Screen("playlist/{playlistId}") {
         fun createRoute(playlistId: String) = "playlist/$playlistId"
@@ -64,6 +60,7 @@ fun NovaNavigation(
             HomeScreen(
                 onNavigateToPlayer = { songId ->
                     playerViewModel.loadSong(songId)
+                    navController.navigate(Screen.Player.createRoute(songId))
                 },
                 onNavigateToSearch = {
                     navController.navigate(Screen.Search.route)
@@ -75,6 +72,7 @@ fun NovaNavigation(
             SearchScreen(
                 onSongClick = { songId ->
                     playerViewModel.loadSong(songId)
+                    navController.navigate(Screen.Player.createRoute(songId))
                 },
                 navController = navController
             )
@@ -87,12 +85,13 @@ fun NovaNavigation(
                 },
                 onNavigateToPlayer = { songId ->
                     playerViewModel.loadSong(songId)
+                    navController.navigate(Screen.Player.createRoute(songId))
                 }
             )
         }
 
         composable(
-            route = Screen.Player.route,
+            route = "player/{songId}",
             arguments = listOf(
                 navArgument("songId") { type = NavType.StringType }
             )
@@ -100,6 +99,15 @@ fun NovaNavigation(
             val songId = backStackEntry.arguments?.getString("songId") ?: return@composable
             PlayerScreen(
                 songId = songId,
+                onNavigateBack = { navController.popBackStack() }
+            )
+        }
+        
+        composable(
+            route = "player"
+        ) {
+            PlayerScreen(
+                songId = null,
                 onNavigateBack = { navController.popBackStack() }
             )
         }
@@ -116,6 +124,7 @@ fun NovaNavigation(
                 onNavigateBack = { navController.popBackStack() },
                 onNavigateToPlayer = { songId ->
                     playerViewModel.loadSong(songId)
+                    navController.navigate(Screen.Player.createRoute(songId))
                 }
             )
         }
@@ -138,7 +147,7 @@ fun NovaNavigation() {
         val currentRoute = navBackStackEntry?.destination?.route
 
         // Only show mini player and bottom nav if not on PlayerScreen
-        val isPlayerScreen = currentRoute?.startsWith("player/") == true
+        val isPlayerScreen = currentRoute?.startsWith("player") == true
 
         // Get current song from PlayerViewModel
         val playerViewModel: PlayerViewModel = hiltViewModel()
@@ -151,9 +160,8 @@ fun NovaNavigation() {
         if (currentSong != null && !isPlayerScreen) {
             MiniPlayerBar(
                 onTap = {
-                    currentSong?.id?.let { songId ->
-                        navController.navigate(Screen.Player.createRoute(songId))
-                    }
+                    // Navigate to player without song ID to prevent reloading
+                    navController.navigate(Screen.Player.createRoute())
                 },
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -179,7 +187,7 @@ fun NovaNavigation() {
             ) {
                 items.forEach { item ->
                     val selected = when (currentRoute) {
-                        "player/${navBackStackEntry?.arguments?.getString("songId")}" -> item.route == Screen.Home.route
+                        "player/${navBackStackEntry?.arguments?.getString("songId")}", "player" -> item.route == Screen.Home.route
                         "playlist/${navBackStackEntry?.arguments?.getString("playlistId")}" -> item.route == Screen.Library.route
                         else -> currentRoute == item.route
                     }
