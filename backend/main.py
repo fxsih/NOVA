@@ -1,6 +1,6 @@
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 import yt_dlp
 from ytmusicapi import YTMusic
 import json
@@ -9,6 +9,7 @@ import logging
 import requests
 from urllib.parse import parse_qs, urlparse
 import os
+import time
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -27,6 +28,22 @@ app.add_middleware(
 
 # Initialize YouTube Music API client
 ytmusic = YTMusic()
+
+# Cache for audio URLs to avoid repeated yt-dlp calls
+# Structure: {video_id: (audio_url, expire_timestamp, content_type)}
+audio_url_cache = {}
+
+# Function to extract expire parameter from YouTube URL
+def parse_expire_from_url(url):
+    try:
+        parsed_url = urlparse(url)
+        query_params = parse_qs(parsed_url.query)
+        if 'expire' in query_params:
+            return int(query_params['expire'][0])
+        return int(time.time()) + 3600  # Default: 1 hour from now
+    except Exception as e:
+        logger.error(f"Error parsing expire from URL: {str(e)}")
+        return int(time.time()) + 3600  # Default: 1 hour from now
 
 @app.get("/", response_class=HTMLResponse)
 def read_root():
@@ -278,26 +295,39 @@ def get_playlist_tracks(playlist_id: str = Query(..., description="YouTube Music
         }
 
 @app.get("/yt_audio")
-def get_yt_audio(video_id: str = Query(..., description="YouTube video ID")):
+async def get_yt_audio(request: Request, video_id: str = Query(..., description="YouTube video ID")):
     """
-    Get an audio stream URL using the improved yt-dlp approach.
-    This is the main endpoint for streaming audio.
+    Get an audio stream with proper HTTP Range support for efficient seeking.
     """
     try:
-        logger.info(f"Getting YouTube audio stream for ID: {video_id}")
+        # Check cache first
+        if video_id in audio_url_cache:
+            audio_url, expire_timestamp, content_type = audio_url_cache[video_id]
+            # If URL is still valid (not expired)
+            if time.time() < expire_timestamp:
+                logger.info(f"Using cached audio URL for {video_id}, expires in {int(expire_timestamp - time.time())} seconds")
+            else:
+                # URL expired, remove from cache
+                del audio_url_cache[video_id]
+                audio_url = None
+                content_type = None
+        else:
+            audio_url = None
+            content_type = None
         
-        url = f"https://www.youtube.com/watch?v={video_id}"
-        
-        # Simplified options - focus on reliability over quality
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'quiet': False,  # Enable output for debugging
-            'no_warnings': False,  # Show warnings for debugging
-            'noplaylist': True,
-            'skip_download': True,
-        }
-        
-        try:
+        # If not in cache or expired, extract new URL
+        if audio_url is None:
+            logger.info(f"Extracting new audio URL for {video_id}")
+            url = f"https://www.youtube.com/watch?v={video_id}"
+            
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'quiet': False,
+                'no_warnings': False,
+                'noplaylist': True,
+                'skip_download': True,
+            }
+            
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
                 
@@ -305,80 +335,109 @@ def get_yt_audio(video_id: str = Query(..., description="YouTube video ID")):
                     logger.error("No info returned from yt-dlp")
                     return {"error": "Could not extract video information"}
                 
-                # Get video details
-                title = info.get('title', 'Unknown')
-                duration = info.get('duration', 0)
-                
-                # Get thumbnail
-                thumbnails = info.get('thumbnails', [])
-                thumbnail_url = thumbnails[-1]['url'] if thumbnails else ""
-                
-                # Try direct URL first - this is the most reliable method
+                # Try direct URL first
                 if 'url' in info:
                     audio_url = info['url']
                     logger.info("Found direct URL in info dict")
                     
-                    return {
-                        "url": audio_url,
-                        "title": title,
-                        "thumbnail": thumbnail_url,
-                        "duration": duration,
-                        "source": "direct"
-                    }
-                
-                # Back to the old way if no direct URL
-                formats = info.get('formats', [])
-                if not formats:
-                    return {"error": "No formats found", "url": url}
-                
-                # Log all formats for debugging
-                logger.info(f"Found {len(formats)} formats")
-                for i, fmt in enumerate(formats[:5]):  # Log first 5 formats
-                    logger.info(f"Format {i}: id={fmt.get('format_id')}, ext={fmt.get('ext')}, acodec={fmt.get('acodec')}")
-                
-                # Try to find an audio format
-                audio_formats = [f for f in formats if f.get('acodec') != 'none']
-                
-                if not audio_formats:
-                    # Fall back to any format if no audio formats are found
-                    logger.warning("No audio formats found, using all formats")
-                    audio_formats = formats
-                
-                # Sort by quality (prefer audio only, then by bitrate)
-                audio_formats.sort(key=lambda f: (
-                    0 if f.get('vcodec') in (None, 'none') else 1,  # Prefer audio only
-                    -(f.get('abr', 0) or 0)  # Then by audio bitrate (higher first)
-                ))
-                
-                if not audio_formats:
-                    return {"error": "No formats available"}
-                
-                best_audio = audio_formats[0]
-                audio_url = best_audio.get('url')
-                
-                if not audio_url:
-                    return {"error": "No URL found in best audio format"}
-                
-                logger.info(f"Selected format: {best_audio.get('format_id')}")
-                
-                return {
-                    "url": audio_url,
-                    "title": title,
-                    "thumbnail": thumbnail_url,
-                    "duration": duration,
-                    "format_id": best_audio.get('format_id', 'unknown'),
-                    "source": "format"
-                }
-                
-        except Exception as e:
-            logger.error(f"Error in YoutubeDL: {str(e)}")
-            logger.exception(e)
-            return {"error": f"YoutubeDL error: {str(e)}", "url": url}
+                    # Make a HEAD request to get content type
+                    try:
+                        head_response = requests.head(audio_url, timeout=5)
+                        content_type = head_response.headers.get('Content-Type', 'audio/mpeg')
+                    except Exception:
+                        content_type = 'audio/mpeg'  # Default if HEAD request fails
+                    
+                    # Parse expiration time
+                    expire_timestamp = parse_expire_from_url(audio_url)
+                    
+                    # Cache the URL
+                    audio_url_cache[video_id] = (audio_url, expire_timestamp, content_type)
+                    
+                    logger.info(f"Cached audio URL for {video_id}, expires at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(expire_timestamp))}")
+                    
+                else:
+                    # Back to the old way if no direct URL
+                    formats = info.get('formats', [])
+                    if not formats:
+                        return {"error": "No formats found", "url": url}
+                    
+                    # Try to find an audio format
+                    audio_formats = [f for f in formats if f.get('acodec') != 'none']
+                    
+                    if not audio_formats:
+                        # Fall back to any format if no audio formats are found
+                        logger.warning("No audio formats found, using all formats")
+                        audio_formats = formats
+                    
+                    # Sort by quality (prefer audio only, then by bitrate)
+                    audio_formats.sort(key=lambda f: (
+                        0 if f.get('vcodec') in (None, 'none') else 1,  # Prefer audio only
+                        -(f.get('abr', 0) or 0)  # Then by audio bitrate (higher first)
+                    ))
+                    
+                    if not audio_formats:
+                        return {"error": "No formats available"}
+                    
+                    best_audio = audio_formats[0]
+                    audio_url = best_audio.get('url')
+                    
+                    if not audio_url:
+                        return {"error": "No URL found in best audio format"}
+                    
+                    logger.info(f"Selected format: {best_audio.get('format_id')}")
+                    
+                    # Get content type
+                    content_type = best_audio.get('mime_type', 'audio/mpeg').split(';')[0]
+                    
+                    # Parse expiration time
+                    expire_timestamp = parse_expire_from_url(audio_url)
+                    
+                    # Cache the URL
+                    audio_url_cache[video_id] = (audio_url, expire_timestamp, content_type)
+                    
+                    logger.info(f"Cached audio URL for {video_id}, expires at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(expire_timestamp))}")
+        
+        # Prepare headers for the request to YouTube
+        headers = {}
+        
+        # Forward the Range header if present (critical for seeking)
+        if "range" in request.headers:
+            headers["Range"] = request.headers["range"]
+            logger.info(f"Forwarding Range header: {headers['Range']}")
+        
+        # Make the request to YouTube
+        response = requests.get(audio_url, headers=headers, stream=True, timeout=10)
+        
+        # Prepare response headers
+        response_headers = {}
+        
+        # Forward important headers from YouTube's response
+        important_headers = [
+            "Content-Type", "Content-Length", "Content-Range", 
+            "Accept-Ranges", "Content-Disposition"
+        ]
+        
+        for header in important_headers:
+            if header in response.headers:
+                response_headers[header] = response.headers[header]
+        
+        # Ensure Content-Type is set
+        if "Content-Type" not in response_headers:
+            response_headers["Content-Type"] = content_type
             
+        # Set Content-Disposition
+        response_headers["Content-Disposition"] = f'inline; filename="{video_id}.mp3"'
+        
+        # Return the streaming response with the status code from YouTube
+        return StreamingResponse(
+            response.iter_content(chunk_size=1024),
+            status_code=response.status_code,
+            headers=response_headers
+        )
+        
     except Exception as e:
-        logger.error(f"Error in yt_audio: {str(e)}")
-        logger.exception(e)
-        return {"error": f"General error: {str(e)}", "url": url}
+        logger.error(f"Error in yt_audio: {str(e)}", exc_info=True)
+        return {"error": f"Error streaming audio: {str(e)}"}
 
 @app.get("/youtube-dl-helper.js")
 async def youtube_dl_helper():
@@ -445,21 +504,134 @@ const YouTubeHelper = {
     """
     return JSONResponse(content={"code": js_content})
 
-# Add a new audio fallback endpoint that works differently
 @app.get("/audio_fallback")
-def audio_fallback(video_id: str = Query(..., description="YouTube video ID")):
+async def audio_fallback(request: Request, video_id: str = Query(..., description="YouTube video ID")):
     """
-    Fallback endpoint that returns basic info for the player to handle extraction
+    Fallback endpoint that streams audio directly using a different approach
     """
     try:
-        # Just return basic data and let the frontend extract the URLs
-        return {
-            "video_id": video_id,
-            "youtube_url": f"https://www.youtube.com/watch?v={video_id}",
-        }
+        # Check cache first
+        if video_id in audio_url_cache:
+            audio_url, expire_timestamp, content_type = audio_url_cache[video_id]
+            # If URL is still valid (not expired)
+            if time.time() < expire_timestamp:
+                logger.info(f"Using cached audio URL for fallback {video_id}, expires in {int(expire_timestamp - time.time())} seconds")
+            else:
+                # URL expired, remove from cache
+                del audio_url_cache[video_id]
+                audio_url = None
+                content_type = None
+        else:
+            audio_url = None
+            content_type = None
+        
+        # If not in cache or expired, extract new URL
+        if audio_url is None:
+            logger.info(f"Audio fallback for ID: {video_id}")
+            url = f"https://www.youtube.com/watch?v={video_id}"
+            
+            # Use the same approach as the main endpoint but with different options
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'quiet': False,
+                'no_warnings': False,
+                'noplaylist': True,
+                'skip_download': True,
+            }
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                
+                if not info:
+                    return {"error": "Could not extract video information"}
+                
+                # Try direct URL first
+                if 'url' in info:
+                    audio_url = info['url']
+                    logger.info("Found direct URL in fallback")
+                    
+                    # Make a HEAD request to get content type
+                    try:
+                        head_response = requests.head(audio_url, timeout=5)
+                        content_type = head_response.headers.get('Content-Type', 'audio/mpeg')
+                    except Exception:
+                        content_type = 'audio/mpeg'  # Default if HEAD request fails
+                    
+                    # Parse expiration time
+                    expire_timestamp = parse_expire_from_url(audio_url)
+                    
+                    # Cache the URL
+                    audio_url_cache[video_id] = (audio_url, expire_timestamp, content_type)
+                    
+                    logger.info(f"Cached fallback audio URL for {video_id}, expires at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(expire_timestamp))}")
+                    
+                else:
+                    # Process formats if no direct URL
+                    formats = info.get('formats', [])
+                    if formats:
+                        # Try to find an audio format
+                        audio_formats = [f for f in formats if f.get('acodec') != 'none']
+                        
+                        if audio_formats:
+                            audio_formats.sort(key=lambda f: -(f.get('abr', 0) or 0))
+                            best_audio = audio_formats[0]
+                            audio_url = best_audio.get('url')
+                            
+                            if audio_url:
+                                # Get content type
+                                content_type = best_audio.get('mime_type', 'audio/mpeg').split(';')[0]
+                                
+                                # Parse expiration time
+                                expire_timestamp = parse_expire_from_url(audio_url)
+                                
+                                # Cache the URL
+                                audio_url_cache[video_id] = (audio_url, expire_timestamp, content_type)
+                                
+                                logger.info(f"Cached fallback audio URL for {video_id}, expires at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(expire_timestamp))}")
+        
+        if not audio_url:
+            return {"error": "No suitable audio URL found", "video_id": video_id}
+        
+        # Prepare headers for the request to YouTube
+        headers = {}
+        
+        # Forward the Range header if present (critical for seeking)
+        if "range" in request.headers:
+            headers["Range"] = request.headers["range"]
+            logger.info(f"Forwarding Range header to fallback: {headers['Range']}")
+        
+        # Make the request to YouTube
+        response = requests.get(audio_url, headers=headers, stream=True, timeout=10)
+        
+        # Prepare response headers
+        response_headers = {}
+        
+        # Forward important headers from YouTube's response
+        important_headers = [
+            "Content-Type", "Content-Length", "Content-Range", 
+            "Accept-Ranges", "Content-Disposition"
+        ]
+        
+        for header in important_headers:
+            if header in response.headers:
+                response_headers[header] = response.headers[header]
+        
+        # Ensure Content-Type is set
+        if "Content-Type" not in response_headers:
+            response_headers["Content-Type"] = content_type
+            
+        # Set Content-Disposition
+        response_headers["Content-Disposition"] = f'inline; filename="{video_id}_fallback.mp3"'
+        
+        # Return the streaming response with the status code from YouTube
+        return StreamingResponse(
+            response.iter_content(chunk_size=1024),
+            status_code=response.status_code,
+            headers=response_headers
+        )
+        
     except Exception as e:
-        logger.error(f"Error in audio_fallback: {str(e)}")
-        logger.exception(e)
+        logger.error(f"Error in audio_fallback: {str(e)}", exc_info=True)
         return {"error": str(e), "video_id": video_id}
 
 if __name__ == "__main__":

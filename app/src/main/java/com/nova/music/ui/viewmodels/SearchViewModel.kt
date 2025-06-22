@@ -19,6 +19,12 @@ class SearchViewModel @Inject constructor(
 
     private val _recentSearches = MutableStateFlow<List<String>>(emptyList())
     val recentSearches: StateFlow<List<String>> = _recentSearches.asStateFlow()
+    
+    private val _isLoading = MutableStateFlow(false)
+    val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
+    
+    private val _errorMessage = MutableStateFlow<String?>(null)
+    val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
 
     init {
         viewModelScope.launch {
@@ -31,8 +37,18 @@ class SearchViewModel @Inject constructor(
             _searchResults.value = emptyList()
             return
         }
-        musicRepository.searchSongs(query).collect {
-            _searchResults.value = it
+        
+        _isLoading.value = true
+        _errorMessage.value = null
+        
+        try {
+            musicRepository.searchSongs(query).collect {
+                _searchResults.value = it
+            }
+        } catch (e: Exception) {
+            _errorMessage.value = "Search failed: ${e.message}"
+        } finally {
+            _isLoading.value = false
         }
     }
 
@@ -45,5 +61,15 @@ class SearchViewModel @Inject constructor(
     suspend fun removeFromRecentSearches(query: String) {
         musicRepository.removeFromRecentSearches(query)
         _recentSearches.value = musicRepository.getRecentSearches()
+    }
+
+    fun addToRecentlyPlayed(song: Song) {
+        viewModelScope.launch {
+            try {
+                musicRepository.addToRecentlyPlayed(song)
+            } catch (e: Exception) {
+                _errorMessage.value = "Failed to add song to recently played: ${e.message}"
+            }
+        }
     }
 } 

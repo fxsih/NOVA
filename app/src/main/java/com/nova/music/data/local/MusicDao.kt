@@ -3,7 +3,6 @@ package com.nova.music.data.local
 import androidx.room.*
 import com.nova.music.data.model.Song
 import com.nova.music.data.model.Playlist
-import com.nova.music.data.model.PlaylistSongCrossRef
 import com.nova.music.data.model.RecentlyPlayed
 import kotlinx.coroutines.flow.Flow
 
@@ -61,6 +60,9 @@ interface MusicDao {
 
     @Query("SELECT * FROM songs WHERE playlistIds LIKE '%' || :playlistId || '%'")
     fun getPlaylistSongs(playlistId: String): Flow<List<Song>>
+
+    @Query("DELETE FROM recently_played WHERE songId = :songId")
+    suspend fun deleteRecentlyPlayedBySongId(songId: String)
 
     @Transaction
     suspend fun addSongToPlaylist(songId: String, playlistId: String) {

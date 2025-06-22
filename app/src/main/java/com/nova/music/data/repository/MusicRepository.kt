@@ -9,6 +9,7 @@ interface MusicRepository {
     fun getAllSongs(): Flow<List<Song>>
     fun getRecommendedSongs(): Flow<List<Song>>
     fun searchSongs(query: String): Flow<List<Song>>
+    fun getTrendingSongs(): Flow<List<Song>>
     
     // Recently played
     fun getRecentlyPlayed(): Flow<List<Song>>

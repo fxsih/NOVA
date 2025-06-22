@@ -12,9 +12,10 @@ import com.nova.music.data.model.RecentlyPlayed
     entities = [
         Song::class,
         Playlist::class,
-        RecentlyPlayed::class
+        RecentlyPlayed::class,
+        PlaylistSongCrossRef::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 @TypeConverters(Converters::class)

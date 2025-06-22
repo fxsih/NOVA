@@ -22,6 +22,6 @@ class NovaMediaService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
-        (musicPlayerService as? MusicPlayerServiceImpl)?.cleanup()
+        (musicPlayerService as? MusicPlayerServiceImpl)?.onDestroy()
     }
 } 

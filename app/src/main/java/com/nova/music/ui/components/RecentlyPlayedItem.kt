@@ -3,7 +3,6 @@ package com.nova.music.ui.components
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -12,13 +11,15 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import com.nova.music.R
 import com.nova.music.data.model.Song
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -58,13 +59,24 @@ fun RecentlyPlayedItem(
             verticalAlignment = Alignment.CenterVertically
         ) {
             // Album Art
+            val imageModel = when {
+                !song.albumArtUrl.isNullOrBlank() -> song.albumArtUrl
+                !song.albumArt.isBlank() -> song.albumArt
+                else -> R.drawable.default_album_art
+            }
+            
             AsyncImage(
-                model = song.albumArt,
+                model = ImageRequest.Builder(LocalContext.current)
+                    .data(imageModel)
+                    .crossfade(true)
+                    .build(),
                 contentDescription = "Song artwork",
                 modifier = Modifier
                     .size(56.dp)
                     .clip(RoundedCornerShape(8.dp)),
-                contentScale = ContentScale.Crop
+                contentScale = ContentScale.Crop,
+                error = painterResource(id = R.drawable.default_album_art),
+                placeholder = painterResource(id = R.drawable.default_album_art)
             )
             
             // Song Info

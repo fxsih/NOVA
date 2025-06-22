@@ -61,6 +61,8 @@ android {
 dependencies {
     def room_version = "2.6.1"
     def hilt_version = "2.50"
+    def retrofit_version = "2.9.0"
+    def okhttp_version = "4.12.0"
 
     implementation 'androidx.core:core-ktx:1.12.0'
     implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.7.0'
@@ -72,6 +74,12 @@ dependencies {
     implementation 'androidx.compose.material3:material3'
     implementation 'androidx.navigation:navigation-compose:2.7.7'
     implementation "androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0"
+
+    // Retrofit & OkHttp
+    implementation "com.squareup.retrofit2:retrofit:$retrofit_version"
+    implementation "com.squareup.retrofit2:converter-gson:$retrofit_version"
+    implementation "com.squareup.okhttp3:okhttp:$okhttp_version"
+    implementation "com.squareup.okhttp3:logging-interceptor:$okhttp_version"
 
     // Room
     implementation "androidx.room:room-runtime:$room_version"

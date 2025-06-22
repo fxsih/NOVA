@@ -1,13 +1,11 @@
 package com.nova.music.ui.components
 
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.FavoriteBorder
@@ -19,13 +17,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
@@ -41,8 +36,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.remember
 import kotlin.math.absoluteValue
 import kotlin.math.roundToInt
-import androidx.compose.foundation.border
 import kotlinx.coroutines.launch
+import androidx.compose.ui.res.painterResource
+import com.nova.music.R
 
 @Composable
 fun MiniPlayerBar(
@@ -163,11 +159,17 @@ fun MiniPlayerBar(
                 contentAlignment = Alignment.Center
             ) {
                 AsyncImage(
-                    model = currentSong?.albumArt,
+                    model = when {
+                        !currentSong?.albumArtUrl.isNullOrBlank() -> currentSong?.albumArtUrl
+                        !currentSong?.albumArt.isNullOrBlank() -> currentSong?.albumArt
+                        else -> R.drawable.default_album_art
+                    },
                     contentDescription = "Album Art",
                     contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-            )
+                    modifier = Modifier.fillMaxSize(),
+                    error = painterResource(id = R.drawable.default_album_art),
+                    placeholder = painterResource(id = R.drawable.default_album_art)
+                )
             }
 
             Spacer(modifier = Modifier.width(12.dp))

@@ -1,5 +1,6 @@
 package com.nova.music.ui.viewmodels
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.nova.music.data.model.Song
@@ -9,13 +10,22 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
+sealed class UiState<out T> {
+    object Loading : UiState<Nothing>()
+    data class Success<T>(val data: T) : UiState<T>()
+    data class Error(val message: String) : UiState<Nothing>()
+}
+
 @HiltViewModel
 class HomeViewModel @Inject constructor(
     private val musicRepository: MusicRepository
 ) : ViewModel() {
 
-    val recommendedSongs = musicRepository.getRecommendedSongs()
-        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    private val _recommendedSongsState = MutableStateFlow<UiState<List<Song>>>(UiState.Loading)
+    val recommendedSongsState = _recommendedSongsState.asStateFlow()
+
+    private val _trendingSongsState = MutableStateFlow<UiState<List<Song>>>(UiState.Loading)
+    val trendingSongsState = _trendingSongsState.asStateFlow()
 
     private val _songs = MutableStateFlow<List<Song>>(emptyList())
     val songs = _songs.asStateFlow()
@@ -25,6 +35,12 @@ class HomeViewModel @Inject constructor(
 
     private val _recentSearches = MutableStateFlow<List<String>>(emptyList())
     val recentSearches = _recentSearches.asStateFlow()
+    
+    private val _isLoading = MutableStateFlow(false)
+    val isLoading = _isLoading.asStateFlow()
+    
+    private val _errorMessage = MutableStateFlow<String?>(null)
+    val errorMessage = _errorMessage.asStateFlow()
 
     init {
         viewModelScope.launch {
@@ -33,18 +49,72 @@ class HomeViewModel @Inject constructor(
             }
             _recentSearches.value = musicRepository.getRecentSearches()
         }
+        
+        loadTrendingSongs()
+        loadRecommendedSongs()
+    }
+    
+    private fun loadTrendingSongs() {
+        viewModelScope.launch {
+            _trendingSongsState.value = UiState.Loading
+            try {
+                musicRepository.getTrendingSongs().collect { songs ->
+                    if (songs.isEmpty()) {
+                        _trendingSongsState.value = UiState.Error("No trending songs found")
+                    } else {
+                        _trendingSongsState.value = UiState.Success(songs)
+                    }
+                }
+            } catch (e: Exception) {
+                _trendingSongsState.value = UiState.Error("Failed to load trending songs: ${e.message}")
+            }
+        }
+    }
+    
+    private fun loadRecommendedSongs() {
+        viewModelScope.launch {
+            _recommendedSongsState.value = UiState.Loading
+            try {
+                musicRepository.getRecommendedSongs().collect { songs ->
+                    if (songs.isEmpty()) {
+                        _recommendedSongsState.value = UiState.Error("No recommended songs found")
+                    } else {
+                        _recommendedSongsState.value = UiState.Success(songs)
+                    }
+                }
+            } catch (e: Exception) {
+                _recommendedSongsState.value = UiState.Error("Failed to load recommended songs: ${e.message}")
+            }
+        }
+    }
+
+    fun refreshTrendingSongs() {
+        loadTrendingSongs()
+    }
+    
+    fun refreshRecommendedSongs() {
+        loadRecommendedSongs()
     }
 
     fun search(query: String) {
         viewModelScope.launch {
-            if (query.isBlank()) {
-                musicRepository.getAllSongs().collect {
-                    _songs.value = it
+            _isLoading.value = true
+            _errorMessage.value = null
+            
+            try {
+                if (query.isBlank()) {
+                    musicRepository.getAllSongs().collect {
+                        _songs.value = it
+                    }
+                } else {
+                    musicRepository.searchSongs(query).collect {
+                        _songs.value = it
+                    }
                 }
-            } else {
-                musicRepository.searchSongs(query).collect {
-                    _songs.value = it
-                }
+            } catch (e: Exception) {
+                _errorMessage.value = "Search failed: ${e.message}"
+            } finally {
+                _isLoading.value = false
             }
         }
     }
@@ -59,7 +129,16 @@ class HomeViewModel @Inject constructor(
 
     fun addToRecentlyPlayed(song: Song) {
         viewModelScope.launch {
-            musicRepository.addToRecentlyPlayed(song)
+            try {
+                musicRepository.addToRecentlyPlayed(song)
+                // Refresh the recently played list to ensure UI is updated
+                musicRepository.getRecentlyPlayed()
+                    .take(1)
+                    .collect { /* Just trigger the collection to refresh the StateFlow */ }
+            } catch (e: Exception) {
+                Log.e("HomeViewModel", "Error adding song to recently played", e)
+                _errorMessage.value = "Failed to add song to recently played"
+            }
         }
     }
 
