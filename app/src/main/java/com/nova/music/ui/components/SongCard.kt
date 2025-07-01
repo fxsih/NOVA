@@ -17,11 +17,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.nova.music.R
 import com.nova.music.data.model.Song
+import com.nova.music.util.CenterCropSquareTransformation
 import kotlin.math.absoluteValue
 
 @Composable
@@ -62,20 +65,25 @@ fun SongCard(
         // Album Art with colored background
         Box(
             modifier = Modifier
-                .size(56.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .background(albumArtColor),
+                .size(56.dp),
             contentAlignment = Alignment.Center
         ) {
+            val context = LocalContext.current
             AsyncImage(
-                model = when {
-                    !song.albumArtUrl.isNullOrBlank() -> song.albumArtUrl
-                    !song.albumArt.isBlank() -> song.albumArt
-                    else -> R.drawable.default_album_art
-                },
+                model = ImageRequest.Builder(context)
+                    .data(when {
+                        !song.albumArtUrl.isNullOrBlank() -> song.albumArtUrl
+                        !song.albumArt.isBlank() -> song.albumArt
+                        else -> R.drawable.default_album_art
+                    })
+                    .crossfade(true)
+                    .transformations(CenterCropSquareTransformation())
+                    .build(),
                 contentDescription = "Album Art",
                 contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clip(RoundedCornerShape(12.dp)),
                 error = painterResource(id = R.drawable.default_album_art),
                 placeholder = painterResource(id = R.drawable.default_album_art)
             )

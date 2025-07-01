@@ -47,6 +47,7 @@ NOVA is a modern Android music player app built with Jetpack Compose, following 
    - Colored album art backgrounds
    - YouTube Music integration for expanded library
    - User preference-based recommendations
+   - Smart album art cropping to remove extended color bars
 
 2. Playlist System
    - Create, rename, and delete playlists
@@ -258,6 +259,15 @@ data class UserMusicPreferences(
     - Vertical scrolling for all content
     - DataStore persistence of preferences
 
+12. **Album Art Processing**:
+    - Smart transformation to detect and remove extended color bars
+    - Analysis of all four edges of album art images
+    - Cropping to the tightest bounding box containing real content
+    - Center-cropping to square if needed
+    - Consistent display across all UI components
+    - Proper clipping with rounded corners
+    - Improved visual appearance of YouTube Music album art
+
 ## Navigation Structure
 - Home Screen
 - Search Screen
@@ -343,6 +353,13 @@ val colors = listOf(
    - Enhanced error recovery in audio playback
    - Automatic fallback to alternative endpoints
    - Better user feedback during playback issues
+
+3. **Smart Album Art Processing**:
+   - Custom CenterCropSquareTransformation for Coil
+   - Intelligent edge detection to find extended color bars
+   - Precise cropping to remove only the extended parts
+   - Consistent implementation across all UI components
+   - Better visual appearance for YouTube Music album art
 
 ## Next Steps
 1. Implement user authentication

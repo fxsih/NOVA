@@ -2,6 +2,8 @@ package com.nova.music.ui.screens.home
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -30,6 +32,13 @@ import com.nova.music.ui.components.PlaylistSelectionDialog
 import com.nova.music.ui.util.rememberDynamicBottomPadding
 import kotlinx.coroutines.launch
 import com.nova.music.util.TimeUtils.formatDuration
+import com.nova.music.data.model.UserMusicPreferences
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.window.DialogProperties
+import coil.request.ImageRequest
+import androidx.compose.ui.platform.LocalContext
+import com.nova.music.util.CenterCropSquareTransformation
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -53,8 +62,22 @@ fun HomeScreen(
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
     var showDetailsDialog by remember { mutableStateOf(false) }
     var detailsSong by remember { mutableStateOf<Song?>(null) }
+    val userPreferences by libraryViewModel.userPreferences.collectAsState()
+    var showOnboarding by remember { mutableStateOf(userPreferences.genres.isEmpty() && userPreferences.languages.isEmpty() && userPreferences.artists.isEmpty()) }
+    var selectedGenres by remember { mutableStateOf(listOf<String>()) }
+    var selectedLanguages by remember { mutableStateOf(listOf<String>()) }
+    var selectedArtists by remember { mutableStateOf(listOf<String>()) }
     
     val bottomPadding by rememberDynamicBottomPadding()
+
+    // Load recommendations only when preferences change or initially
+    LaunchedEffect(userPreferences) {
+        // Only load if we have preferences and no recommendations yet or explicit refresh needed
+        if ((userPreferences.genres.isNotEmpty() || userPreferences.languages.isNotEmpty() || userPreferences.artists.isNotEmpty()) && 
+            (recommendedSongsState is UiState.Loading || recommendedSongsState is UiState.Error)) {
+            viewModel.loadRecommendedSongs(userPreferences)
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -243,7 +266,7 @@ fun HomeScreen(
                                     color = MaterialTheme.colorScheme.error
                                 )
                                 Spacer(modifier = Modifier.height(8.dp))
-                                Button(onClick = { viewModel.refreshRecommendedSongs() }) {
+                                Button(onClick = { viewModel.refreshRecommendedSongs(userPreferences) }) {
                                     Text("Try Again")
                                 }
                             }
@@ -466,6 +489,67 @@ fun HomeScreen(
             }
         )
     }
+
+    if (showOnboarding) {
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text("Personalize Your Recommendations") },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                        .padding(vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    Text(
+                        "Select your favorite genres:", 
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = Color.White
+                    )
+                    GenreChips(selectedGenres) { selectedGenres = it }
+                    
+                    Text(
+                        "Select your preferred languages:", 
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = Color.White
+                    )
+                    LanguageChips(selectedLanguages) { selectedLanguages = it }
+                    
+                    ArtistSuggestions(
+                        selectedLanguages = selectedLanguages,
+                        selectedArtists = selectedArtists,
+                        onArtistSelectionChange = { selectedArtists = it }
+                    )
+                    
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        libraryViewModel.setUserPreferences(
+                            UserMusicPreferences(
+                                genres = selectedGenres,
+                                languages = selectedLanguages,
+                                artists = selectedArtists
+                            )
+                        )
+                        showOnboarding = false
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary
+                    )
+                ) {
+                    Text("Save Preferences")
+                }
+            },
+            properties = DialogProperties(usePlatformDefaultWidth = false),
+            modifier = Modifier
+                .fillMaxWidth(0.95f)
+                .padding(16.dp)
+        )
+    }
 }
 
 @Composable
@@ -489,11 +573,15 @@ fun RecommendedSongCard(
                 .aspectRatio(1f)
         ) {
             AsyncImage(
-                model = song.albumArtUrl,
+                model = ImageRequest.Builder(LocalContext.current)
+                    .data(song.albumArtUrl)
+                    .crossfade(true)
+                    .transformations(CenterCropSquareTransformation())
+                    .build(),
                 contentDescription = null,
                 modifier = Modifier
                     .fillMaxSize()
-                    .clip(RoundedCornerShape(8.dp)),
+                    .clip(RoundedCornerShape(12.dp)),
                 contentScale = ContentScale.Crop
             )
             
@@ -577,11 +665,15 @@ fun RecentlyPlayedItem(
             verticalAlignment = Alignment.CenterVertically
         ) {
             AsyncImage(
-                model = song.albumArtUrl,
+                model = ImageRequest.Builder(LocalContext.current)
+                    .data(song.albumArtUrl)
+                    .crossfade(true)
+                    .transformations(CenterCropSquareTransformation())
+                    .build(),
                 contentDescription = null,
                 modifier = Modifier
                     .size(56.dp)
-                    .clip(RoundedCornerShape(8.dp)),
+                    .clip(RoundedCornerShape(12.dp)),
                 contentScale = ContentScale.Crop
             )
             
@@ -637,6 +729,155 @@ fun RecentlyPlayedItem(
                     imageVector = Icons.Default.Add,
                     contentDescription = "Add to Playlist",
                     tint = Color.White
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun GenreChips(selected: List<String>, onSelectionChange: (List<String>) -> Unit) {
+    val genres = listOf("Pop", "Rock", "Hip-Hop", "Classical", "Jazz", "EDM", "Bollywood", "Indie", "Folk", "Metal", "R&B", "Electronic", "Reggae", "Country", "Blues", "Punk")
+    
+    Column(modifier = Modifier.fillMaxWidth()) {
+        androidx.compose.foundation.layout.FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            genres.forEach { genre ->
+                FilterChip(
+                    selected = selected.contains(genre),
+                    onClick = {
+                        val new = if (selected.contains(genre)) selected - genre else selected + genre
+                        onSelectionChange(new)
+                    },
+                    label = { Text(genre) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                        selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun LanguageChips(selected: List<String>, onSelectionChange: (List<String>) -> Unit) {
+    val languages = listOf("English", "Hindi", "Spanish", "Punjabi", "Tamil", "Telugu", "Malayalam", "French", "German", "Korean", "Japanese", "Arabic", "Portuguese", "Italian", "Russian", "Chinese")
+    
+    Column(modifier = Modifier.fillMaxWidth()) {
+        androidx.compose.foundation.layout.FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            languages.forEach { lang ->
+                FilterChip(
+                    selected = selected.contains(lang),
+                    onClick = {
+                        val new = if (selected.contains(lang)) selected - lang else selected + lang
+                        onSelectionChange(new)
+                    },
+                    label = { Text(lang) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                        selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun ArtistSuggestions(selectedLanguages: List<String>, selectedArtists: List<String>, onArtistSelectionChange: (List<String>) -> Unit) {
+    val suggestedArtists = remember(selectedLanguages) {
+        val artists = mutableListOf<String>()
+        if (selectedLanguages.contains("English")) {
+            artists.addAll(listOf("Taylor Swift", "Ed Sheeran", "Beyoncé", "The Weeknd", "Adele", "Drake", "Billie Eilish", "Post Malone"))
+        }
+        if (selectedLanguages.contains("Hindi")) {
+            artists.addAll(listOf("Arijit Singh", "Shreya Ghoshal", "Neha Kakkar", "Badshah", "A.R. Rahman", "Jubin Nautiyal", "Atif Aslam"))
+        }
+        if (selectedLanguages.contains("Spanish")) {
+            artists.addAll(listOf("Bad Bunny", "J Balvin", "Rosalía", "Daddy Yankee", "Shakira", "Maluma", "Karol G", "Enrique Iglesias"))
+        }
+        if (selectedLanguages.contains("Korean")) {
+            artists.addAll(listOf("BTS", "BLACKPINK", "TWICE", "Stray Kids", "IU", "EXO", "NCT", "SEVENTEEN", "NewJeans"))
+        }
+        if (selectedLanguages.contains("Punjabi")) {
+            artists.addAll(listOf("Diljit Dosanjh", "AP Dhillon", "Sidhu Moose Wala", "Guru Randhawa", "Jazzy B", "Honey Singh", "Karan Aujla"))
+        }
+        if (selectedLanguages.contains("Tamil")) {
+            artists.addAll(listOf("A.R. Rahman", "Anirudh Ravichander", "Sid Sriram", "Yuvan Shankar Raja", "Shreya Ghoshal", "Dhanush"))
+        }
+        if (selectedLanguages.contains("Malayalam")) {
+            artists.addAll(listOf("K.S. Chithra", "K.J. Yesudas", "Vidhu Prathap", "Sithara Krishnakumar", "Vineeth Sreenivasan", "Anne Amie", "Pradeep Kumar"))
+        }
+        if (selectedLanguages.contains("Telugu")) {
+            artists.addAll(listOf("S. P. Balasubrahmanyam", "S. Janaki", "Devi Sri Prasad", "Thaman S", "Sid Sriram", "Anirudh Ravichander"))
+        }
+        if (selectedLanguages.contains("French")) {
+            artists.addAll(listOf("Stromae", "Aya Nakamura", "Indila", "Maître Gims", "Zaz", "Angèle", "Dadju", "MC Solaar"))
+        }
+        if (selectedLanguages.contains("German")) {
+            artists.addAll(listOf("Rammstein", "Kraftwerk", "Nena", "Mark Forster", "Sarah Connor", "Helene Fischer", "Falco"))
+        }
+        if (selectedLanguages.contains("Japanese")) {
+            artists.addAll(listOf("YOASOBI", "Official HIGE DANdism", "LiSA", "ONE OK ROCK", "Kenshi Yonezu", "Radwimps", "BABYMETAL"))
+        }
+        if (selectedLanguages.contains("Arabic")) {
+            artists.addAll(listOf("Amr Diab", "Nancy Ajram", "Elissa", "Mohamed Ramadan", "Tamer Hosny", "Najwa Karam"))
+        }
+        if (selectedLanguages.contains("Portuguese")) {
+            artists.addAll(listOf("Anitta", "Marília Mendonça", "Gusttavo Lima", "Jorge & Mateus", "Luísa Sonza", "Alok"))
+        }
+        if (selectedLanguages.contains("Italian")) {
+            artists.addAll(listOf("Laura Pausini", "Andrea Bocelli", "Måneskin", "Eros Ramazzotti", "Zucchero", "Giorgia", "Il Volo"))
+        }
+        if (selectedLanguages.contains("Russian")) {
+            artists.addAll(listOf("Morgenshtern", "Little Big", "Zemfira", "JONY", "Kasta", "Scriptonite", "Polina Gagarina"))
+        }
+        if (selectedLanguages.contains("Chinese")) {
+            artists.addAll(listOf("Jay Chou", "G.E.M.", "JJ Lin", "Teresa Teng", "Lay Zhang", "Jackson Wang", "Kris Wu"))
+        }
+        if (selectedLanguages.isEmpty()) {
+            artists.addAll(listOf("Taylor Swift", "Ed Sheeran", "Arijit Singh", "BTS", "Bad Bunny", "The Weeknd", "Adele", "Drake", "Beyoncé", "Blackpink", "Billie Eilish"))
+        }
+        artists.distinct()
+    }
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Text(
+            text = "Suggested Artists",
+            style = MaterialTheme.typography.bodyLarge,
+            color = Color.White
+        )
+        
+        Spacer(modifier = Modifier.height(8.dp))
+        
+        androidx.compose.foundation.layout.FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            suggestedArtists.forEach { artist ->
+                FilterChip(
+                    selected = selectedArtists.contains(artist),
+                    onClick = {
+                        val new = if (selectedArtists.contains(artist)) selectedArtists - artist else selectedArtists + artist
+                        onArtistSelectionChange(new)
+                    },
+                    label = { Text(artist) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                        selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
                 )
             }
         }

@@ -39,6 +39,8 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
 import androidx.compose.ui.res.painterResource
 import com.nova.music.R
+import coil.request.ImageRequest
+import com.nova.music.util.CenterCropSquareTransformation
 
 @Composable
 fun MiniPlayerBar(
@@ -153,20 +155,24 @@ fun MiniPlayerBar(
             // Album Art with colored background
             Box(
                 modifier = Modifier
-                    .size(48.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(albumArtColor),
+                    .size(48.dp),
                 contentAlignment = Alignment.Center
             ) {
                 AsyncImage(
-                    model = when {
-                        !currentSong?.albumArtUrl.isNullOrBlank() -> currentSong?.albumArtUrl
-                        !currentSong?.albumArt.isNullOrBlank() -> currentSong?.albumArt
-                        else -> R.drawable.default_album_art
-                    },
+                    model = ImageRequest.Builder(LocalContext.current)
+                        .data(when {
+                            !currentSong?.albumArtUrl.isNullOrBlank() -> currentSong?.albumArtUrl
+                            !currentSong?.albumArt.isNullOrBlank() -> currentSong?.albumArt
+                            else -> R.drawable.default_album_art
+                        })
+                        .crossfade(true)
+                        .transformations(CenterCropSquareTransformation())
+                        .build(),
                     contentDescription = "Album Art",
                     contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(RoundedCornerShape(12.dp)),
                     error = painterResource(id = R.drawable.default_album_art),
                     placeholder = painterResource(id = R.drawable.default_album_art)
                 )

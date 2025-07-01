@@ -29,6 +29,9 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.painterResource
 import com.nova.music.R
+import coil.request.ImageRequest
+import com.nova.music.util.CenterCropSquareTransformation
+import androidx.compose.ui.platform.LocalContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -117,11 +120,15 @@ fun PlayerScreen(
                 contentAlignment = Alignment.Center
             ) {
             AsyncImage(
-                model = when {
-                    !currentSong?.albumArtUrl.isNullOrBlank() -> currentSong?.albumArtUrl
-                    !currentSong?.albumArt.isNullOrBlank() -> currentSong?.albumArt
-                    else -> R.drawable.default_album_art
-                },
+                model = ImageRequest.Builder(LocalContext.current)
+                    .data(when {
+                        !currentSong?.albumArtUrl.isNullOrBlank() -> currentSong?.albumArtUrl
+                        !currentSong?.albumArt.isNullOrBlank() -> currentSong?.albumArt
+                        else -> R.drawable.default_album_art
+                    })
+                    .crossfade(true)
+                    .transformations(CenterCropSquareTransformation())
+                    .build(),
                 contentDescription = "Album Art",
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize(),
