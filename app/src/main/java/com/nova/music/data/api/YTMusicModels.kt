@@ -17,7 +17,10 @@ data class YTMusicSearchResult(
     val isExplicit: Boolean? = false,
     val videoType: String? = null,
     val category: String? = null,
-    val resultType: String? = null
+    val resultType: String? = null,
+    val audio_url: String? = null,
+    val audio_url_expire: Long? = null,
+    val audio_url_content_type: String? = null
 ) {
     fun toSong(): Song {
         // Get the best thumbnail - prefer higher resolution (at least 120x120 if available)
@@ -53,7 +56,8 @@ data class YTMusicSearchResult(
             albumArtUrl = bestThumbnail,  // Use the best thumbnail URL for YouTube songs
             duration = (duration_seconds?.toLong() ?: 0L) * 1000, // Convert to milliseconds
             isRecommended = false,
-            isLiked = false
+            isLiked = false,
+            audioUrl = null // Don't rely on audio_url in list responses, will fetch on demand
         )
     }
 }
