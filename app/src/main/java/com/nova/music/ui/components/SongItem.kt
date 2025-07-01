@@ -26,6 +26,7 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.nova.music.R
 import com.nova.music.data.model.Song
+import com.nova.music.util.CenterCropSquareTransformation
 
 @Composable
 fun SongItem(
@@ -71,11 +72,12 @@ fun SongItem(
                     model = ImageRequest.Builder(LocalContext.current)
                         .data(imageModel)
                         .crossfade(true)
+                        .transformations(CenterCropSquareTransformation())
                         .build(),
                     contentDescription = "Album art for ${song.title}",
                     modifier = Modifier
                         .size(56.dp)
-                        .clip(RoundedCornerShape(8.dp)),
+                        .clip(RoundedCornerShape(12.dp)),
                     contentScale = ContentScale.Crop,
                     error = painterResource(id = R.drawable.default_album_art),
                     placeholder = painterResource(id = R.drawable.default_album_art)

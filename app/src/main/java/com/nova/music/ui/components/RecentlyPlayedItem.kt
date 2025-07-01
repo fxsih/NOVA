@@ -21,6 +21,7 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.nova.music.R
 import com.nova.music.data.model.Song
+import com.nova.music.util.CenterCropSquareTransformation
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -69,11 +70,12 @@ fun RecentlyPlayedItem(
                 model = ImageRequest.Builder(LocalContext.current)
                     .data(imageModel)
                     .crossfade(true)
+                    .transformations(CenterCropSquareTransformation())
                     .build(),
                 contentDescription = "Song artwork",
                 modifier = Modifier
                     .size(56.dp)
-                    .clip(RoundedCornerShape(8.dp)),
+                    .clip(RoundedCornerShape(12.dp)),
                 contentScale = ContentScale.Crop,
                 error = painterResource(id = R.drawable.default_album_art),
                 placeholder = painterResource(id = R.drawable.default_album_art)

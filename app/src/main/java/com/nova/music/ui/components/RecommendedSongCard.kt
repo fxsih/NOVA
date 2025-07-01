@@ -21,6 +21,7 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.nova.music.R
 import com.nova.music.data.model.Song
+import com.nova.music.util.CenterCropSquareTransformation
 
 @Composable
 fun RecommendedSongCard(
@@ -65,12 +66,13 @@ fun RecommendedSongCard(
                     model = ImageRequest.Builder(LocalContext.current)
                         .data(imageModel)
                         .crossfade(true)
+                        .transformations(CenterCropSquareTransformation())
                         .build(),
                     contentDescription = "Album Art",
                     contentScale = ContentScale.Crop,
                     modifier = Modifier
                         .fillMaxSize()
-                        .clip(RoundedCornerShape(4.dp)),
+                        .clip(RoundedCornerShape(12.dp)),
                     error = painterResource(id = R.drawable.default_album_art),
                     placeholder = painterResource(id = R.drawable.default_album_art)
                 )
