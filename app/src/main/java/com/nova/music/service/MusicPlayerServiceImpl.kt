@@ -108,77 +108,55 @@ class MusicPlayerServiceImpl @Inject constructor(
             try {
                 _error.value = null
                 Log.d(TAG, "Playing song: ${song.title}, ID: ${song.id}")
-                
-                // Ensure we have a fresh ExoPlayer instance on the main thread
-                withContext(Dispatchers.Main) {
-                    ensurePlayerCreated()
-                }
-                
-                // Determine if this is a local or YouTube song
+                withContext(Dispatchers.Main) { ensurePlayerCreated() }
                 if (song.id.startsWith("yt_")) {
-                    // This is a YouTube song, stream from backend
                     val videoId = song.id.removePrefix("yt_")
                     Log.d(TAG, "Streaming YouTube song with ID: $videoId")
-                    
-                    try {
-                        // Now the backend directly returns the audio stream via redirect
-                        val baseUrl = "http://192.168.29.154:8000"
-                        val streamUrl = "$baseUrl/yt_audio?video_id=$videoId"
-                        Log.d(TAG, "Attempting to stream from URL: $streamUrl")
-                        
-                        val mediaItem = MediaItem.fromUri(streamUrl)
-                        
+                    val baseUrl = "http://192.168.29.154:8000"
+                    val audioUrl = "$baseUrl/yt_audio?video_id=$videoId"
+                    var triedFallback = false
+                    suspend fun playFromUrl(url: String) {
+                        val mediaItem = MediaItem.fromUri(url)
                         withContext(Dispatchers.Main) {
-                            Log.d(TAG, "Setting media item on main thread")
+                            Log.d(TAG, "Setting media item: $url")
                             exoPlayer?.setMediaItem(mediaItem)
                             exoPlayer?.prepare()
                             exoPlayer?.playWhenReady = true
-                            Log.d(TAG, "ExoPlayer prepared and playWhenReady set to true")
                         }
-                        
-                        // Setup error handling and fallback
-                        withContext(Dispatchers.Main) {
-                            exoPlayer?.addListener(object : Player.Listener {
-                                override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
-                                    Log.e(TAG, "ExoPlayer error: ${error.message}", error)
-                                    _error.value = "Error playing song: ${error.message}"
-                                    
-                                    // Try fallback endpoint
+                    }
+                    try {
+                        // Always use the yt_audio endpoint to get fresh audio URL
+                        playFromUrl(audioUrl)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Audio streaming failed, trying fallback", e)
+                        triedFallback = true
+                        val fallbackUrl = "$baseUrl/audio_fallback?video_id=$videoId"
+                        playFromUrl(fallbackUrl)
+                    }
+                    withContext(Dispatchers.Main) {
+                        exoPlayer?.addListener(object : Player.Listener {
+                            override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                                Log.e(TAG, "ExoPlayer error: ${error.message}", error)
+                                _error.value = "Error playing song: ${error.message}"
+                                if (!triedFallback) {
                                     coroutineScope.launch {
                                         try {
                                             Log.d(TAG, "Trying fallback endpoint for video ID: $videoId")
                                             val fallbackUrl = "$baseUrl/audio_fallback?video_id=$videoId"
-                                            
-                                            val fallbackMediaItem = MediaItem.fromUri(fallbackUrl)
-                                            
-                                            withContext(Dispatchers.Main) {
-                                                // Check if player still exists
-                                                if (exoPlayer == null) {
-                                                    ensurePlayerCreated()
-                                                }
-                                                exoPlayer?.setMediaItem(fallbackMediaItem)
-                                                exoPlayer?.prepare()
-                                                exoPlayer?.playWhenReady = true
-                                                Log.d(TAG, "Fallback ExoPlayer prepared and started")
-                                            }
+                                            playFromUrl(fallbackUrl)
                                         } catch (e: Exception) {
                                             Log.e(TAG, "Fallback streaming also failed", e)
                                             _error.value = "Error playing song: ${e.message}"
                                         }
                                     }
                                 }
-                            })
-                        }
-                        
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error streaming audio", e)
-                        _error.value = "Error streaming audio: ${e.message}"
+                            }
+                        })
                     }
                 } else {
-                    // This is a local song
+                    // Local song
                     Log.d(TAG, "Playing local song from: ${song.albumArt}")
                     val mediaItem = MediaItem.fromUri(Uri.parse(song.albumArt))
-                    
                     withContext(Dispatchers.Main) {
                         exoPlayer?.setMediaItem(mediaItem)
                         exoPlayer?.prepare()
@@ -186,16 +164,9 @@ class MusicPlayerServiceImpl @Inject constructor(
                         Log.d(TAG, "Local song ExoPlayer prepared and started")
                     }
                 }
-                
                 _currentSong.value = song
-                
-                // Add to recently played - but first ensure the song exists in the database
-                try {
-                    // We're already in an IO context, so we can call this directly
-                    musicRepository.addToRecentlyPlayed(song)
-                } catch (e: Exception) {
+                try { musicRepository.addToRecentlyPlayed(song) } catch (e: Exception) {
                     Log.e(TAG, "Error adding song to recently played", e)
-                    // Don't fail the whole playback if this fails
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error in playSong", e)
