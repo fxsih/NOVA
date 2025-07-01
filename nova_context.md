@@ -1,12 +1,12 @@
 # NOVA Music Player App Context
 
 ## Project Overview
-NOVA is a modern Android music player app built with Jetpack Compose, following MVVM architecture and clean code principles. The app provides a rich user experience for managing and playing music. It now includes a backend service that integrates with YouTube Music for search and streaming capabilities.
+NOVA is a modern Android music player app built with Jetpack Compose, following MVVM architecture and clean code principles. The app provides a rich user experience for managing and playing music. It includes a backend service that integrates with YouTube Music for search and streaming capabilities, with optimized audio URL caching and pre-fetching.
 
 ## Technical Stack
 - **UI Framework**: Jetpack Compose
 - **Architecture**: MVVM (Model-View-ViewModel)
-- **Database**: Room (Version 3)
+- **Database**: Room (Version 5)
 - **Dependency Injection**: Hilt
 - **Async Operations**: Kotlin Coroutines & Flow
 - **Image Loading**: Coil
@@ -16,29 +16,37 @@ NOVA is a modern Android music player app built with Jetpack Compose, following 
 - **Backend**: FastAPI with Python
 - **Music API**: YouTube Music API (ytmusicapi)
 - **Video Download**: yt-dlp
+- **Caching**: TTLCache for audio URLs
 
 ## Current Development State
-- **Database Version**: 3
+- **Database Version**: 5
 - **Active Branch**: main
-- **Current Focus**: Backend integration and UI/UX improvements
+- **Current Focus**: Performance optimization and scalability
 - **Last Implemented Features**: 
-  - Dynamic bottom padding for mini player (80dp without mini player, 160dp with it)
-  - Swipe-to-dismiss functionality for mini player
-  - Improved PlayerScreen with AMOLED black background and better spacing
-  - Backend service with YouTube Music integration
-  - Search, streaming, recommendations, and trending music endpoints
-  - Enhanced mini player with improved UI and interactions
+  - Backend optimizations for instant list/discovery endpoints
+  - Non-blocking audio URL extraction with background prefetching
+  - Thread pool implementation for controlled concurrency
+  - Enhanced lock management with automatic cleanup
+  - Client-side on-demand audio URL fetching
+  - Increased cache size and TTL for better performance
+  - Personalized music recommendations based on user preferences
+  - User onboarding with genre, language, and artist selection
+  - Flow exception handling improvements
+  - Scrollable UI components for better user experience
+  - Language-specific artist suggestions
+  - Malayalam language support
 
 ## Key Features Implemented
 1. Music Library Management
    - Song listing and playback
    - Search functionality with history
    - Recently played tracks (limited to 10)
-   - Recommended songs section
+   - Personalized recommended songs section
    - Song details view
    - Marquee text for long titles
    - Colored album art backgrounds
    - YouTube Music integration for expanded library
+   - User preference-based recommendations
 
 2. Playlist System
    - Create, rename, and delete playlists
@@ -72,24 +80,45 @@ NOVA is a modern Android music player app built with Jetpack Compose, following 
    - Dynamic bottom padding (80dp/160dp)
    - Improved scroll behavior
    - Swipe gestures for mini player
+   - Scrollable genre and language selection
+   - Language-specific artist suggestions
 
 5. Backend Services
    - FastAPI server for YouTube Music integration
-   - Search endpoint for finding songs
-   - Streaming endpoint for playing music
-   - Recommendations endpoint for discovering new music
+   - Instant list/discovery endpoints with non-blocking design
+   - On-demand audio extraction only when needed for playback
+   - Efficient background prefetching using thread pool (max 3 workers)
+   - Streaming endpoint with proper range support for seeking
+   - Recommendations endpoint with personalization support
    - Trending music endpoint for popular tracks
    - Efficient video extraction with yt-dlp
+   - Enhanced audio URL caching with larger TTLCache (2048 entries, 2h TTL)
+   - Automatic lock cleanup to prevent memory leaks
+   - Per-video_id locks with timeouts to prevent deadlocks
+   - Failure caching to avoid repeated failed extraction attempts
+   - Support for user preferences in recommendations
+   - Robust error handling with proper exception management
+   - Socket and request timeouts for network operations
+   - Optimized multi-worker configuration for better performance
+
+6. User Personalization
+   - User preferences for genres, languages, and artists
+   - Personalized music recommendations
+   - Onboarding flow for new users
+   - DataStore persistence for preferences
+   - Multi-language support (16 languages including Malayalam)
+   - Artist suggestions based on selected languages
 
 ## Current Implementation Details
 
 ### Data Layer
-- Songs stored in Room database with playlistIds field
+- Songs stored in Room database with playlistIds field and audioUrl field
 - Playlists managed through Room with real-time updates
 - Repository pattern for data access
 - Direct song count queries for performance
 - DataStore for preferences management
 - Backend API integration for YouTube Music content
+- User preferences stored in DataStore with JSON serialization
 
 ### Database Schema
 ```kotlin
@@ -102,6 +131,7 @@ data class Song(
     val albumArt: String,
     val albumArtUrl: String? = null,
     val duration: Long,
+    val audioUrl: String? = null,
     val isRecommended: Boolean = false,
     val isLiked: Boolean = false,
     @ColumnInfo(defaultValue = "") val playlistIds: String = ""
@@ -123,6 +153,12 @@ data class RecentlyPlayed(
     @PrimaryKey val songId: String,
     val timestamp: Long = System.currentTimeMillis()
 )
+
+data class UserMusicPreferences(
+    val genres: List<String> = emptyList(),
+    val languages: List<String> = emptyList(),
+    val artists: List<String> = emptyList()
+)
 ```
 
 ### Key Components
@@ -136,25 +172,34 @@ data class RecentlyPlayed(
    - Manages data access and transformations
    - Implements caching strategy
    - Handles background operations
-   - Provides Flow-based data streams
+   - Provides Flow-based data streams with proper exception handling
    - Manages search history
    - Integrates with backend API for YouTube Music
+   - Handles user preferences for personalized recommendations
 
-3. **LibraryViewModel**: 
+3. **HomeViewModel**: 
+   - Manages UI state for home screen
+   - Handles trending and recommended songs
+   - Provides efficient Flow collection with proper error handling
+   - Avoids unnecessary reloading of recommended songs
+   - Manages recently played songs
+
+4. **LibraryViewModel**: 
    - Manages UI state and user actions
    - Handles playlist operations
    - Provides real-time updates
    - Manages selection state
    - Handles liked songs
+   - Manages user preferences for personalization
 
-4. **PlaylistSelectionDialog**: 
+5. **PlaylistSelectionDialog**: 
    - Handles playlist selection
    - Shows real-time song counts
    - Supports multi-select
    - Provides create/rename options
    - Manages liked songs state
 
-5. **PlaylistItem**: 
+6. **PlaylistItem**: 
    - Displays individual playlists
    - Shows real-time song count
    - Handles playlist actions
@@ -162,7 +207,7 @@ data class RecentlyPlayed(
    - Enhanced visual design
    - Dynamic color scheme
 
-6. **MarqueeText**: 
+7. **MarqueeText**: 
    - Handles text animation for long content
    - Uses graphicsLayer for smooth animation
    - Only animates when text overflows
@@ -170,7 +215,7 @@ data class RecentlyPlayed(
    - 5-second animation duration
    - Smooth start/stop transitions
 
-7. **MiniPlayerBar**: 
+8. **MiniPlayerBar**: 
    - Enhanced visual design
    - Marquee text for song info
    - Colored album art backgrounds
@@ -178,14 +223,6 @@ data class RecentlyPlayed(
    - Better touch targets
    - Dynamic bottom spacing
    - Swipe-to-dismiss functionality
-
-8. **SongCard**: 
-   - Enhanced visual design
-   - Marquee text for song info
-   - Colored album art backgrounds
-   - Improved controls layout
-   - Better touch targets
-   - Dynamic color adaptation
 
 9. **DynamicBottomPadding**:
    - Handles spacing for mini player
@@ -196,10 +233,30 @@ data class RecentlyPlayed(
 
 10. **Backend Service**:
     - FastAPI server for YouTube Music integration
-    - Endpoints for search, streaming, recommendations, and trending
+    - Non-blocking list/discovery endpoints for instant response
+    - On-demand audio extraction only when needed for playback
     - Uses yt-dlp for efficient video extraction
-    - Provides audio streaming capabilities
-    - Runs on local network (192.168.29.154)
+    - Provides audio streaming capabilities with range support
+    - Enhanced audio URL caching with larger TTLCache (2048 entries, 2h TTL)
+    - Efficient background prefetching using thread pool (max 3 workers)
+    - Automatic lock cleanup to prevent memory leaks
+    - Per-video_id locks with timeouts to prevent deadlocks
+    - Lock acquisition with try/finally blocks for guaranteed release
+    - Failure caching to avoid repeated failed extraction attempts
+    - Support for user preferences in recommendations
+    - Socket and request timeouts for network operations
+    - Proper error handling in background threads
+    - Optimized multi-worker configuration with proper import strings
+    - Graceful signal handling and shutdown procedures
+
+11. **User Onboarding**:
+    - Personalization dialog for new users
+    - Genre selection with scrollable UI
+    - Language selection with 16 supported languages
+    - Artist suggestions based on selected languages
+    - Efficient UI with FlowRow for better layout
+    - Vertical scrolling for all content
+    - DataStore persistence of preferences
 
 ## Navigation Structure
 - Home Screen
@@ -207,6 +264,7 @@ data class RecentlyPlayed(
 - Library Screen
 - Player Screen (Full & Mini)
 - Playlist Detail Screen
+- Onboarding Dialog (first launch)
 
 ## Color Palette
 ```kotlin
@@ -233,6 +291,7 @@ val colors = listOf(
    - Repository pattern implementation
    - Composable reusability
    - Backend-frontend separation
+   - Proper Flow exception handling
 
 2. **UI/UX**
    - Material 3 design system
@@ -245,6 +304,8 @@ val colors = listOf(
    - Dynamic spacing and layout
    - Responsive design patterns
    - Gesture-based interactions
+   - Efficient scrolling interfaces
+   - Personalized content based on user preferences
 
 3. **Code Quality**
    - Kotlin best practices
@@ -255,6 +316,7 @@ val colors = listOf(
    - Reusable components
    - State management patterns
    - Composable abstraction
+   - Flow exception transparency
 
 4. **Backend Development**
    - RESTful API design
@@ -263,33 +325,51 @@ val colors = listOf(
    - Asynchronous operations
    - Resource optimization
    - Proper dependency management
+   - Caching strategies for performance
+   - Concurrency control with locks and timeouts
+   - Background processing for better UX
+   - Defensive programming with try/finally blocks
+   - Proper signal handling and graceful shutdown
+   - Optimized multi-worker configuration
+
+## Client-Side Optimizations
+1. **On-Demand Audio URL Fetching**:
+   - Modified Song model to not rely on audio_url in list responses
+   - Updated MusicPlayerServiceImpl to always fetch audio URLs when needed
+   - Improved error handling and fallback mechanisms
+   - Better resource utilization by only loading what's needed
+
+2. **Improved Error Handling**:
+   - Enhanced error recovery in audio playback
+   - Automatic fallback to alternative endpoints
+   - Better user feedback during playback issues
 
 ## Next Steps
-1. Fix backend compatibility issues with Python dependencies
-2. Complete YouTube Music integration
-3. Implement user authentication
-4. Add cloud sync functionality
-5. Enhance offline support
-6. Implement music visualization
-7. Add social sharing features
-8. Implement comprehensive testing
-9. Add more animation effects
-10. Enhance accessibility features
-11. Improve performance optimization
-12. Add gesture support
+1. Implement user authentication
+2. Add cloud sync functionality
+3. Enhance offline support
+4. Implement music visualization
+5. Add social sharing features
+6. Implement comprehensive testing
+7. Add more animation effects
+8. Enhance accessibility features
+9. Further improve performance optimization
+10. Add gesture support
+11. Expand language and genre support
+12. Implement smart playlists based on user preferences
 
 ## Backend Implementation
 The backend service is built with FastAPI and provides the following endpoints:
 - `/search` - Search for songs on YouTube Music
-- `/stream` - Stream audio from YouTube videos
-- `/recommendations` - Get song recommendations
+- `/yt_audio` - Stream audio from YouTube videos
+- `/recommended` - Get personalized song recommendations
 - `/trending` - Get trending music
 
 ### API Endpoints for App Integration
-The Android app will connect to the backend using these specific endpoints:
+The Android app connects to the backend using these specific endpoints:
 - `GET /search?query={query}&limit={limit}` - Search for songs with the given query
 - `GET /yt_audio?video_id={video_id}` - Stream audio for a specific YouTube video ID
-- `GET /recommended?video_id={video_id}&limit={limit}` - Get recommendations based on a video ID
+- `GET /recommended?video_id={video_id}&genres={genres}&languages={languages}&artists={artists}&limit={limit}` - Get personalized recommendations
 - `GET /trending?limit={limit}` - Get current trending music
 - `GET /playlist?playlist_id={playlist_id}&limit={limit}` - Get songs from a specific YouTube Music playlist
 - `GET /featured?limit={limit}` - Get featured playlists
@@ -297,10 +377,20 @@ The Android app will connect to the backend using these specific endpoints:
 
 Base URL for development: `http://192.168.29.154:8000`
 
-Current backend issues:
-- Compatibility problems with Python 3.13 and pydantic
-- "ForwardRef._evaluate() missing recursive_guard" error during startup
-- Needs downgrade to compatible Python and library versions
+Backend optimizations:
+- Non-blocking list/discovery endpoints for instant response
+- On-demand audio extraction only when needed for playback
+- Efficient background prefetching using thread pool (max 3 workers)
+- Enhanced audio URL caching with larger TTLCache (2048 entries, 2h TTL)
+- Automatic lock cleanup to prevent memory leaks
+- Per-video_id locks with timeouts to prevent deadlocks
+- Lock acquisition with try/finally blocks for guaranteed release
+- Failure caching to avoid repeated failed extraction attempts
+- Fallback search strategies for better results
+- Socket and request timeouts for network operations
+- Proper error handling in background threads
+- Optimized multi-worker configuration with proper import strings
+- Graceful signal handling and shutdown procedures
 
 ## Testing Strategy
 1. Unit tests for ViewModels and Repository
@@ -311,6 +401,9 @@ Current backend issues:
 6. Animation performance testing
 7. Component reuse testing
 8. State management testing
+9. Flow exception handling testing
+10. Backend API integration testing
+11. Concurrency and deadlock testing for backend
 
 ## Common Issues & Solutions
 1. If playlist counts aren't updating:
@@ -327,6 +420,7 @@ Current backend issues:
    - Clear app data and rebuild
    - Check migration scripts
    - Verify Flow connections
+   - Ensure database version is updated (currently v5)
 
 4. If dynamic padding isn't working:
    - Verify PlayerViewModel state
@@ -336,4 +430,37 @@ Current backend issues:
 5. If marquee text isn't animating:
    - Check text overflow conditions
    - Verify animation duration
-   - Ensure proper recomposition 
+   - Ensure proper recomposition
+
+6. If Flow exceptions are occurring:
+   - Add proper catch operators in Flow chains
+   - Use try-catch blocks in suspend functions
+   - Ensure proper error handling in ViewModels
+
+7. If recommended songs aren't loading:
+   - Check user preferences in DataStore
+   - Verify backend API connection
+   - Ensure proper Flow collection in HomeViewModel
+   - Check LaunchedEffect triggers
+
+8. If artist suggestions aren't showing:
+   - Verify language selection
+   - Check ArtistSuggestions composable
+   - Ensure proper recomposition on language change 
+
+9. If backend gets stuck or freezes:
+   - Check for deadlocks in lock acquisition
+   - Verify all locks are being released properly
+   - Check network timeouts in yt-dlp and requests operations
+   - Ensure proper error handling in background threads
+   - Verify signal handling is working correctly
+   - Check worker configuration in uvicorn settings
+   - Verify thread pool is not overloaded
+   - Check for lock cleanup execution
+
+10. If audio playback fails:
+    - Verify the client is using the /yt_audio endpoint directly
+    - Check that fallback mechanism to /audio_fallback is working
+    - Ensure proper error handling in MusicPlayerServiceImpl
+    - Verify network connectivity between app and backend
+    - Check logs for any extraction errors in backend
