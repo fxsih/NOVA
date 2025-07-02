@@ -262,6 +262,8 @@ fun PlaylistDetailScreen(
         ) {
                 items(playlistSongs) { song ->
                 val isLiked = likedSongs.any { it.id == song.id }
+                val isSongPlaying = currentSongId?.id == song.id && isPlaying
+                val isSelected = currentSongId?.id == song.id && !isPlaying
                 RecentlyPlayedItem(
                     song = song,
                     onClick = { 
@@ -285,13 +287,23 @@ fun PlaylistDetailScreen(
                         detailsSong = song
                         showDetailsDialog = true
                     },
-                        onRemoveFromPlaylist = if (playlistId != "liked_songs") {
-                            {
-                        scope.launch {
-                            libraryViewModel.removeSongFromPlaylist(song.id, playlistId)
+                    onRemoveFromPlaylist = if (playlistId != "liked_songs") {
+                        {
+                            scope.launch {
+                                libraryViewModel.removeSongFromPlaylist(song.id, playlistId)
+                            }
+                        }
+                    } else null,
+                    isPlaying = isSongPlaying,
+                    isSelected = isSelected,
+                    onPlayPause = {
+                        if (currentSongId?.id == song.id) {
+                            playerViewModel.togglePlayPause()
+                        } else {
+                            viewModel.addToRecentlyPlayed(song)
+                            onNavigateToPlayer(song.id)
                         }
                     }
-                        } else null
                 )
                 }
             }

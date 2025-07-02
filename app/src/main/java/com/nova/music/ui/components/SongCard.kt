@@ -35,7 +35,8 @@ fun SongCard(
     isPlaying: Boolean = false,
     onPlayPause: () -> Unit = {},
     onLike: () -> Unit = {},
-    isLiked: Boolean = false
+    isLiked: Boolean = false,
+    isSelected: Boolean = false
 ) {
     val albumArtColor = remember(song.id) {
         val colors = listOf(
@@ -52,11 +53,17 @@ fun SongCard(
         )
         colors[song.id.hashCode().absoluteValue.rem(colors.size)]
     }
+    
+    // Define the purple color for the playing state - using Color(0xFF9C27B0) for consistency
+    val playingBackgroundColor = Color(0xFF9C27B0).copy(alpha = 0.2f)
+    
+    // Show visual cue if the song is playing OR selected (in mini player)
+    val shouldShowVisualCue = isPlaying || isSelected
 
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .background(Color.Transparent)
+            .background(if (shouldShowVisualCue) playingBackgroundColor else Color.Transparent)
             .clip(RoundedCornerShape(12.dp))
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 8.dp),
@@ -87,6 +94,8 @@ fun SongCard(
                 error = painterResource(id = R.drawable.default_album_art),
                 placeholder = painterResource(id = R.drawable.default_album_art)
             )
+            
+            // Removed Play/Pause overlay when playing
         }
 
         Spacer(modifier = Modifier.width(12.dp))

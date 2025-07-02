@@ -32,9 +32,18 @@ fun RecommendedSongCard(
     isLiked: Boolean,
     modifier: Modifier = Modifier,
     onDetailsClick: (() -> Unit)? = null,
-    onRemoveFromPlaylist: (() -> Unit)? = null
+    onRemoveFromPlaylist: (() -> Unit)? = null,
+    isPlaying: Boolean = false,
+    onPlayPause: () -> Unit = {},
+    isSelected: Boolean = false
 ) {
     var showMenu by remember { mutableStateOf(false) }
+    
+    // Define the purple color for the playing state - using Color(0xFF9C27B0) for consistency
+    val playingBackgroundColor = Color(0xFF9C27B0).copy(alpha = 0.2f)
+    
+    // Show visual cue if the song is playing OR selected (in mini player)
+    val shouldShowVisualCue = isPlaying || isSelected
 
     Card(
         modifier = modifier
@@ -43,7 +52,7 @@ fun RecommendedSongCard(
             .clickable(onClick = onClick),
         shape = RoundedCornerShape(8.dp),
         colors = CardDefaults.cardColors(
-            containerColor = Color.Transparent
+            containerColor = if (shouldShowVisualCue) playingBackgroundColor else Color.Transparent
         )
     ) {
         Column(
@@ -226,16 +235,16 @@ fun RecommendedSongCard(
 
                 Spacer(modifier = Modifier.width(8.dp))
 
-                // Play Button
+                // Play/Pause Button
                 IconButton(
-                    onClick = onClick,
+                    onClick = onPlayPause,
                     modifier = Modifier
                         .size(42.dp)
                 ) {
                     Icon(
-                        imageVector = Icons.Default.PlayArrow,
-                        contentDescription = "Play",
-                        tint = Color(0xFFBB86FC),
+                        imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        contentDescription = if (isPlaying) "Pause" else "Play",
+                        tint = Color.White,
                         modifier = Modifier.size(28.dp)
                     )
                 }
