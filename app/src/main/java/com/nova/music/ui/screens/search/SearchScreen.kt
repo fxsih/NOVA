@@ -22,6 +22,7 @@ import com.nova.music.ui.components.RecentlyPlayedItem
 import com.nova.music.ui.components.PlaylistSelectionDialog
 import com.nova.music.ui.components.SearchBar
 import com.nova.music.ui.viewmodels.SearchViewModel
+import com.nova.music.ui.viewmodels.PlayerViewModel
 import com.nova.music.ui.util.rememberDynamicBottomPadding
 import kotlinx.coroutines.launch
 import com.nova.music.util.TimeUtils.formatDuration
@@ -32,6 +33,7 @@ import androidx.compose.foundation.BorderStroke
 fun SearchScreen(
     viewModel: SearchViewModel = hiltViewModel(),
     libraryViewModel: LibraryViewModel = hiltViewModel(),
+    playerViewModel: PlayerViewModel = hiltViewModel(),
     onSongClick: (String) -> Unit,
     navController: NavController
 ) {
@@ -49,6 +51,10 @@ fun SearchScreen(
     val likedSongs by libraryViewModel.likedSongs.collectAsState()
     var showPlaylistDialog by remember { mutableStateOf(false) }
     var selectedSong by remember { mutableStateOf<Song?>(null) }
+    
+    // Get player state
+    val isPlaying by playerViewModel.isPlaying.collectAsState()
+    val currentSong by playerViewModel.currentSong.collectAsState()
     
     val bottomPadding by rememberDynamicBottomPadding()
 
@@ -139,6 +145,8 @@ fun SearchScreen(
                             } else {
                                 items(searchResults) { song ->
                                     val isLiked = likedSongs.any { it.id == song.id }
+                                    val isSongPlaying = currentSong?.id == song.id && isPlaying
+                                    val isSelected = currentSong?.id == song.id && !isPlaying
                                     RecentlyPlayedItem(
                                         song = song,
                                         onClick = { 
@@ -162,7 +170,17 @@ fun SearchScreen(
                                             detailsSong = song
                                             showDetailsDialog = true
                                         },
-                                        onRemoveFromPlaylist = null
+                                        onRemoveFromPlaylist = null,
+                                        isPlaying = isSongPlaying,
+                                        isSelected = isSelected,
+                                        onPlayPause = {
+                                            if (currentSong?.id == song.id) {
+                                                playerViewModel.togglePlayPause()
+                                            } else {
+                                                viewModel.addToRecentlyPlayed(song)
+                                                onSongClick(song.id)
+                                            }
+                                        }
                                     )
                                 }
                             }

@@ -23,6 +23,9 @@ NOVA is a modern Android music player app built with Jetpack Compose, following 
 - **Active Branch**: main
 - **Current Focus**: Performance optimization and scalability
 - **Last Implemented Features**: 
+  - Enhanced personalization dialog with improved visual design
+  - Visual cue for currently playing and selected songs
+  - Removed obtrusive pause button overlay from album art
   - Backend optimizations for instant list/discovery endpoints
   - Non-blocking audio URL extraction with background prefetching
   - Thread pool implementation for controlled concurrency
@@ -48,6 +51,7 @@ NOVA is a modern Android music player app built with Jetpack Compose, following 
    - YouTube Music integration for expanded library
    - User preference-based recommendations
    - Smart album art cropping to remove extended color bars
+   - Visual cue (purple background) for currently playing songs
 
 2. Playlist System
    - Create, rename, and delete playlists
@@ -68,6 +72,7 @@ NOVA is a modern Android music player app built with Jetpack Compose, following 
    - Enhanced visual feedback
    - Dynamic spacing with mini player
    - AMOLED black background in full player
+   - Visual indication for currently selected song in mini player
 
 4. User Interface
    - Material 3 design implementation
@@ -83,6 +88,7 @@ NOVA is a modern Android music player app built with Jetpack Compose, following 
    - Swipe gestures for mini player
    - Scrollable genre and language selection
    - Language-specific artist suggestions
+   - Redesigned personalization dialog with improved spacing and visual appeal
 
 5. Backend Services
    - FastAPI server for YouTube Music integration

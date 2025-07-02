@@ -3,7 +3,6 @@ package com.nova.music.ui.screens.home
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -39,12 +38,15 @@ import androidx.compose.ui.window.DialogProperties
 import coil.request.ImageRequest
 import androidx.compose.ui.platform.LocalContext
 import com.nova.music.util.CenterCropSquareTransformation
+import com.nova.music.ui.viewmodels.PlayerViewModel
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun HomeScreen(
     viewModel: HomeViewModel = hiltViewModel(),
     libraryViewModel: LibraryViewModel = hiltViewModel(),
+    playerViewModel: PlayerViewModel = hiltViewModel(),
     onNavigateToPlayer: (String) -> Unit,
     onNavigateToSearch: () -> Unit
 ) {
@@ -57,6 +59,11 @@ fun HomeScreen(
     val errorMessage by viewModel.errorMessage.collectAsState()
     val likedSongs by libraryViewModel.likedSongs.collectAsState()
     val playlists by libraryViewModel.playlists.collectAsState()
+    
+    // Get current playing song from PlayerViewModel
+    val currentPlayingSong by playerViewModel.currentSong.collectAsState()
+    val isPlaying by playerViewModel.isPlaying.collectAsState()
+    
     var selectedSong by remember { mutableStateOf<Song?>(null) }
     var showPlaylistDialog by remember { mutableStateOf(false) }
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
@@ -150,6 +157,8 @@ fun HomeScreen(
                         ) {
                             items(state.data.take(10)) { song ->
                                 val isLiked = likedSongs.any { it.id == song.id }
+                                val isSongPlaying = currentPlayingSong?.id == song.id && isPlaying
+                                val isSelected = currentPlayingSong?.id == song.id && !isPlaying
                                 RecommendedSongCard(
                                     song = song,
                                     onClick = { 
@@ -172,7 +181,17 @@ fun HomeScreen(
                                         detailsSong = song
                                         showDetailsDialog = true
                                     },
-                                    onRemoveFromPlaylist = null
+                                    onRemoveFromPlaylist = null,
+                                    isPlaying = isSongPlaying,
+                                    isSelected = isSelected,
+                                    onPlayPause = {
+                                        if (currentPlayingSong?.id == song.id) {
+                                            playerViewModel.togglePlayPause()
+                                        } else {
+                                            viewModel.addToRecentlyPlayed(song)
+                                            onNavigateToPlayer(song.id)
+                                        }
+                                    }
                                 )
                             }
                         }
@@ -226,6 +245,8 @@ fun HomeScreen(
                         ) {
                             items(state.data) { song ->
                                 val isLiked = likedSongs.any { it.id == song.id }
+                                val isSongPlaying = currentPlayingSong?.id == song.id && isPlaying
+                                val isSelected = currentPlayingSong?.id == song.id && !isPlaying
                                 RecommendedSongCard(
                                     song = song,
                                     onClick = { 
@@ -248,7 +269,17 @@ fun HomeScreen(
                                         detailsSong = song
                                         showDetailsDialog = true
                                     },
-                                    onRemoveFromPlaylist = null
+                                    onRemoveFromPlaylist = null,
+                                    isPlaying = isSongPlaying,
+                                    isSelected = isSelected,
+                                    onPlayPause = {
+                                        if (currentPlayingSong?.id == song.id) {
+                                            playerViewModel.togglePlayPause()
+                                        } else {
+                                            viewModel.addToRecentlyPlayed(song)
+                                            onNavigateToPlayer(song.id)
+                                        }
+                                    }
                                 )
                             }
                         }
@@ -284,6 +315,8 @@ fun HomeScreen(
 
             items(recentlyPlayed) { song ->
                 val isLiked = likedSongs.any { it.id == song.id }
+                val isSongPlaying = currentPlayingSong?.id == song.id && isPlaying
+                val isSelected = currentPlayingSong?.id == song.id && !isPlaying
                 RecentlyPlayedItem(
                     song = song,
                     onClick = { 
@@ -307,7 +340,17 @@ fun HomeScreen(
                         detailsSong = song
                         showDetailsDialog = true
                     },
-                    onRemoveFromPlaylist = null
+                    onRemoveFromPlaylist = null,
+                    isPlaying = isSongPlaying,
+                    isSelected = isSelected,
+                    onPlayPause = {
+                        if (currentPlayingSong?.id == song.id) {
+                            playerViewModel.togglePlayPause()
+                        } else {
+                            viewModel.addToRecentlyPlayed(song)
+                            onNavigateToPlayer(song.id)
+                        }
+                    }
                 )
             }
 
@@ -336,6 +379,8 @@ fun HomeScreen(
                 is UiState.Success -> {
                     items(state.data) { song ->
                         val isLiked = likedSongs.any { it.id == song.id }
+                        val isSongPlaying = currentPlayingSong?.id == song.id && isPlaying
+                        val isSelected = currentPlayingSong?.id == song.id && !isPlaying
                         RecentlyPlayedItem(
                             song = song,
                             onClick = { 
@@ -359,7 +404,17 @@ fun HomeScreen(
                                 detailsSong = song
                                 showDetailsDialog = true
                             },
-                            onRemoveFromPlaylist = null
+                            onRemoveFromPlaylist = null,
+                            isPlaying = isSongPlaying,
+                            isSelected = isSelected,
+                            onPlayPause = {
+                                if (currentPlayingSong?.id == song.id) {
+                                    playerViewModel.togglePlayPause()
+                                } else {
+                                    viewModel.addToRecentlyPlayed(song)
+                                    onNavigateToPlayer(song.id)
+                                }
+                            }
                         )
                     }
                 }
@@ -493,61 +548,226 @@ fun HomeScreen(
     if (showOnboarding) {
         AlertDialog(
             onDismissRequest = {},
-            title = { Text("Personalize Your Recommendations") },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            title = {
+                Text(
+                    "Personalize Your Recommendations",
+                    style = MaterialTheme.typography.headlineSmall.copy(
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                    ),
+                    color = Color.White
+                )
+            },
             text = {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .verticalScroll(rememberScrollState())
                         .padding(vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                    verticalArrangement = Arrangement.spacedBy(24.dp)
                 ) {
-                    Text(
-                        "Select your favorite genres:", 
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = Color.White
-                    )
-                    GenreChips(selectedGenres) { selectedGenres = it }
+                    // GENRES SECTION
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Text(
+                            "Select your favorite genres:",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = Color.White.copy(alpha = 0.9f)
+                        )
+                        
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            maxItemsInEachRow = 3
+                        ) {
+                            listOf("Pop", "Rock", "Hip Hop", "Electronic", "Jazz", "Classical", "R&B", "Country", "Indie").forEach { genre ->
+                                val isSelected = selectedGenres.contains(genre)
+                                FilterChip(
+                                    selected = isSelected,
+                                    onClick = {
+                                        selectedGenres = if (isSelected) {
+                                            selectedGenres - genre
+                                        } else {
+                                            selectedGenres + genre
+                                        }
+                                    },
+                                    label = { 
+                                        Text(
+                                            genre,
+                                            style = MaterialTheme.typography.bodyMedium
+                                        ) 
+                                    },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = Color(0xFFBB86FC),
+                                        selectedLabelColor = Color.Black,
+                                        containerColor = Color(0xFF2A2A2A)
+                                    ),
+                                    border = FilterChipDefaults.filterChipBorder(
+                                        borderColor = Color.Transparent,
+                                        selectedBorderColor = Color.Transparent,
+                                        enabled = true,
+                                        selected = isSelected
+                                    ),
+                                    shape = RoundedCornerShape(16.dp)
+                                )
+                            }
+                        }
+                    }
                     
-                    Text(
-                        "Select your preferred languages:", 
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = Color.White
-                    )
-                    LanguageChips(selectedLanguages) { selectedLanguages = it }
+                    // LANGUAGES SECTION
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Text(
+                            "Select languages you prefer:",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = Color.White.copy(alpha = 0.9f)
+                        )
+                        
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            maxItemsInEachRow = 3
+                        ) {
+                            listOf("English", "Spanish", "Hindi", "Malayalam", "French", "Korean", "Japanese", "Chinese", "Arabic", "Portuguese").forEach { language ->
+                                val isSelected = selectedLanguages.contains(language)
+                                FilterChip(
+                                    selected = isSelected,
+                                    onClick = {
+                                        selectedLanguages = if (isSelected) {
+                                            selectedLanguages - language
+                                        } else {
+                                            selectedLanguages + language
+                                        }
+                                    },
+                                    label = { 
+                                        Text(
+                                            language,
+                                            style = MaterialTheme.typography.bodyMedium
+                                        ) 
+                                    },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = Color(0xFFBB86FC),
+                                        selectedLabelColor = Color.Black,
+                                        containerColor = Color(0xFF2A2A2A)
+                                    ),
+                                    border = FilterChipDefaults.filterChipBorder(
+                                        borderColor = Color.Transparent,
+                                        selectedBorderColor = Color.Transparent,
+                                        enabled = true,
+                                        selected = isSelected
+                                    ),
+                                    shape = RoundedCornerShape(16.dp)
+                                )
+                            }
+                        }
+                    }
                     
-                    ArtistSuggestions(
-                        selectedLanguages = selectedLanguages,
-                        selectedArtists = selectedArtists,
-                        onArtistSelectionChange = { selectedArtists = it }
-                    )
-                    
-                    Spacer(modifier = Modifier.height(8.dp))
+                    // ARTISTS SECTION
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Text(
+                            "Select artists you like:",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = Color.White.copy(alpha = 0.9f)
+                        )
+                        
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            maxItemsInEachRow = 2
+                        ) {
+                            val allArtists = listOf(
+                                "Taylor Swift", "Drake", "BTS", "Ed Sheeran", "Ariana Grande", 
+                                "The Weeknd", "Billie Eilish", "Bad Bunny", "Justin Bieber",
+                                "K.J. Yesudas", "K.S. Chithra", "Vidhu Prathap", "Sithara Krishnakumar", 
+                                "Vineeth Sreenivasan", "Shreya Ghoshal"
+                            )
+                            allArtists.forEach { artist ->
+                                val isSelected = selectedArtists.contains(artist)
+                                FilterChip(
+                                    selected = isSelected,
+                                    onClick = {
+                                        selectedArtists = if (isSelected) {
+                                            selectedArtists - artist
+                                        } else {
+                                            selectedArtists + artist
+                                        }
+                                    },
+                                    label = { 
+                                        Text(
+                                            artist,
+                                            style = MaterialTheme.typography.bodyMedium
+                                        ) 
+                                    },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = Color(0xFFBB86FC),
+                                        selectedLabelColor = Color.Black,
+                                        containerColor = Color(0xFF2A2A2A)
+                                    ),
+                                    border = FilterChipDefaults.filterChipBorder(
+                                        borderColor = Color.Transparent,
+                                        selectedBorderColor = Color.Transparent,
+                                        enabled = true,
+                                        selected = isSelected
+                                    ),
+                                    shape = RoundedCornerShape(16.dp)
+                                )
+                            }
+                        }
+                    }
                 }
             },
+            containerColor = Color(0xFF121212),
             confirmButton = {
                 Button(
                     onClick = {
-                        libraryViewModel.setUserPreferences(
-                            UserMusicPreferences(
+                        scope.launch {
+                            val preferences = UserMusicPreferences(
                                 genres = selectedGenres,
                                 languages = selectedLanguages,
                                 artists = selectedArtists
                             )
-                        )
-                        showOnboarding = false
+                            libraryViewModel.setUserPreferences(preferences)
+                            viewModel.loadRecommendedSongs(preferences)
+                            showOnboarding = false
+                        }
                     },
+                    enabled = selectedGenres.isNotEmpty() || selectedLanguages.isNotEmpty() || selectedArtists.isNotEmpty(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 16.dp),
+                    shape = RoundedCornerShape(24.dp),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primary
+                        containerColor = Color(0xFFBB86FC),
+                        contentColor = Color.Black,
+                        disabledContainerColor = Color(0xFFBB86FC).copy(alpha = 0.3f),
+                        disabledContentColor = Color.Black.copy(alpha = 0.3f)
                     )
                 ) {
-                    Text("Save Preferences")
+                    Text(
+                        "Save Preferences",
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.Medium
+                        ),
+                        modifier = Modifier.padding(vertical = 4.dp)
+                    )
                 }
             },
-            properties = DialogProperties(usePlatformDefaultWidth = false),
-            modifier = Modifier
-                .fillMaxWidth(0.95f)
-                .padding(16.dp)
+            properties = DialogProperties(
+                dismissOnBackPress = false,
+                dismissOnClickOutside = false
+            )
         )
     }
 }
@@ -561,6 +781,9 @@ fun RecommendedSongCard(
     isLiked: Boolean,
     onDetailsClick: () -> Unit,
     onRemoveFromPlaylist: (() -> Unit)? = null,
+    isPlaying: Boolean,
+    isSelected: Boolean,
+    onPlayPause: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -651,7 +874,10 @@ fun RecentlyPlayedItem(
     isLiked: Boolean,
     modifier: Modifier = Modifier,
     onDetailsClick: () -> Unit,
-    onRemoveFromPlaylist: (Song?) -> Unit
+    onRemoveFromPlaylist: (Song?) -> Unit,
+    isPlaying: Boolean,
+    isSelected: Boolean,
+    onPlayPause: () -> Unit
 ) {
     Row(
         modifier = modifier
