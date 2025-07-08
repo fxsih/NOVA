@@ -1,7 +1,10 @@
 package com.nova.music.ui.screens.player
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -9,6 +12,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.FavoriteBorder
+import androidx.compose.material.icons.outlined.QueueMusic
 import androidx.compose.material.icons.outlined.Repeat
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -32,6 +36,9 @@ import com.nova.music.R
 import coil.request.ImageRequest
 import com.nova.music.util.CenterCropSquareTransformation
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import com.nova.music.ui.components.SongItem
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -56,7 +63,21 @@ fun PlayerScreen(
     val progress by viewModel.progress.collectAsState()
     val duration by viewModel.duration.collectAsState()
     val likedSongs by libraryViewModel.likedSongs.collectAsState()
+    val currentPlaylistId by viewModel.currentPlaylistId.collectAsState()
+    val currentPlaylistSongs by viewModel.currentPlaylistSongs.collectAsState()
 
+    // Debug logging
+    LaunchedEffect(currentPlaylistSongs, currentSong) {
+        println("DEBUG: Current playlist ID: $currentPlaylistId")
+        println("DEBUG: Current playlist songs count: ${currentPlaylistSongs.size}")
+        println("DEBUG: Current song: ${currentSong?.title}")
+    }
+
+    // State for the queue bottom sheet
+    val sheetState = rememberModalBottomSheetState()
+    var showQueueSheet by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    
     val isLiked = currentSong?.let { song -> likedSongs.any { it.id == song.id } } ?: false
 
     // Get screen height to calculate better spacing
@@ -72,11 +93,21 @@ fun PlayerScreen(
     val sliderThumbColor = Color.White
     val controlIconColor = Color.White
 
+    // Layout stabilization - pre-calculate dimensions
+    val density = LocalDensity.current
+    val albumArtSize = with(density) { (screenHeight * 0.4f).roundToPx() }
+    val controlsHeight = with(density) { (screenHeight * 0.25f).roundToPx() }
+    
+    // Handle case where currentSong is null
     if (currentSong == null) {
         onNavigateBack()
         return
     }
+    
+    // Get the actual queue songs from the ViewModel
+    val queueSongs = viewModel.getCurrentPlaylistSongs()
 
+    // Main player screen
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -94,12 +125,13 @@ fun PlayerScreen(
             // Add top spacing to prevent feeling constrained
             Spacer(modifier = Modifier.height(topSpacing))
             
-            // Minimize button
-            Box(
+            // Top bar with minimize button and queue button
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(bottom = 16.dp),
-                contentAlignment = Alignment.Center
+                    .padding(horizontal = 16.dp, vertical = 16.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 IconButton(onClick = onNavigateBack) {
                     Icon(
@@ -110,7 +142,7 @@ fun PlayerScreen(
                 }
             }
             
-            // Album Art with improved sizing
+            // Album Art with improved sizing and layout stabilization
             Box(
                 modifier = Modifier
                     .fillMaxWidth(0.85f) // Make album art slightly smaller than full width
@@ -119,22 +151,22 @@ fun PlayerScreen(
                     .background(Color(0xFF1E1E1E)), // Slightly lighter background for album art container
                 contentAlignment = Alignment.Center
             ) {
-            AsyncImage(
-                model = ImageRequest.Builder(LocalContext.current)
-                    .data(when {
-                        !currentSong?.albumArtUrl.isNullOrBlank() -> currentSong?.albumArtUrl
-                        !currentSong?.albumArt.isNullOrBlank() -> currentSong?.albumArt
-                        else -> R.drawable.default_album_art
-                    })
-                    .crossfade(true)
-                    .transformations(CenterCropSquareTransformation())
-                    .build(),
-                contentDescription = "Album Art",
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize(),
-                error = painterResource(id = R.drawable.default_album_art),
-                placeholder = painterResource(id = R.drawable.default_album_art)
-            )
+                AsyncImage(
+                    model = ImageRequest.Builder(LocalContext.current)
+                        .data(when {
+                            !currentSong?.albumArtUrl.isNullOrBlank() -> currentSong?.albumArtUrl
+                            !currentSong?.albumArt.isNullOrBlank() -> currentSong?.albumArt
+                            else -> R.drawable.default_album_art
+                        })
+                        .crossfade(true)
+                        .transformations(CenterCropSquareTransformation())
+                        .build(),
+                    contentDescription = "Album Art",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                    error = painterResource(id = R.drawable.default_album_art),
+                    placeholder = painterResource(id = R.drawable.default_album_art)
+                )
             }
             
             Spacer(modifier = Modifier.height(32.dp)) // Increased spacing
@@ -167,9 +199,10 @@ fun PlayerScreen(
                 }
                 IconButton(
                     onClick = {
-                        if (currentSong != null) {
-                            if (isLiked) libraryViewModel.removeSongFromLiked(currentSong!!.id)
-                            else libraryViewModel.addSongToLiked(currentSong!!)
+                        val songToLike = currentSong
+                        if (songToLike != null) {
+                            if (isLiked) libraryViewModel.removeSongFromLiked(songToLike.id)
+                            else libraryViewModel.addSongToLiked(songToLike)
                         }
                     },
                     modifier = Modifier.size(48.dp)
@@ -230,7 +263,7 @@ fun PlayerScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 IconButton(
-                    onClick = { viewModel.toggleShuffle() },
+                    onClick = { viewModel.toggleShuffleMode() },
                     modifier = Modifier.size(48.dp)
                 ) {
                     Icon(
@@ -292,8 +325,193 @@ fun PlayerScreen(
                 }
             }
             
+            Spacer(modifier = Modifier.height(24.dp))
+            
+            // Queue button
+            OutlinedButton(
+                onClick = { showQueueSheet = true },
+                modifier = Modifier
+                    .fillMaxWidth(0.6f)
+                    .height(48.dp),
+                shape = RoundedCornerShape(24.dp),
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = Color.White,
+                    containerColor = Color(0xFF2A2A2A)
+                ),
+                border = BorderStroke(1.dp, Color(0xFF444444))
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.QueueMusic,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "View Queue",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            
             // Add bottom spacing for better balance
             Spacer(modifier = Modifier.height(48.dp))
+        }
+    }
+    
+    // Queue bottom sheet
+    if (showQueueSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showQueueSheet = false },
+            sheetState = sheetState,
+            containerColor = Color(0xFF121212),
+            contentColor = Color.White,
+            dragHandle = { Spacer(modifier = Modifier.height(1.dp)) },
+            shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 32.dp)
+            ) {
+                // Queue header
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "Queue",
+                        style = MaterialTheme.typography.headlineMedium,
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold
+                    )
+                    IconButton(onClick = { showQueueSheet = false }) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Close Queue",
+                            tint = Color.White
+                        )
+                    }
+                }
+                
+                // Upcoming songs list
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 400.dp)
+                ) {
+                    // Always show the current song at the top of the queue
+                    if (currentSong != null) {
+                        item {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp)
+                            ) {
+                                Text(
+                                    text = "Now Playing",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = Color(0xFFBB86FC),
+                                    modifier = Modifier.padding(bottom = 8.dp)
+                                )
+                            }
+                            
+                            // Store currentSong in a local variable to avoid smart cast issues
+                            val currentSongItem = currentSong
+                            if (currentSongItem != null) {
+                                SongItem(
+                                    song = currentSongItem,
+                                    onClick = {},
+                                    isPlaying = isPlaying,
+                                    isSelected = true,
+                                    onPlayPause = { viewModel.togglePlayPause() },
+                                    modifier = Modifier.padding(horizontal = 8.dp)
+                                )
+                            }
+                            
+                            // Divider between current and upcoming
+                            if (queueSongs.size > 1) {
+                                Divider(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 16.dp, horizontal = 16.dp),
+                                    thickness = 0.5.dp,
+                                    color = Color.Gray.copy(alpha = 0.3f)
+                                )
+                            }
+                        }
+                    }
+                    
+                    // Get upcoming songs (all songs except current)
+                    val currentSongForFilter = currentSong
+                    val upcomingSongs = if (currentSongForFilter != null) {
+                        queueSongs.filter { it.id != currentSongForFilter.id }
+                    } else {
+                        queueSongs
+                    }
+                    
+                    if (upcomingSongs.isNotEmpty()) {
+                        item {
+                            Text(
+                                text = "Up Next",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = Color.White,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                            )
+                        }
+                        
+                        items(upcomingSongs) { song ->
+                            SongItem(
+                                song = song,
+                                onClick = {
+                                    viewModel.loadSong(song)
+                                    showQueueSheet = false
+                                },
+                                isPlaying = false,
+                                isSelected = false,
+                                onPlayPause = {
+                                    viewModel.loadSong(song)
+                                    showQueueSheet = false
+                                },
+                                modifier = Modifier.padding(horizontal = 8.dp)
+                            )
+                        }
+                    } else if (queueSongs.isEmpty()) {
+                        // No songs at all
+                        item {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(200.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "No songs in queue",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = Color.Gray
+                                )
+                            }
+                        }
+                    } else if (currentSongForFilter != null && queueSongs.size == 1) {
+                        // Only current song, no upcoming songs
+                        item {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(200.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "No more songs in queue",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = Color.Gray
+                                )
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

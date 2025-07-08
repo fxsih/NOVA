@@ -38,8 +38,10 @@ interface IMusicPlayerService {
     val error: StateFlow<String?>
     val repeatMode: StateFlow<RepeatMode>
     val duration: StateFlow<Long>
+    val currentQueue: StateFlow<List<Song>>
 
     suspend fun playSong(song: Song)
+    suspend fun setPlaylistQueue(songs: List<Song>, startSongId: String? = null)
     suspend fun play()
     suspend fun pause()
     suspend fun resume()

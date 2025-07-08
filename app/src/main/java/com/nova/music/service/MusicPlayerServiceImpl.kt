@@ -52,7 +52,14 @@ class MusicPlayerServiceImpl @Inject constructor(
     private val _duration = MutableStateFlow(0L)
     override val duration: StateFlow<Long> = _duration
 
+    // Add a state flow for the current queue
+    private val _currentQueue = MutableStateFlow<List<Song>>(emptyList())
+    override val currentQueue: StateFlow<List<Song>> = _currentQueue
+
     private var progressJob: Job? = null
+    
+    // Keep track of the current queue (internal use)
+    private var currentQueueInternal: List<Song> = emptyList()
     
     // Ensure ExoPlayer is created and configured properly
     private fun ensurePlayerCreated() {
@@ -90,6 +97,87 @@ class MusicPlayerServiceImpl @Inject constructor(
                 Player.STATE_ENDED -> Log.d(TAG, "ExoPlayer ended")
             }
         }
+        
+        override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            super.onMediaItemTransition(mediaItem, reason)
+            // Update current song when media item changes
+            if (mediaItem == null) {
+                Log.d(TAG, "Media item transitioned to null")
+                return
+            }
+            
+            val currentMediaItemIndex = exoPlayer?.currentMediaItemIndex ?: 0
+            if (currentQueueInternal.isNotEmpty() && currentMediaItemIndex < currentQueueInternal.size) {
+                _currentSong.value = currentQueueInternal[currentMediaItemIndex]
+                Log.d(TAG, "Media item transitioned to: ${_currentSong.value?.title}")
+                
+                // Add to recently played
+                _currentSong.value?.let { song ->
+                    coroutineScope.launch {
+                        try {
+                            musicRepository.addToRecentlyPlayed(song)
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Error adding song to recently played", e)
+                        }
+                    }
+                }
+            }
+        }
+        
+        override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+            Log.e(TAG, "ExoPlayer error: ${error.message}", error)
+            _error.value = "Playback error: ${error.message}"
+            
+            // Get the current media item that failed
+            val currentItem = exoPlayer?.currentMediaItem
+            val currentIndex = exoPlayer?.currentMediaItemIndex ?: -1
+            
+            if (currentItem != null && currentItem.mediaId.startsWith("yt_")) {
+                val videoId = currentItem.mediaId.removePrefix("yt_")
+                Log.d(TAG, "Trying fallback for video ID: $videoId")
+                
+                coroutineScope.launch {
+                    try {
+                        // Try with fallback URL
+                        val baseUrl = "http://192.168.29.154:8000"
+                        val fallbackUrl = "$baseUrl/audio_fallback?video_id=$videoId"
+                        
+                        withContext(Dispatchers.Main) {
+                            // Replace the current item with a fallback
+                            val fallbackItem = MediaItem.Builder()
+                                .setUri(fallbackUrl)
+                                .setMediaId("${currentItem.mediaId}_fallback")
+                                .build()
+                            
+                            exoPlayer?.removeMediaItem(currentIndex)
+                            exoPlayer?.addMediaItem(currentIndex, fallbackItem)
+                            exoPlayer?.seekTo(currentIndex, 0)
+                            exoPlayer?.prepare()
+                            exoPlayer?.play()
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Fallback also failed", e)
+                        _error.value = "Fallback playback also failed: ${e.message}"
+                        
+                        // Skip to next song if available
+                        withContext(Dispatchers.Main) {
+                            if (exoPlayer?.hasNextMediaItem() == true) {
+                                exoPlayer?.seekToNextMediaItem()
+                            }
+                        }
+                    }
+                }
+            } else {
+                // For non-YouTube songs or if the media ID is not available, just try to skip to the next
+                coroutineScope.launch {
+                    withContext(Dispatchers.Main) {
+                        if (exoPlayer?.hasNextMediaItem() == true) {
+                            exoPlayer?.seekToNextMediaItem()
+                        }
+                    }
+                }
+            }
+        }
     }
     
     // Release ExoPlayer resources
@@ -109,61 +197,25 @@ class MusicPlayerServiceImpl @Inject constructor(
                 _error.value = null
                 Log.d(TAG, "Playing song: ${song.title}, ID: ${song.id}")
                 withContext(Dispatchers.Main) { ensurePlayerCreated() }
-                if (song.id.startsWith("yt_")) {
-                    val videoId = song.id.removePrefix("yt_")
-                    Log.d(TAG, "Streaming YouTube song with ID: $videoId")
-                    val baseUrl = "http://192.168.29.154:8000"
-                    val audioUrl = "$baseUrl/yt_audio?video_id=$videoId"
-                    var triedFallback = false
-                    suspend fun playFromUrl(url: String) {
-                        val mediaItem = MediaItem.fromUri(url)
-                        withContext(Dispatchers.Main) {
-                            Log.d(TAG, "Setting media item: $url")
-                            exoPlayer?.setMediaItem(mediaItem)
-                            exoPlayer?.prepare()
-                            exoPlayer?.playWhenReady = true
-                        }
-                    }
-                    try {
-                        // Always use the yt_audio endpoint to get fresh audio URL
-                        playFromUrl(audioUrl)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Audio streaming failed, trying fallback", e)
-                        triedFallback = true
-                        val fallbackUrl = "$baseUrl/audio_fallback?video_id=$videoId"
-                        playFromUrl(fallbackUrl)
-                    }
-                    withContext(Dispatchers.Main) {
-                        exoPlayer?.addListener(object : Player.Listener {
-                            override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
-                                Log.e(TAG, "ExoPlayer error: ${error.message}", error)
-                                _error.value = "Error playing song: ${error.message}"
-                                if (!triedFallback) {
-                                    coroutineScope.launch {
-                                        try {
-                                            Log.d(TAG, "Trying fallback endpoint for video ID: $videoId")
-                                            val fallbackUrl = "$baseUrl/audio_fallback?video_id=$videoId"
-                                            playFromUrl(fallbackUrl)
-                                        } catch (e: Exception) {
-                                            Log.e(TAG, "Fallback streaming also failed", e)
-                                            _error.value = "Error playing song: ${e.message}"
-                                        }
-                                    }
-                                }
-                            }
-                        })
-                    }
-                } else {
-                    // Local song
-                    Log.d(TAG, "Playing local song from: ${song.albumArt}")
-                    val mediaItem = MediaItem.fromUri(Uri.parse(song.albumArt))
-                    withContext(Dispatchers.Main) {
-                        exoPlayer?.setMediaItem(mediaItem)
-                        exoPlayer?.prepare()
-                        exoPlayer?.playWhenReady = true
-                        Log.d(TAG, "Local song ExoPlayer prepared and started")
-                    }
+                
+                // If we're playing a single song, clear the queue and add just this song
+                currentQueueInternal = listOf(song)
+                _currentQueue.value = listOf(song)
+                
+                // Clear the current playlist and add just this song
+                withContext(Dispatchers.Main) {
+                    exoPlayer?.clearMediaItems()
                 }
+                
+                val mediaItem = createMediaItem(song)
+                
+                withContext(Dispatchers.Main) {
+                    exoPlayer?.setMediaItem(mediaItem)
+                    exoPlayer?.prepare()
+                    exoPlayer?.playWhenReady = true
+                    Log.d(TAG, "Media item set and prepared")
+                }
+                
                 _currentSong.value = song
                 try { musicRepository.addToRecentlyPlayed(song) } catch (e: Exception) {
                     Log.e(TAG, "Error adding song to recently played", e)
@@ -172,6 +224,95 @@ class MusicPlayerServiceImpl @Inject constructor(
                 Log.e(TAG, "Error in playSong", e)
                 _error.value = "Error playing song: ${e.message}"
             }
+        }
+    }
+    
+    override suspend fun setPlaylistQueue(songs: List<Song>, startSongId: String?) {
+        withContext(Dispatchers.IO) {
+            try {
+                if (songs.isEmpty()) {
+                    Log.d(TAG, "Playlist is empty, not setting queue")
+                    return@withContext
+                }
+                
+                _error.value = null
+                Log.d(TAG, "Setting playlist queue with ${songs.size} songs")
+                
+                // Store the current queue
+                currentQueueInternal = songs
+                _currentQueue.value = songs
+                
+                // Find the start song index (default to 0 if not found)
+                val startIndex = if (startSongId != null) {
+                    songs.indexOfFirst { it.id == startSongId }.takeIf { it >= 0 } ?: 0
+                } else 0
+                
+                Log.d(TAG, "Starting playback from index $startIndex: ${songs[startIndex].title}")
+                
+                // Create media items for all songs
+                val mediaItems = mutableListOf<MediaItem>()
+                for (song in songs) {
+                    try {
+                        val mediaItem = createMediaItem(song)
+                        mediaItems.add(mediaItem)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error creating media item for song ${song.id}: ${e.message}")
+                        // Continue with other songs, don't fail the entire queue
+                    }
+                }
+                
+                if (mediaItems.isEmpty()) {
+                    Log.e(TAG, "Failed to create any media items for the playlist")
+                    _error.value = "Failed to create media items for the playlist"
+                    return@withContext
+                }
+                
+                withContext(Dispatchers.Main) {
+                    ensurePlayerCreated()
+                    exoPlayer?.clearMediaItems()
+                    exoPlayer?.setMediaItems(mediaItems)
+                    
+                    // Make sure we don't go out of bounds
+                    val safeStartIndex = if (startIndex < mediaItems.size) startIndex else 0
+                    exoPlayer?.seekTo(safeStartIndex, 0)
+                    exoPlayer?.prepare()
+                    exoPlayer?.playWhenReady = true
+                    Log.d(TAG, "Queue set with ${mediaItems.size} items, starting at index $safeStartIndex")
+                }
+                
+                // Update current song
+                _currentSong.value = songs[startIndex]
+                try { 
+                    musicRepository.addToRecentlyPlayed(songs[startIndex]) 
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error adding song to recently played", e)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in setPlaylistQueue", e)
+                _error.value = "Error setting playlist queue: ${e.message}"
+            }
+        }
+    }
+    
+    // Helper function to create a MediaItem from a Song
+    private suspend fun createMediaItem(song: Song): MediaItem {
+        return if (song.id.startsWith("yt_")) {
+            val videoId = song.id.removePrefix("yt_")
+            Log.d(TAG, "Creating MediaItem for YouTube song with ID: $videoId")
+            val baseUrl = "http://192.168.29.154:8000"
+            
+            // Add a metadata property to store the video ID for potential retries
+            MediaItem.Builder()
+                .setUri("$baseUrl/yt_audio?video_id=$videoId")
+                .setMediaId(song.id)
+                .build()
+        } else {
+            // Local song
+            Log.d(TAG, "Creating MediaItem for local song: ${song.albumArt}")
+            MediaItem.Builder()
+                .setUri(Uri.parse(song.albumArt))
+                .setMediaId(song.id)
+                .build()
         }
     }
 
@@ -262,6 +403,7 @@ class MusicPlayerServiceImpl @Inject constructor(
                 _currentSong.value = null
                 _progress.value = 0f
                 _duration.value = 0L
+                _currentQueue.value = emptyList()
                 progressJob?.cancel()
             } catch (e: Exception) {
                 Log.e(TAG, "Error in stop", e)
@@ -316,6 +458,7 @@ class MusicPlayerServiceImpl @Inject constructor(
                 _currentSong.value = null
                 _progress.value = 0f
                 _duration.value = 0L
+                _currentQueue.value = emptyList()
                 progressJob?.cancel()
             } catch (e: Exception) {
                 Log.e(TAG, "Error in clearCurrentSong", e)
