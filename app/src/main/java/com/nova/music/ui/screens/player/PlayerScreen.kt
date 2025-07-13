@@ -53,6 +53,7 @@ import com.nova.music.ui.components.SongItem
 import com.nova.music.ui.viewmodels.PlayerViewModel
 import com.nova.music.ui.viewmodels.LibraryViewModel
 import com.nova.music.ui.viewmodels.RepeatMode
+import com.nova.music.ui.viewmodels.SleepTimerOption
 import com.nova.music.util.CenterCropSquareTransformation
 import kotlinx.coroutines.launch
 import java.util.concurrent.TimeUnit
@@ -601,6 +602,8 @@ fun QueueContent(
                 
                 // Timer button (sleep timer)
                 var showTimerDialog by remember { mutableStateOf(false) }
+                val sleepTimerActive by viewModel.sleepTimerActive.collectAsState()
+                
                 IconButton(
                     onClick = { showTimerDialog = true },
                     modifier = Modifier.size(40.dp)
@@ -608,7 +611,7 @@ fun QueueContent(
                     Icon(
                         imageVector = Icons.Default.Timer,
                         contentDescription = "Sleep Timer",
-                        tint = Color.White
+                        tint = if (sleepTimerActive) Color(0xFFBB86FC) else Color.White
                     )
                 }
                 
@@ -627,13 +630,80 @@ fun QueueContent(
                         onDismissRequest = { showTimerDialog = false },
                         title = { Text("Set Sleep Timer") },
                         text = {
-                            Column {
-                                Text("Coming soon! Sleep timer functionality will be added in a future update.")
+                            Column(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                val sleepTimerActive by viewModel.sleepTimerActive.collectAsState()
+                                val sleepTimerOption by viewModel.sleepTimerOption.collectAsState()
+                                
+                                if (sleepTimerActive) {
+                                    val remainingTime = viewModel.formatSleepTimerRemaining()
+                                    Text(
+                                        text = "Timer active: $remainingTime remaining",
+                                        color = Color(0xFFBB86FC),
+                                        style = MaterialTheme.typography.bodyLarge
+                                    )
+                                    
+                                    Button(
+                                        onClick = { 
+                                            viewModel.cancelSleepTimer()
+                                            showTimerDialog = false
+                                        },
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = Color(0xFFBB86FC),
+                                            contentColor = Color.Black
+                                        ),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text("Cancel Timer")
+                                    }
+                                } else {
+                                    TimerOption(
+                                        text = "10 minutes",
+                                        onClick = { 
+                                            viewModel.setSleepTimer(SleepTimerOption.TEN_MINUTES)
+                                            showTimerDialog = false
+                                        }
+                                    )
+                                    
+                                    TimerOption(
+                                        text = "15 minutes",
+                                        onClick = { 
+                                            viewModel.setSleepTimer(SleepTimerOption.FIFTEEN_MINUTES)
+                                            showTimerDialog = false
+                                        }
+                                    )
+                                    
+                                    TimerOption(
+                                        text = "30 minutes",
+                                        onClick = { 
+                                            viewModel.setSleepTimer(SleepTimerOption.THIRTY_MINUTES)
+                                            showTimerDialog = false
+                                        }
+                                    )
+                                    
+                                    TimerOption(
+                                        text = "1 hour",
+                                        onClick = { 
+                                            viewModel.setSleepTimer(SleepTimerOption.ONE_HOUR)
+                                            showTimerDialog = false
+                                        }
+                                    )
+                                    
+                                    TimerOption(
+                                        text = "End of song",
+                                        onClick = { 
+                                            viewModel.setSleepTimer(SleepTimerOption.END_OF_SONG)
+                                            showTimerDialog = false
+                                        }
+                                    )
+                                }
                             }
                         },
                         confirmButton = {
                             TextButton(onClick = { showTimerDialog = false }) {
-                                Text("OK")
+                                Text("Close", color = Color.White)
                             }
                         },
                         containerColor = Color(0xFF282828),
@@ -961,4 +1031,41 @@ private fun formatDuration(durationMs: Long): String {
     val minutes = TimeUnit.MILLISECONDS.toMinutes(durationMs)
     val seconds = TimeUnit.MILLISECONDS.toSeconds(durationMs) % 60
     return "%d:%02d".format(minutes, seconds)
+}
+
+// Helper composable for timer options
+@Composable
+private fun TimerOption(
+    text: String,
+    onClick: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        colors = CardDefaults.cardColors(
+            containerColor = Color(0xFF333333)
+        ),
+        shape = RoundedCornerShape(8.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 12.dp, horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = text,
+                style = MaterialTheme.typography.bodyLarge,
+                color = Color.White
+            )
+            
+            Icon(
+                imageVector = Icons.Default.Timer,
+                contentDescription = null,
+                tint = Color(0xFFBB86FC)
+            )
+        }
+    }
 }
