@@ -12,6 +12,9 @@ import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Repeat
+import androidx.compose.material.icons.filled.RepeatOne
+import androidx.compose.material.icons.outlined.Repeat
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -26,6 +29,7 @@ import com.nova.music.ui.components.RecentlyPlayedItem
 import com.nova.music.ui.viewmodels.LibraryViewModel
 import com.nova.music.ui.viewmodels.HomeViewModel
 import com.nova.music.ui.viewmodels.PlayerViewModel
+import com.nova.music.ui.viewmodels.RepeatMode
 import com.nova.music.ui.util.rememberDynamicBottomPadding
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -58,12 +62,32 @@ fun PlaylistDetailScreen(
     var showMenu by remember { mutableStateOf(false) }
     var showDetailsDialog by remember { mutableStateOf(false) }
     var detailsSong by remember { mutableStateOf<Song?>(null) }
-    var isShuffleEnabled by remember { mutableStateOf(false) }
     
     // Use the player's actual playing state instead of local state
     val isPlaying by playerViewModel.isPlaying.collectAsState()
-    val currentSongId by playerViewModel.currentSong.collectAsState()
-
+    val currentSong by playerViewModel.currentSong.collectAsState()
+    val currentPlaylistId by playerViewModel.currentPlaylistId.collectAsState()
+    
+    // Check if current song is from this playlist
+    val isCurrentPlaylist = currentPlaylistId == playlistId
+    
+    // Function to play a song from this playlist
+    fun playSongFromPlaylist(song: Song) {
+        viewModel.addToRecentlyPlayed(song)
+        // Make sure to pass the full playlist songs to the player
+        println("DEBUG: Playing song from playlist: $playlistId with ${playlistSongs.size} songs")
+        playerViewModel.loadSong(song, playlistId, playlistSongs)
+        onNavigateToPlayer(song.id)
+    }
+    
+    // Function to play the first song in the playlist
+    fun playPlaylist() {
+        if (playlistSongs.isEmpty()) return
+        
+            // Play the first song
+            playSongFromPlaylist(playlistSongs.first())
+    }
+    
     val bottomPadding by rememberDynamicBottomPadding()
 
     Scaffold(
@@ -170,23 +194,21 @@ fun PlaylistDetailScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(16.dp)
+                horizontalArrangement = Arrangement.Center
             ) {
                 // Play Button
                 Button(
                     onClick = {
-                        playlistSongs.firstOrNull()?.let { song ->
-                            // If the current song is already from this playlist, just toggle play/pause
-                            // Otherwise, start playing the first song from this playlist
-                            if (currentSongId?.id == song.id) {
-                                playerViewModel.togglePlayPause()
-                            } else {
-                                onNavigateToPlayer(song.id)
-                            }
+                        if (isCurrentPlaylist && isPlaying) {
+                            // If this playlist is currently playing, toggle pause
+                            playerViewModel.togglePlayPause()
+                        } else {
+                            // Otherwise start playing this playlist
+                            playPlaylist()
                         }
                     },
                     modifier = Modifier
-                        .weight(1f)
+                        .width(200.dp)
                         .height(56.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = if (playlistId == "liked_songs") 
@@ -198,53 +220,15 @@ fun PlaylistDetailScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Icon(
-                            imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                            contentDescription = if (isPlaying) "Pause" else "Play",
+                            imageVector = if (isPlaying && isCurrentPlaylist) Icons.Default.Pause else Icons.Default.PlayArrow,
+                            contentDescription = if (isPlaying && isCurrentPlaylist) "Pause" else "Play",
                             tint = Color.Black,
                             modifier = Modifier.size(24.dp)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = if (isPlaying) "Pause" else "Play",
+                            text = if (isPlaying && isCurrentPlaylist) "Pause" else "Play",
                             color = Color.Black,
-                            style = MaterialTheme.typography.bodyLarge
-                        )
-                    }
-                }
-
-                // Shuffle Button
-                Button(
-                    onClick = { 
-                        isShuffleEnabled = !isShuffleEnabled
-                        if (isShuffleEnabled) {
-                            playlistSongs.shuffled().firstOrNull()?.let { song ->
-                                onNavigateToPlayer(song.id)
-                            }
-                        }
-                    },
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(56.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (isShuffleEnabled) 
-                            (if (playlistId == "liked_songs") Color(0xFFBB86FC) else Color(0xFF1DB954))
-                        else Color(0xFF282828)
-                    )
-                ) {
-                    Row(
-                        horizontalArrangement = Arrangement.Center,
-                        verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Shuffle,
-                        contentDescription = "Shuffle",
-                        tint = if (isShuffleEnabled) Color.Black else Color.White,
-                        modifier = Modifier.size(24.dp)
-                    )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "Shuffle",
-                            color = if (isShuffleEnabled) Color.Black else Color.White,
                             style = MaterialTheme.typography.bodyLarge
                         )
                     }
@@ -262,13 +246,17 @@ fun PlaylistDetailScreen(
         ) {
                 items(playlistSongs) { song ->
                 val isLiked = likedSongs.any { it.id == song.id }
-                val isSongPlaying = currentSongId?.id == song.id && isPlaying
-                val isSelected = currentSongId?.id == song.id && !isPlaying
+                val isSongPlaying = currentSong?.id == song.id && isPlaying
+                val isSelected = currentSong?.id == song.id && !isPlaying
                 RecentlyPlayedItem(
                     song = song,
                     onClick = { 
-                        viewModel.addToRecentlyPlayed(song)
-                        onNavigateToPlayer(song.id)
+                        // Play the song immediately when clicked
+                        if (currentSong?.id == song.id && isCurrentPlaylist) {
+                            playerViewModel.togglePlayPause()
+                        } else {
+                        playSongFromPlaylist(song)
+                        }
                     },
                     onLikeClick = {
                         if (isLiked) {
@@ -294,14 +282,13 @@ fun PlaylistDetailScreen(
                             }
                         }
                     } else null,
-                    isPlaying = isSongPlaying,
-                    isSelected = isSelected,
+                    isPlaying = currentSong?.id == song.id && isPlaying,
+                    isSelected = currentSong?.id == song.id && !isPlaying,
                     onPlayPause = {
-                        if (currentSongId?.id == song.id) {
+                        if (currentSong?.id == song.id && isCurrentPlaylist) {
                             playerViewModel.togglePlayPause()
                         } else {
-                            viewModel.addToRecentlyPlayed(song)
-                            onNavigateToPlayer(song.id)
+                            playSongFromPlaylist(song)
                         }
                     }
                 )
@@ -312,6 +299,20 @@ fun PlaylistDetailScreen(
 
     // Add to Playlist Dialog
     if (showPlaylistDialog && selectedSong != null) {
+        // Create a mutable state to track playlist membership changes immediately
+        val mutableSelectedPlaylistIds = remember(selectedSong) {
+            val ids = mutableSetOf<String>()
+            // Safely capture the selectedSong to a local variable to avoid smart cast issues
+            val song = selectedSong
+            // Add custom playlist IDs
+            if (song != null) {
+                ids.addAll(song.getPlaylistIdsList())
+                // Add liked songs if applicable
+                if (song.isLiked) ids.add("liked_songs")
+            }
+            ids
+        }
+        
         PlaylistSelectionDialog(
             onDismiss = { 
                 showPlaylistDialog = false
@@ -319,24 +320,50 @@ fun PlaylistDetailScreen(
             },
             onPlaylistSelected = { selectedPlaylist ->
                 scope.launch {
+                    // Safely capture the non-null song to avoid smart cast issues
+                    val song = selectedSong ?: return@launch
+                    
                     if (selectedPlaylist.id == "liked_songs") {
-                        val isLiked = likedSongs.any { it.id == selectedSong!!.id }
+                        val isLiked = song.isLiked
                         if (isLiked) {
-                            libraryViewModel.removeSongFromLiked(selectedSong!!.id)
+                            // Update UI state immediately
+                            mutableSelectedPlaylistIds.remove("liked_songs")
+                            // Then update database
+                            libraryViewModel.removeSongFromLiked(song.id)
                         } else {
-                            libraryViewModel.addSongToLiked(selectedSong!!)
+                            // Update UI state immediately
+                            mutableSelectedPlaylistIds.add("liked_songs")
+                            // Then update database
+                            libraryViewModel.addSongToLiked(song)
                         }
                     } else {
-                        libraryViewModel.addSongToPlaylist(selectedSong!!, selectedPlaylist.id)
+                        val isInPlaylist = song.isInPlaylist(selectedPlaylist.id)
+                        if (isInPlaylist) {
+                            // Update UI state immediately
+                            mutableSelectedPlaylistIds.remove(selectedPlaylist.id)
+                            // Then update database
+                            libraryViewModel.removeSongFromPlaylist(song.id, selectedPlaylist.id)
+                        } else {
+                            // Update UI state immediately
+                            mutableSelectedPlaylistIds.add(selectedPlaylist.id)
+                            // Then update database
+                            libraryViewModel.addSongToPlaylist(song, selectedPlaylist.id)
+                        }
                     }
                 }
             },
             onCreateNewPlaylist = { name ->
                 scope.launch {
+                    // Safely capture the non-null song to avoid smart cast issues
+                    val song = selectedSong ?: return@launch
+                    
                     libraryViewModel.createPlaylist(name)
                     // Wait for the playlist to be created and get its ID
                     playlists.firstOrNull { it.name == name }?.let { newPlaylist ->
-                        libraryViewModel.addSongToPlaylist(selectedSong!!, newPlaylist.id)
+                        // Update UI state immediately
+                        mutableSelectedPlaylistIds.add(newPlaylist.id)
+                        // Then update database
+                        libraryViewModel.addSongToPlaylist(song, newPlaylist.id)
                     }
                 }
             },
@@ -346,12 +373,7 @@ fun PlaylistDetailScreen(
                 }
             },
             playlists = playlists,
-            selectedPlaylistIds = buildSet {
-                addAll(playlists
-                    .filter { p -> p.songs.any { it.id == selectedSong!!.id } }
-                    .map { it.id })
-                if (likedSongs.any { it.id == selectedSong!!.id }) add("liked_songs")
-            }
+            selectedPlaylistIds = mutableSelectedPlaylistIds
         )
     }
 

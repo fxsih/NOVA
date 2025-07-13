@@ -230,4 +230,99 @@ fun SongItem(
             }
         }
     }
+}
+
+/**
+ * A simplified version of SongItem for use in the queue drawer
+ */
+@Composable
+fun SongItem(
+    song: Song?,
+    onClick: () -> Unit,
+    isPlaying: Boolean,
+    isSelected: Boolean,
+    onPlayPause: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    if (song == null) return
+    
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(8.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isSelected) Color(0xFF333333) else Color.Transparent
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp, horizontal = 12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(
+                modifier = Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                val imageModel = when {
+                    !song.albumArtUrl.isNullOrBlank() -> song.albumArtUrl
+                    !song.albumArt.isBlank() -> song.albumArt
+                    else -> R.drawable.default_album_art
+                }
+                
+                AsyncImage(
+                    model = ImageRequest.Builder(LocalContext.current)
+                        .data(imageModel)
+                        .crossfade(true)
+                        .transformations(CenterCropSquareTransformation())
+                        .build(),
+                    contentDescription = "Album art for ${song.title}",
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(RoundedCornerShape(4.dp)),
+                    contentScale = ContentScale.Crop,
+                    error = painterResource(id = R.drawable.default_album_art),
+                    placeholder = painterResource(id = R.drawable.default_album_art)
+                )
+                
+                Spacer(modifier = Modifier.width(12.dp))
+                
+                Column(
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(
+                        text = song.title,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    
+                    Text(
+                        text = song.artist,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.Gray,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+
+            // Play/Pause button
+            IconButton(
+                onClick = onPlayPause,
+                modifier = Modifier.size(40.dp)
+            ) {
+                Icon(
+                    imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                    contentDescription = if (isPlaying) "Pause" else "Play",
+                    tint = Color.White,
+                    modifier = Modifier.size(24.dp)
+                )
+            }
+        }
+    }
 } 

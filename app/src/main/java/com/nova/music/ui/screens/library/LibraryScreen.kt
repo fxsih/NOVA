@@ -1,5 +1,6 @@
 package com.nova.music.ui.screens.library
 
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -25,6 +26,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.nova.music.data.model.Playlist
+import com.nova.music.data.model.Song
 import com.nova.music.ui.viewmodels.LibraryViewModel
 import com.nova.music.ui.viewmodels.PlayerViewModel
 import com.nova.music.ui.util.rememberDynamicBottomPadding
@@ -128,6 +130,13 @@ fun LibraryScreen(
     // Use the player's actual playing state
     val isPlaying by playerViewModel.isPlaying.collectAsState()
     val currentSong by playerViewModel.currentSong.collectAsState()
+    val currentPlaylistId by playerViewModel.currentPlaylistId.collectAsState()
+    
+    // Function to play a song from a specific playlist
+    fun playSongFromPlaylist(song: Song, playlistId: String, songs: List<Song>) {
+        playerViewModel.loadSong(song = song, playlistId = playlistId, playlistSongs = songs)
+        onNavigateToPlayer(song.id)
+    }
     
     // Create a simpler way to check if a song is in a playlist
     fun isSongInLikedSongs(songId: String?): Boolean {
@@ -135,9 +144,16 @@ fun LibraryScreen(
     }
     
     // Check if the current song is from the liked songs playlist
-    val isCurrentSongFromLikedPlaylist = currentSong?.id?.let { songId ->
-        isSongInLikedSongs(songId)
-    } ?: false
+    val isCurrentSongFromLikedPlaylist by remember(currentSong?.id, likedSongs) {
+        derivedStateOf {
+            val result = currentSong?.id?.let { songId ->
+                val isLiked = isSongInLikedSongs(songId)
+                Log.d("LibraryScreen", "Liked Songs: Contains current song ${currentSong?.title}: $isLiked")
+                isLiked
+            } ?: false
+            result
+        }
+    }
     
     // Map to track if current song is in each playlist (computed once per composition)
     val playlistContainsCurrentSong = remember(currentSong, playlists) {
@@ -228,10 +244,10 @@ fun LibraryScreen(
                         IconButton(
                                 onClick = { 
                                     likedSongs.firstOrNull()?.let { song ->
-                                        if (isCurrentSongFromLikedPlaylist && currentSong?.id == song.id) {
+                                        if (currentPlaylistId == "liked_songs") {
                                             playerViewModel.togglePlayPause()
                                         } else {
-                                            onNavigateToPlayer(song.id)
+                                            playSongFromPlaylist(song, "liked_songs", likedSongs)
                                         }
                                     }
                                 },
@@ -244,12 +260,17 @@ fun LibraryScreen(
                                         shape = CircleShape
                                     )
                         ) {
-                            Icon(
-                                imageVector = if (isCurrentSongFromLikedPlaylist && isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                    contentDescription = if (isCurrentSongFromLikedPlaylist && isPlaying) "Pause" else "Play",
+                            // Use a key to force recomposition only when these values change
+                            key(isPlaying, currentSong?.id) {
+                                Icon(
+                                    imageVector = if (isPlaying && currentPlaylistId == "liked_songs") 
+                                        Icons.Default.Pause else Icons.Default.PlayArrow,
+                                    contentDescription = if (isPlaying && currentPlaylistId == "liked_songs") 
+                                        "Pause" else "Play",
                                     tint = Color.Black,
-                                modifier = Modifier.size(32.dp)
-                            )
+                                    modifier = Modifier.size(32.dp)
+                                )
+                            }
                         }
                     }
                 }
@@ -305,6 +326,15 @@ fun LibraryScreen(
                 // Custom Playlist Cards
             items(playlists) { playlist ->
                     val playlistSongs by viewModel.getPlaylistSongs(playlist.id).collectAsState(initial = emptyList())
+                    
+                    // Log playlist songs for debugging
+                    LaunchedEffect(playlist.id) {
+                        Log.d("LibraryScreen", "Playlist ${playlist.name} has ${playlistSongs.size} songs")
+                        playlistSongs.forEach { song ->
+                            Log.d("LibraryScreen", "  - Song: ${song.title} (${song.id})")
+                        }
+                    }
+                    
                     val playlistColor = remember(playlist.id) {
                         val colors = listOf(
                             Color(0xFF1DB954) to Color(0xFF0D4D2B), // Spotify Green
@@ -320,6 +350,9 @@ fun LibraryScreen(
                         )
                         colors[playlist.id.hashCode().absoluteValue % colors.size]
                     }
+                    
+                    // Check if current song is from this playlist
+                    val isCurrentPlaylistActive = currentPlaylistId == playlist.id
 
                     Card(
                         modifier = Modifier
@@ -381,19 +414,13 @@ fun LibraryScreen(
                                     .padding(16.dp)
                             ) {
                                 // Play Button
-                                val isCurrentSongFromThisPlaylist = remember(currentSong, playlistSongs) {
-                                    currentSong?.id?.let { currentId -> 
-                                        playlistSongs.any { it.id == currentId }
-                                    } ?: false
-                                }
-                                
                                 IconButton(
                                     onClick = {
                                         playlistSongs.firstOrNull()?.let { song ->
-                                            if (isCurrentSongFromThisPlaylist && currentSong?.id == song.id) {
+                                            if (isCurrentPlaylistActive) {
                                                 playerViewModel.togglePlayPause()
                                             } else {
-                                                onNavigateToPlayer(song.id)
+                                                playSongFromPlaylist(song, playlist.id, playlistSongs)
                                             }
                                         }
                                     },
@@ -404,12 +431,17 @@ fun LibraryScreen(
                                             shape = CircleShape
                                         )
                                 ) {
-                                    Icon(
-                                        imageVector = if (isCurrentSongFromThisPlaylist && isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                        contentDescription = if (isCurrentSongFromThisPlaylist && isPlaying) "Pause" else "Play",
-                                        tint = Color.Black,
-                                        modifier = Modifier.size(32.dp)
-                                    )
+                                    // Use a key to force recomposition only when these values change
+                                    key(isPlaying, currentSong?.id) {
+                                        Icon(
+                                            imageVector = if (isPlaying && isCurrentPlaylistActive) 
+                                                Icons.Default.Pause else Icons.Default.PlayArrow,
+                                            contentDescription = if (isPlaying && isCurrentPlaylistActive) 
+                                                "Pause" else "Play",
+                                            tint = Color.Black,
+                                            modifier = Modifier.size(32.dp)
+                                        )
+                                    }
                                 }
 
                                 Spacer(modifier = Modifier.width(8.dp))
@@ -594,7 +626,9 @@ fun PlaylistCard(
     songCount: Int,
     onClick: () -> Unit,
     onMenuClick: (() -> Unit)? = null,
-    onPlayClick: () -> Unit
+    onPlayClick: () -> Unit,
+    isPlaying: Boolean = false,
+    isCurrentPlaylist: Boolean = false
 ) {
     Card(
         modifier = Modifier
@@ -648,11 +682,13 @@ fun PlaylistCard(
 
             Row {
                 IconButton(onClick = onPlayClick) {
-                    Icon(
-                        imageVector = Icons.Default.PlayArrow,
-                        contentDescription = "Play",
-                        tint = Color.White
-                    )
+                    key(isPlaying) {
+                        Icon(
+                            imageVector = if (isCurrentPlaylist && isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                            contentDescription = if (isCurrentPlaylist && isPlaying) "Pause" else "Play",
+                            tint = Color.White
+                        )
+                    }
                 }
 
                 if (onMenuClick != null) {

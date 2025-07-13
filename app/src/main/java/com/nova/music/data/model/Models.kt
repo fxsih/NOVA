@@ -6,6 +6,7 @@ import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.Ignore
 import androidx.room.ColumnInfo
+import kotlinx.serialization.Serializable
 
 @Entity(tableName = "songs")
 data class Song(
@@ -18,21 +19,27 @@ data class Song(
     val duration: Long,
     val isRecommended: Boolean = false,
     val isLiked: Boolean = false,
-    @ColumnInfo(defaultValue = "") val playlistIds: String = ""
+    @ColumnInfo(defaultValue = "") val playlistIds: String = "",
+    val audioUrl: String? = null
 ) {
     fun getPlaylistIdsList(): List<String> = 
         if (playlistIds.isBlank()) emptyList() 
-        else playlistIds.split(",")
+        else playlistIds.split(",").map { it.trim() }.filter { it.isNotBlank() }
 
-    fun addPlaylistId(playlistId: String): String =
-        if (playlistIds.isBlank()) playlistId
-        else if (playlistId in getPlaylistIdsList()) playlistIds
-        else "$playlistIds,$playlistId"
+    fun addPlaylistId(playlistId: String): String {
+        val currentIds = getPlaylistIdsList()
+        return if (currentIds.isEmpty()) playlistId
+               else if (currentIds.contains(playlistId)) playlistIds
+               else "$playlistIds,$playlistId"
+    }
 
     fun removePlaylistId(playlistId: String): String =
         getPlaylistIdsList()
             .filter { it != playlistId }
             .joinToString(",")
+            
+    fun isInPlaylist(playlistId: String): Boolean =
+        getPlaylistIdsList().contains(playlistId)
 }
 
 @Entity(tableName = "playlists")
@@ -96,4 +103,43 @@ data class PlaylistSongCrossRef(
 data class RecentlyPlayed(
     @PrimaryKey val songId: String,
     val timestamp: Long = System.currentTimeMillis()
+)
+
+/**
+ * Proper join table for the many-to-many relationship between songs and playlists.
+ * This is a more robust approach than using a comma-separated string.
+ */
+@Entity(
+    tableName = "song_playlist_cross_ref",
+    primaryKeys = ["songId", "playlistId"],
+    foreignKeys = [
+        ForeignKey(
+            entity = Song::class,
+            parentColumns = ["id"],
+            childColumns = ["songId"],
+            onDelete = ForeignKey.CASCADE
+        ),
+        ForeignKey(
+            entity = Playlist::class,
+            parentColumns = ["id"],
+            childColumns = ["playlistId"],
+            onDelete = ForeignKey.CASCADE
+        )
+    ],
+    indices = [
+        Index("songId"),
+        Index("playlistId")
+    ]
+)
+data class SongPlaylistCrossRef(
+    val songId: String,
+    val playlistId: String,
+    val addedAt: Long = System.currentTimeMillis()
+)
+
+@Serializable
+data class UserMusicPreferences(
+    val genres: List<String> = emptyList(),
+    val languages: List<String> = emptyList(),
+    val artists: List<String> = emptyList()
 ) 

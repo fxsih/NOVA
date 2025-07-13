@@ -1,10 +1,18 @@
 package com.nova.music.ui.screens.player
 
+import androidx.compose.animation.*
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListItemInfo
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -16,31 +24,52 @@ import androidx.compose.material.icons.outlined.QueueMusic
 import androidx.compose.material.icons.outlined.Repeat
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import com.nova.music.R
+import com.nova.music.data.model.Song
+import com.nova.music.ui.components.SongItem
 import com.nova.music.ui.viewmodels.PlayerViewModel
 import com.nova.music.ui.viewmodels.LibraryViewModel
 import com.nova.music.ui.viewmodels.RepeatMode
-import java.util.concurrent.TimeUnit
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.res.painterResource
-import com.nova.music.R
-import coil.request.ImageRequest
 import com.nova.music.util.CenterCropSquareTransformation
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
-import com.nova.music.ui.components.SongItem
 import kotlinx.coroutines.launch
+import java.util.concurrent.TimeUnit
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material.icons.filled.Download
 
-@OptIn(ExperimentalMaterial3Api::class)
+// Data class to track dragging state
+data class DragInfo(
+    val isDragging: Boolean = false,
+    val draggedItemIndex: Int = -1,
+    val draggedOffset: Offset = Offset.Zero,
+    val draggedItem: Song? = null
+)
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun PlayerScreen(
     songId: String?,
@@ -54,6 +83,8 @@ fun PlayerScreen(
         if (songId != null) {
             viewModel.loadSong(songId)
         }
+        // Set the flag to indicate we're in the player screen
+        viewModel.setInPlayerScreen(true)
     }
     
     val currentSong by viewModel.currentSong.collectAsState()
@@ -65,6 +96,12 @@ fun PlayerScreen(
     val likedSongs by libraryViewModel.likedSongs.collectAsState()
     val currentPlaylistId by viewModel.currentPlaylistId.collectAsState()
     val currentPlaylistSongs by viewModel.currentPlaylistSongs.collectAsState()
+    val queueSongs = viewModel.getCurrentPlaylistSongs()
+    
+    // State for the queue bottom sheet
+    val sheetState = rememberModalBottomSheetState()
+    var showQueueSheet by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
 
     // Debug logging
     LaunchedEffect(currentPlaylistSongs, currentSong) {
@@ -72,11 +109,6 @@ fun PlayerScreen(
         println("DEBUG: Current playlist songs count: ${currentPlaylistSongs.size}")
         println("DEBUG: Current song: ${currentSong?.title}")
     }
-
-    // State for the queue bottom sheet
-    val sheetState = rememberModalBottomSheetState()
-    var showQueueSheet by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
     
     val isLiked = currentSong?.let { song -> likedSongs.any { it.id == song.id } } ?: false
 
@@ -103,9 +135,6 @@ fun PlayerScreen(
         onNavigateBack()
         return
     }
-    
-    // Get the actual queue songs from the ViewModel
-    val queueSongs = viewModel.getCurrentPlaylistSongs()
 
     // Main player screen
     Box(
@@ -262,16 +291,43 @@ fun PlayerScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                // Get context outside the lambda
+                val context = LocalContext.current
+                
                 IconButton(
-                    onClick = { viewModel.toggleShuffleMode() },
+                    onClick = { 
+                        // Download the current song
+                        viewModel.downloadCurrentSong(context)
+                    },
                     modifier = Modifier.size(48.dp)
                 ) {
+                    // Show download icon or progress indicator
+                    val isDownloading by viewModel.isDownloading.collectAsState()
+                    val downloadProgress by viewModel.downloadProgress.collectAsState()
+                    
+                    if (isDownloading) {
+                        // Use a Box with circular shape to create a custom progress indicator
+                        Box(
+                            modifier = Modifier
+                                .size(24.dp)
+                                .background(Color(0xFFBB86FC).copy(alpha = 0.3f), CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(12.dp)
+                                    .background(Color(0xFFBB86FC), CircleShape)
+                            )
+                        }
+                    } else {
+                        // Show download icon when not downloading
                     Icon(
-                        imageVector = Icons.Default.Shuffle,
-                        contentDescription = "Shuffle",
-                        tint = if (isShuffle) accentColor else controlIconColor.copy(alpha = 0.6f),
+                            imageVector = Icons.Default.Download,
+                            contentDescription = "Download",
+                            tint = controlIconColor.copy(alpha = 0.6f),
                         modifier = Modifier.size(24.dp)
                     )
+                    }
                 }
                 IconButton(
                     onClick = { viewModel.skipToPrevious() },
@@ -318,8 +374,12 @@ fun PlayerScreen(
                             RepeatMode.ALL -> Icons.Default.Repeat
                             else -> Icons.Outlined.Repeat
                         },
-                        contentDescription = "Repeat",
-                        tint = if (repeatMode != RepeatMode.NONE) accentColor else controlIconColor.copy(alpha = 0.6f),
+                        contentDescription = when (repeatMode) {
+                            RepeatMode.NONE -> "No Repeat"
+                            RepeatMode.ALL -> "Repeat Infinitely"
+                            RepeatMode.ONE -> "Repeat Once"
+                        },
+                        tint = if (repeatMode != RepeatMode.NONE) Color(0xFFBB86FC) else controlIconColor.copy(alpha = 0.6f),
                         modifier = Modifier.size(24.dp)
                     )
                 }
@@ -329,7 +389,9 @@ fun PlayerScreen(
             
             // Queue button
             OutlinedButton(
-                onClick = { showQueueSheet = true },
+                onClick = { 
+                    showQueueSheet = true 
+                },
                 modifier = Modifier
                     .fillMaxWidth(0.6f)
                     .height(48.dp),
@@ -360,16 +422,140 @@ fun PlayerScreen(
     // Queue bottom sheet
     if (showQueueSheet) {
         ModalBottomSheet(
-            onDismissRequest = { showQueueSheet = false },
+            onDismissRequest = { 
+                showQueueSheet = false
+            },
             sheetState = sheetState,
             containerColor = Color(0xFF121212),
             contentColor = Color.White,
             dragHandle = { Spacer(modifier = Modifier.height(1.dp)) },
             shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
         ) {
+            QueueContent(
+                queueSongs = queueSongs,
+                currentSong = currentSong,
+                isPlaying = isPlaying,
+                viewModel = viewModel,
+                onSongClick = { song ->
+                    // Load and play the song directly within the context of the current queue
+                    viewModel.loadQueueSongInContext(song)
+                    showQueueSheet = false
+                },
+                onDismissRequest = { 
+                    showQueueSheet = false
+                }
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun QueueContent(
+    queueSongs: List<Song>,
+    currentSong: Song?,
+    isPlaying: Boolean,
+    viewModel: PlayerViewModel,
+    onSongClick: (Song) -> Unit,
+    onDismissRequest: () -> Unit
+) {
+    val scope = rememberCoroutineScope()
+    val lazyListState = rememberLazyListState()
+    val density = LocalDensity.current
+    
+    // State for drag and drop
+    var dragState by remember { mutableStateOf(DragInfo()) }
+    
+    // Use mutableStateListOf for better state management
+    val mutableQueue = remember { mutableStateListOf<Song>() }
+    
+    // Sync the mutable queue with the external queue whenever it changes
+    LaunchedEffect(queueSongs) {
+        mutableQueue.clear()
+        mutableQueue.addAll(queueSongs)
+        // Reset drag state when queue changes externally
+        dragState = DragInfo()
+    }
+    
+    // Track shuffle state
+    val isShuffle by viewModel.isShuffle.collectAsState()
+    
+    // Apply queue changes immediately when drag ends
+    val applyQueueChanges = {
+        if (mutableQueue.isNotEmpty()) {
+            scope.launch {
+                // Apply the queue update
+                viewModel.reorderQueue(mutableQueue.toList())
+            }
+        }
+    }
+    
+    // Function to shuffle the queue
+    val shuffleQueue = {
+        if (mutableQueue.isNotEmpty()) {
+            val currentSongId = currentSong?.id
+            
+            // Create a shuffled version of the queue
+            val shuffledQueue = mutableQueue.toMutableList()
+            
+            // If there's a current song, move it to the top (index 0)
+            if (currentSongId != null) {
+                val currentSongItem = shuffledQueue.find { it.id == currentSongId }
+                // Remove current song from the list
+                shuffledQueue.removeAll { it.id == currentSongId }
+                // Shuffle the remaining songs
+                shuffledQueue.shuffle()
+                // Add current song at the top
+                if (currentSongItem != null) {
+                    shuffledQueue.add(0, currentSongItem)
+                }
+            } else {
+                // No current song, shuffle everything
+                shuffledQueue.shuffle()
+            }
+            
+            // Update the queue
+            mutableQueue.clear()
+            mutableQueue.addAll(shuffledQueue)
+            
+            // Apply the changes
+            scope.launch {
+                viewModel.reorderQueue(mutableQueue.toList())
+            }
+        }
+    }
+    
+    // Function to restore original queue order
+    val restoreOriginalOrder = {
+        if (queueSongs.isNotEmpty()) {
+            // Use the latest queueSongs as the source of truth
+            mutableQueue.clear()
+            mutableQueue.addAll(queueSongs)
+            
+            // Apply the changes
+            scope.launch {
+                viewModel.reorderQueue(mutableQueue.toList())
+            }
+        }
+    }
+    
+    // Effect to handle shuffle state changes - only apply when shuffle state actually changes
+    var previousShuffleState by remember { mutableStateOf(isShuffle) }
+    LaunchedEffect(isShuffle) {
+        if (isShuffle != previousShuffleState) {
+            if (isShuffle) {
+                shuffleQueue()
+            } else {
+                restoreOriginalOrder()
+            }
+            previousShuffleState = isShuffle
+        }
+    }
+    
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
+            .background(Color(0xFF1E0040)) // Purple background color
                     .padding(bottom = 32.dp)
             ) {
                 // Queue header
@@ -386,99 +572,226 @@ fun PlayerScreen(
                         color = Color.White,
                         fontWeight = FontWeight.Bold
                     )
-                    IconButton(onClick = { showQueueSheet = false }) {
+            
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // Shuffle button
+                val isShuffle by viewModel.isShuffle.collectAsState()
+                IconButton(
+                    onClick = { 
+                        // Toggle shuffle mode
+                        viewModel.toggleShuffle()
+                        
+                        // Apply shuffle immediately if enabled
+                        if (!isShuffle) {
+                            shuffleQueue()
+                        } else {
+                            restoreOriginalOrder()
+                        }
+                    },
+                    modifier = Modifier.size(40.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Shuffle,
+                        contentDescription = "Shuffle",
+                        tint = if (isShuffle) Color(0xFFBB86FC) else Color.White,
+                    )
+                }
+                
+                // Timer button (sleep timer)
+                var showTimerDialog by remember { mutableStateOf(false) }
+                IconButton(
+                    onClick = { showTimerDialog = true },
+                    modifier = Modifier.size(40.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Timer,
+                        contentDescription = "Sleep Timer",
+                        tint = Color.White
+                    )
+                }
+                
+                // Close button
+                IconButton(onClick = onDismissRequest) {
                         Icon(
                             imageVector = Icons.Default.Close,
                             contentDescription = "Close Queue",
                             tint = Color.White
                         )
                     }
+                
+                // Sleep timer dialog
+                if (showTimerDialog) {
+                    AlertDialog(
+                        onDismissRequest = { showTimerDialog = false },
+                        title = { Text("Set Sleep Timer") },
+                        text = {
+                            Column {
+                                Text("Coming soon! Sleep timer functionality will be added in a future update.")
+                            }
+                        },
+                        confirmButton = {
+                            TextButton(onClick = { showTimerDialog = false }) {
+                                Text("OK")
+                            }
+                        },
+                        containerColor = Color(0xFF282828),
+                        titleContentColor = Color.White,
+                        textContentColor = Color.White
+                    )
+                }
+            }
+        }
+        
+        // Songs list with dragged item overlay
+        Box(modifier = Modifier.fillMaxWidth()) {
+            // Show loading indicator during queue operations
+            var isQueueUpdating by remember { mutableStateOf(false) }
+            
+            LazyColumn(
+                state = lazyListState,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                    .heightIn(max = 400.dp)
+                    .pointerInput(Unit) {
+                        detectDragGesturesAfterLongPress(
+                            onDragStart = { offset ->
+                                // Find the item being touched
+                                val touchedItem = lazyListState.layoutInfo.visibleItemsInfo.firstOrNull { itemInfo ->
+                                    val itemTop = itemInfo.offset
+                                    val itemBottom = itemInfo.offset + itemInfo.size
+                                    offset.y.toInt() in itemTop..itemBottom
+                                }
+                                
+                                // Allow dragging any song
+                                if (touchedItem != null && touchedItem.index >= 0 && touchedItem.index < mutableQueue.size) {
+                                    val draggedSong = mutableQueue[touchedItem.index]
+                                    
+                                    // Start dragging this item
+                                    dragState = dragState.copy(
+                                        isDragging = true,
+                                        draggedItemIndex = touchedItem.index,
+                                        draggedOffset = offset,
+                                        draggedItem = draggedSong
+                                    )
+                                }
+                            },
+                            onDragEnd = {
+                                if (dragState.isDragging && dragState.draggedItemIndex >= 0) {
+                                    // Apply the reordering to the actual queue
+                                    isQueueUpdating = true
+                                    applyQueueChanges()
+                                    isQueueUpdating = false
+                                }
+                                dragState = DragInfo()
+                            },
+                            onDragCancel = {
+                                dragState = DragInfo()
+                            },
+                            onDrag = { change, dragAmount ->
+                                change.consume()
+                                if (dragState.isDragging && dragState.draggedItem != null) {
+                                    val dragOffset = dragState.draggedOffset.copy(
+                                        y = dragState.draggedOffset.y + dragAmount.y
+                                    )
+                                    
+                                    // Find the item under the current drag position
+                                    val targetItem = lazyListState.layoutInfo.visibleItemsInfo.firstOrNull { itemInfo ->
+                                        val itemTop = itemInfo.offset
+                                        val itemBottom = itemInfo.offset + itemInfo.size
+                                        dragOffset.y.toInt() in itemTop..itemBottom
+                                    }
+                                    
+                                    // Allow reordering any song
+                                    if (targetItem != null && targetItem.index != dragState.draggedItemIndex &&
+                                        targetItem.index >= 0 && targetItem.index < mutableQueue.size) {
+                                        
+                                        // Get the songs being moved
+                                        val draggedSong = dragState.draggedItem!!
+                                        val targetIndex = targetItem.index
+                                        
+                                        // Find their positions in the queue
+                                        val draggedIndex = mutableQueue.indexOfFirst { it.id == draggedSong.id }
+                                        
+                                        if (draggedIndex >= 0) {
+                                            // Move the item in the queue
+                                            val temp = mutableQueue[draggedIndex]
+                                            mutableQueue.removeAt(draggedIndex)
+                                            mutableQueue.add(targetIndex, temp)
+                                            
+                                            // Update the dragged item index
+                                            dragState = dragState.copy(
+                                                draggedItemIndex = targetIndex,
+                                                draggedOffset = dragOffset
+                                            )
+                                        }
+                                    }
+                                    
+                                    // Update the drag offset
+                                    dragState = dragState.copy(draggedOffset = dragOffset)
+                                }
+                            }
+                        )
+                    }
+            ) {
+                // Show all songs in the queue as a simple list
+                items(mutableQueue.toList(), key = { it.id }) { song ->
+                    val isCurrentSong = song.id == currentSong?.id
+                    val isSongPlaying = isCurrentSong && isPlaying
+                    val isDragged = dragState.isDragging && dragState.draggedItem?.id == song.id
+                    
+                    // Only render non-dragged items normally
+                    if (!isDragged) {
+                        QueueSongItem(
+                            song = song,
+                            onClick = { 
+                                // Play the song immediately when clicked
+                                if (isCurrentSong) {
+                                    viewModel.togglePlayPause()
+                                } else {
+                                    // Use loadQueueSongInContext to maintain queue context
+                                    viewModel.loadQueueSongInContext(song)
+                                }
+                            },
+                            isPlaying = isSongPlaying,
+                            isSelected = isCurrentSong,
+                            onPlayPause = { 
+                                if (isCurrentSong) {
+                                    viewModel.togglePlayPause()
+                                } else {
+                                    // Use loadQueueSongInContext to maintain queue context
+                                    viewModel.loadQueueSongInContext(song)
+                                }
+                            },
+                            modifier = Modifier
+                                .animateItemPlacement(
+                                    animationSpec = tween(
+                                        durationMillis = 300,
+                                        easing = FastOutSlowInEasing
+                                    )
+                    )
+                        )
+                    } else {
+                        // Placeholder for dragged item with the same height
+                        // This keeps layout stable while the item is being dragged
+                        Spacer(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(72.dp) // Approximate height of SongItem
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                                .animateItemPlacement(
+                                    animationSpec = tween(
+                                        durationMillis = 300,
+                                        easing = FastOutSlowInEasing
+                                    )
+                                )
+                        )
+                    }
                 }
                 
-                // Upcoming songs list
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 400.dp)
-                ) {
-                    // Always show the current song at the top of the queue
-                    if (currentSong != null) {
-                        item {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp)
-                            ) {
-                                Text(
-                                    text = "Now Playing",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = Color(0xFFBB86FC),
-                                    modifier = Modifier.padding(bottom = 8.dp)
-                                )
-                            }
-                            
-                            // Store currentSong in a local variable to avoid smart cast issues
-                            val currentSongItem = currentSong
-                            if (currentSongItem != null) {
-                                SongItem(
-                                    song = currentSongItem,
-                                    onClick = {},
-                                    isPlaying = isPlaying,
-                                    isSelected = true,
-                                    onPlayPause = { viewModel.togglePlayPause() },
-                                    modifier = Modifier.padding(horizontal = 8.dp)
-                                )
-                            }
-                            
-                            // Divider between current and upcoming
-                            if (queueSongs.size > 1) {
-                                Divider(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(vertical = 16.dp, horizontal = 16.dp),
-                                    thickness = 0.5.dp,
-                                    color = Color.Gray.copy(alpha = 0.3f)
-                                )
-                            }
-                        }
-                    }
-                    
-                    // Get upcoming songs (all songs except current)
-                    val currentSongForFilter = currentSong
-                    val upcomingSongs = if (currentSongForFilter != null) {
-                        queueSongs.filter { it.id != currentSongForFilter.id }
-                    } else {
-                        queueSongs
-                    }
-                    
-                    if (upcomingSongs.isNotEmpty()) {
-                        item {
-                            Text(
-                                text = "Up Next",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = Color.White,
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-                            )
-                        }
-                        
-                        items(upcomingSongs) { song ->
-                            SongItem(
-                                song = song,
-                                onClick = {
-                                    viewModel.loadSong(song)
-                                    showQueueSheet = false
-                                },
-                                isPlaying = false,
-                                isSelected = false,
-                                onPlayPause = {
-                                    viewModel.loadSong(song)
-                                    showQueueSheet = false
-                                },
-                                modifier = Modifier.padding(horizontal = 8.dp)
-                            )
-                        }
-                    } else if (queueSongs.isEmpty()) {
-                        // No songs at all
+                // Show message if queue is empty
+                if (mutableQueue.isEmpty()) {
                         item {
                             Box(
                                 modifier = Modifier
@@ -493,24 +806,152 @@ fun PlayerScreen(
                                 )
                             }
                         }
-                    } else if (currentSongForFilter != null && queueSongs.size == 1) {
-                        // Only current song, no upcoming songs
-                        item {
+                }
+            }
+            
+            // Show loading indicator during queue operations
+            if (isQueueUpdating) {
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(200.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = "No more songs in queue",
-                                    style = MaterialTheme.typography.bodyLarge,
-                                    color = Color.Gray
-                                )
-                            }
-                        }
-                    }
+                        .height(4.dp)
+                        .align(Alignment.TopCenter)
+                ) {
+                    LinearProgressIndicator(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = Color(0xFFBB86FC),
+                        trackColor = Color(0x33BB86FC)
+                    )
                 }
+            }
+            
+            // Floating dragged item
+            if (dragState.isDragging && dragState.draggedItem != null) {
+                val draggedSong = dragState.draggedItem!!
+                val isCurrentSong = draggedSong.id == currentSong?.id
+                val isSongPlaying = isCurrentSong && isPlaying
+                
+                val offsetY = with(density) { dragState.draggedOffset.y - 36.dp.toPx() } // Center the item on the touch point
+                
+                Box(
+                    modifier = Modifier
+                        .offset { IntOffset(0, offsetY.toInt()) }
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp)
+                        .shadow(elevation = 16.dp, shape = RoundedCornerShape(8.dp))
+                        .zIndex(10f)
+                ) {
+                    QueueSongItem(
+                        song = draggedSong,
+                        onClick = { /* No action during drag */ },
+                        isPlaying = isSongPlaying,
+                        isSelected = isCurrentSong,
+                        onPlayPause = { /* No action during drag */ },
+                        modifier = Modifier
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun QueueSongItem(
+    song: Song,
+    onClick: () -> Unit,
+    isPlaying: Boolean,
+    isSelected: Boolean,
+    onPlayPause: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 4.dp)
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(8.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isSelected) Color(0xFF3D1A66) else Color(0xFF2A1152)
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Drag handle
+            Icon(
+                imageVector = Icons.Default.DragIndicator,
+                contentDescription = "Drag to reorder",
+                tint = Color.White.copy(alpha = 0.6f),
+                modifier = Modifier
+                    .padding(4.dp)
+                    .size(24.dp)
+            )
+            
+            // Song details
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Album art
+                AsyncImage(
+                    model = ImageRequest.Builder(LocalContext.current)
+                        .data(when {
+                            !song.albumArtUrl.isNullOrBlank() -> song.albumArtUrl
+                            !song.albumArt.isBlank() -> song.albumArt
+                            else -> R.drawable.default_album_art
+                        })
+                        .crossfade(true)
+                        .transformations(CenterCropSquareTransformation())
+                        .build(),
+                    contentDescription = "Album art for ${song.title}",
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(RoundedCornerShape(4.dp)),
+                    contentScale = ContentScale.Crop,
+                    error = painterResource(id = R.drawable.default_album_art),
+                    placeholder = painterResource(id = R.drawable.default_album_art)
+                )
+                
+                Spacer(modifier = Modifier.width(12.dp))
+                
+                // Song info
+                Column(
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(
+                        text = song.title,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    
+                    Text(
+                        text = song.artist,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.Gray,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+            
+            // Play/Pause button
+            IconButton(
+                onClick = onPlayPause,
+                modifier = Modifier.size(40.dp)
+            ) {
+                Icon(
+                    imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                    contentDescription = if (isPlaying) "Pause" else "Play",
+                    tint = if (isPlaying) Color(0xFFBB86FC) else Color.White,
+                    modifier = Modifier.size(24.dp)
+                )
             }
         }
     }

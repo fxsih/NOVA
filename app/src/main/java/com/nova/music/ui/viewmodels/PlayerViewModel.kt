@@ -12,8 +12,27 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
+import android.util.Log
+import android.content.Context
+import android.net.Uri
+import android.os.Environment
+import android.widget.Toast
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import java.io.File
+import java.io.IOException
 
+/**
+ * Repeat modes for music playback.
+ * The order of cycling is: NONE -> ALL -> ONE -> NONE
+ * 
+ * NONE: No repeat (play through once)
+ * ALL: Repeat the entire playlist infinitely
+ * ONE: Repeat the current song once
+ */
 enum class RepeatMode {
     NONE, ONE, ALL
 }
@@ -45,6 +64,10 @@ class PlayerViewModel @Inject constructor(
     private val _shouldShowFullPlayer = MutableStateFlow(false)
     val shouldShowFullPlayer: StateFlow<Boolean> = _shouldShowFullPlayer.asStateFlow()
     
+    // Add a flag to track if we're already in the player screen
+    private val _isInPlayerScreen = MutableStateFlow(false)
+    val isInPlayerScreen: StateFlow<Boolean> = _isInPlayerScreen.asStateFlow()
+    
     // Track which playlist started the current playback
     private val _currentPlaylistId = MutableStateFlow<String?>(null)
     val currentPlaylistId: StateFlow<String?> = _currentPlaylistId.asStateFlow()
@@ -53,8 +76,19 @@ class PlayerViewModel @Inject constructor(
     private val _currentPlaylistSongs = MutableStateFlow<List<Song>>(emptyList())
     val currentPlaylistSongs: StateFlow<List<Song>> = _currentPlaylistSongs.asStateFlow()
     
+    // Track download state
+    private val _isDownloading = MutableStateFlow(false)
+    val isDownloading: StateFlow<Boolean> = _isDownloading.asStateFlow()
+    
+    // Track download progress
+    private val _downloadProgress = MutableStateFlow(0f)
+    val downloadProgress: StateFlow<Float> = _downloadProgress.asStateFlow()
+    
     // Track current loading job to cancel if needed
     private var loadingJob: Job? = null
+    
+    // OkHttpClient for downloads
+    private val okHttpClient = OkHttpClient()
 
     init {
         // Load initial song if ID is provided
@@ -84,7 +118,13 @@ class PlayerViewModel @Inject constructor(
 
     fun loadSong(song: Song, playlistId: String? = null, playlistSongs: List<Song>? = null) {
         // If already loading this song, don't reload
-        if (_isLoading.value && currentSong.value?.id == song.id) return
+        if (_isLoading.value && currentSong.value?.id == song.id) {
+            // If the song is already loaded but not playing, just toggle play
+            if (!isPlaying.value) {
+                togglePlayPause()
+            }
+            return
+        }
         
         // Debug logging
         println("DEBUG: loadSong(Song) called with playlistId: $playlistId, playlistSongs size: ${playlistSongs?.size}")
@@ -104,10 +144,18 @@ class PlayerViewModel @Inject constructor(
                     // Use the new method to set the entire playlist queue
                     try {
                         musicPlayerService.setPlaylistQueue(playlistSongs, song.id)
+                        // Ensure playback starts immediately
+                        musicPlayerService.resume()
+                        // Force play to ensure it starts
+                        musicPlayerService.play()
                     } catch (e: Exception) {
                         println("ERROR: Failed to set playlist queue: ${e.message}")
                         // Fallback to just playing the single song
                         musicPlayerService.playSong(song)
+                        // Ensure playback starts
+                        musicPlayerService.resume()
+                        // Force play to ensure it starts
+                        musicPlayerService.play()
                     }
                 } else {
                     println("DEBUG: Setting _currentPlaylistSongs with just the current song")
@@ -115,6 +163,10 @@ class PlayerViewModel @Inject constructor(
                     
                     // Just play a single song
                     musicPlayerService.playSong(song)
+                    // Ensure playback starts
+                    musicPlayerService.resume()
+                    // Force play to ensure it starts
+                    musicPlayerService.play()
                 }
                 
                 // Check if we should show the full player
@@ -124,9 +176,6 @@ class PlayerViewModel @Inject constructor(
                 } else {
                     _shouldShowFullPlayer.value = false
                 }
-                
-                // Small delay to ensure UI has time to update
-                delay(50)
             } catch (e: Exception) {
                 println("ERROR: Failed to load song: ${e.message}")
                 e.printStackTrace()
@@ -138,7 +187,13 @@ class PlayerViewModel @Inject constructor(
 
     fun loadSong(songId: String, playlistId: String? = null, playlistSongs: List<Song>? = null) {
         // If already loading this song, don't reload
-        if (_isLoading.value && currentSong.value?.id == songId) return
+        if (_isLoading.value && currentSong.value?.id == songId) {
+            // If the song is already loaded but not playing, just toggle play
+            if (!isPlaying.value) {
+                togglePlayPause()
+            }
+            return
+        }
         
         // Debug logging
         println("DEBUG: loadSong(String) called with playlistId: $playlistId, playlistSongs size: ${playlistSongs?.size}")
@@ -161,10 +216,18 @@ class PlayerViewModel @Inject constructor(
                             // Use the new method to set the entire playlist queue
                             try {
                                 musicPlayerService.setPlaylistQueue(playlistSongs, song.id)
+                                // Ensure playback starts immediately
+                                musicPlayerService.resume()
+                                // Force play to ensure it starts
+                                musicPlayerService.play()
                             } catch (e: Exception) {
                                 println("ERROR: Failed to set playlist queue: ${e.message}")
                                 // Fallback to just playing the single song
                                 musicPlayerService.playSong(song)
+                                // Ensure playback starts immediately
+                                musicPlayerService.resume()
+                                // Force play to ensure it starts
+                                musicPlayerService.play()
                             }
                         } else {
                             println("DEBUG: Setting _currentPlaylistSongs with just the current song")
@@ -172,6 +235,10 @@ class PlayerViewModel @Inject constructor(
                             
                             // Just play a single song
                             musicPlayerService.playSong(song)
+                            // Ensure playback starts immediately
+                            musicPlayerService.resume()
+                            // Force play to ensure it starts
+                            musicPlayerService.play()
                         }
                         
                         // Check if we should show the full player
@@ -185,9 +252,6 @@ class PlayerViewModel @Inject constructor(
                         println("ERROR: Song with ID $songId not found")
                     }
                 }
-                
-                // Small delay to ensure UI has time to update
-                delay(50)
             } catch (e: Exception) {
                 println("ERROR: Failed to load song: ${e.message}")
                 e.printStackTrace()
@@ -197,6 +261,7 @@ class PlayerViewModel @Inject constructor(
         }
     }
 
+    // Only call togglePlayPause, resume, or pause on explicit user actions
     fun togglePlayPause() {
         viewModelScope.launch {
             if (isPlaying.value) {
@@ -215,10 +280,28 @@ class PlayerViewModel @Inject constructor(
     fun setShuffleMode(enabled: Boolean) {
         _isShuffle.value = enabled
         viewModelScope.launch {
-            musicPlayerService.setShuffle(enabled)
+            try {
+                // Let the service handle playback state restoration
+                musicPlayerService.setShuffle(enabled)
+            } catch (e: Exception) {
+                println("ERROR: Failed to set shuffle mode: ${e.message}")
+            }
         }
     }
 
+    /**
+     * Toggle shuffle mode.
+     * This is an alias for toggleShuffleMode for better naming consistency.
+     */
+    fun toggleShuffle() {
+        toggleShuffleMode()
+    }
+
+    /**
+     * Toggle repeat mode for the full player screen.
+     * Cycles through: NONE -> ONE -> ALL -> NONE
+     * Changed to prioritize song repeat (ONE) before playlist repeat (ALL)
+     */
     fun toggleRepeatMode() {
         viewModelScope.launch {
             val nextMode = when (repeatMode.value) {
@@ -229,18 +312,38 @@ class PlayerViewModel @Inject constructor(
             musicPlayerService.setRepeatMode(nextMode)
         }
     }
+    
+    /**
+     * Toggle repeat mode for the playlist screen.
+     * For playlist screen, we only toggle between NONE and ALL
+     * (no single song repeat in playlist view)
+     */
+    fun togglePlaylistRepeatMode() {
+        viewModelScope.launch {
+            val nextMode = if (repeatMode.value == RepeatMode.NONE) {
+                RepeatMode.ALL
+            } else {
+                RepeatMode.NONE
+            }
+            musicPlayerService.setRepeatMode(nextMode)
+        }
+    }
 
     fun skipToNext() {
         viewModelScope.launch {
+            // Set the flag to prevent navigation to a new player screen
+            _isInPlayerScreen.value = true
             // Simply use the service's skipToNext method since we now maintain a queue
-            musicPlayerService.skipToNext()
+                musicPlayerService.skipToNext()
         }
     }
 
     fun skipToPrevious() {
         viewModelScope.launch {
+            // Set the flag to prevent navigation to a new player screen
+            _isInPlayerScreen.value = true
             // Simply use the service's skipToPrevious method since we now maintain a queue
-            musicPlayerService.skipToPrevious()
+                musicPlayerService.skipToPrevious()
         }
     }
 
@@ -277,6 +380,41 @@ class PlayerViewModel @Inject constructor(
         preferenceManager.resetFullPlayerShownFlag()
         _shouldShowFullPlayer.value = true
     }
+    
+    // Add a method to set the isInPlayerScreen flag
+    fun setInPlayerScreen(inPlayerScreen: Boolean) {
+        _isInPlayerScreen.value = inPlayerScreen
+    }
+    
+    // Queue reordering methods
+    fun moveSongUp(songId: String) {
+        viewModelScope.launch {
+            musicPlayerService.moveSongUp(songId)
+        }
+    }
+    
+    fun moveSongDown(songId: String) {
+        viewModelScope.launch {
+            musicPlayerService.moveSongDown(songId)
+        }
+    }
+    
+    fun reorderQueue(songs: List<Song>) {
+        viewModelScope.launch {
+            try {
+                // Let the service handle playback state restoration
+                musicPlayerService.reorderQueue(songs)
+            } catch (e: Exception) {
+                println("ERROR: Failed to reorder queue: ${e.message}")
+            }
+        }
+    }
+    
+    fun removeFromQueue(songId: String) {
+        viewModelScope.launch {
+            musicPlayerService.removeFromQueue(songId)
+        }
+    }
 
     fun getCurrentPlaylistSongs(): List<Song> {
         val songs = _currentPlaylistSongs.value
@@ -305,6 +443,176 @@ class PlayerViewModel @Inject constructor(
         } else {
             // Fallback to empty list
             emptyList()
+        }
+    }
+
+    /**
+     * Loads and plays a song from the current queue while maintaining the queue context.
+     * This ensures that when a user selects a song from the queue, it plays within the
+     * context of the current queue rather than as a standalone song.
+     */
+    fun loadQueueSongInContext(song: Song) {
+        viewModelScope.launch {
+            try {
+                _isLoading.value = true
+                
+                // Get the current queue from the service
+                val currentQueueSongs = serviceQueue.value
+                
+                if (currentQueueSongs.isNotEmpty()) {
+                    // Find the index of the selected song in the queue
+                    val songIndex = currentQueueSongs.indexOfFirst { it.id == song.id }
+                    
+                    if (songIndex >= 0) {
+                        Log.d("PlayerViewModel", "Playing queue item at index $songIndex: ${song.title}")
+                        // Tell the service to play this specific song from the current queue
+                        musicPlayerService.playQueueItemAt(songIndex)
+                        
+                        // Set the flag to prevent navigation to a new player screen
+                        _isInPlayerScreen.value = true
+                    } else {
+                        Log.e("PlayerViewModel", "Song not found in queue, falling back to normal loading")
+                        // If the song isn't in the queue (unusual case), fall back to normal loading
+                        musicPlayerService.playSong(song)
+                    }
+                } else {
+                    Log.d("PlayerViewModel", "Queue is empty, playing song directly")
+                    // If queue is empty, just play the song
+                    musicPlayerService.playSong(song)
+                }
+            } catch (e: Exception) {
+                Log.e("PlayerViewModel", "Failed to load queue song: ${e.message}")
+                e.printStackTrace()
+            } finally {
+                _isLoading.value = false
+            }
+        }
+    }
+
+    /**
+     * Downloads the current song to the device.
+     * 
+     * @param context The application context needed for file operations
+     * @return A Flow that emits download status updates
+     */
+    fun downloadCurrentSong(context: Context) {
+        val song = currentSong.value ?: return
+        
+        // Don't start a new download if one is already in progress
+        if (_isDownloading.value) {
+            Toast.makeText(context, "Download already in progress", Toast.LENGTH_SHORT).show()
+            return
+        }
+        
+        viewModelScope.launch {
+            _isDownloading.value = true
+            _downloadProgress.value = 0f
+            
+            try {
+                // Check if the song ID is from YouTube (starts with "yt_")
+                val isYouTubeSong = song.id.startsWith("yt_")
+                val videoId = if (isYouTubeSong) song.id.removePrefix("yt_") else song.id
+                
+                // Create a sanitized filename
+                val sanitizedTitle = song.title.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+                val sanitizedArtist = song.artist.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+                val fileName = "${sanitizedArtist} - ${sanitizedTitle}.mp3"
+                
+                // Get the URL for downloading
+                val downloadUrl = if (isYouTubeSong) {
+                    // For YouTube songs, use the backend API
+                    "${preferenceManager.getApiBaseUrl()}/yt_audio?video_id=$videoId"
+                } else {
+                    // For local songs, use the direct file path
+                    song.audioUrl
+                }
+                
+                if (downloadUrl.isNullOrEmpty()) {
+                    Toast.makeText(context, "Download URL not available", Toast.LENGTH_SHORT).show()
+                    _isDownloading.value = false
+                    return@launch
+                }
+                
+                // Create the Downloads directory if it doesn't exist
+                val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                if (!downloadsDir.exists()) {
+                    downloadsDir.mkdirs()
+                }
+                
+                // Create the file in the Downloads directory
+                val file = File(downloadsDir, fileName)
+                
+                // Show starting toast
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(context, "Starting download: $fileName", Toast.LENGTH_SHORT).show()
+                }
+                
+                // Download the file
+                withContext(Dispatchers.IO) {
+                    try {
+                        val request = Request.Builder()
+                            .url(downloadUrl)
+                            .build()
+                        
+                        okHttpClient.newCall(request).execute().use { response ->
+                            if (!response.isSuccessful) {
+                                throw IOException("Failed to download: ${response.code}")
+                            }
+                            
+                            val responseBody = response.body
+                            if (responseBody == null) {
+                                throw IOException("Empty response body")
+                            }
+                            
+                            val contentLength = responseBody.contentLength()
+                            var bytesWritten = 0L
+                            
+                            file.outputStream().use { fileOut ->
+                                responseBody.byteStream().use { inputStream ->
+                                    val buffer = ByteArray(8192)
+                                    var bytes: Int
+                                    
+                                    while (inputStream.read(buffer).also { bytes = it } != -1) {
+                                        fileOut.write(buffer, 0, bytes)
+                                        bytesWritten += bytes
+                                        
+                                        // Update progress if content length is known
+                                        if (contentLength > 0) {
+                                            _downloadProgress.value = bytesWritten.toFloat() / contentLength.toFloat()
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // Show success toast
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(
+                                context,
+                                "Downloaded: $fileName to Downloads folder",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                    } catch (e: Exception) {
+                        Log.e("PlayerViewModel", "Download failed", e)
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(
+                                context,
+                                "Download failed: ${e.message}",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("PlayerViewModel", "Download failed", e)
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(context, "Download failed: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            } finally {
+                _isDownloading.value = false
+                _downloadProgress.value = 0f
+            }
         }
     }
 

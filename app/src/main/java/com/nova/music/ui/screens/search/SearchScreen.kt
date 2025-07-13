@@ -150,9 +150,9 @@ fun SearchScreen(
                                     RecentlyPlayedItem(
                                         song = song,
                                         onClick = { 
-                                            // Add to recently played and navigate to player
+                                            // Add to recently played and directly load song in player
                                             viewModel.addToRecentlyPlayed(song)
-                                            onSongClick(song.id)
+                                            playerViewModel.loadSong(song)
                                         },
                                         onLikeClick = {
                                             if (isLiked) {
@@ -178,7 +178,7 @@ fun SearchScreen(
                                                 playerViewModel.togglePlayPause()
                                             } else {
                                                 viewModel.addToRecentlyPlayed(song)
-                                                onSongClick(song.id)
+                                                playerViewModel.loadSong(song)
                                             }
                                         }
                                     )

@@ -163,6 +163,9 @@ fun HomeScreen(
                                     song = song,
                                     onClick = { 
                                         viewModel.addToRecentlyPlayed(song)
+                                        // Pass the trending songs as the playlist
+                                        val trendingSongs = (trendingSongsState as? UiState.Success)?.data ?: emptyList()
+                                        playerViewModel.loadSong(song, "trending", trendingSongs)
                                         onNavigateToPlayer(song.id)
                                     },
                                     onLikeClick = {
@@ -189,6 +192,9 @@ fun HomeScreen(
                                             playerViewModel.togglePlayPause()
                                         } else {
                                             viewModel.addToRecentlyPlayed(song)
+                                            // Pass the trending songs as the playlist
+                                            val trendingSongs = (trendingSongsState as? UiState.Success)?.data ?: emptyList()
+                                            playerViewModel.loadSong(song, "trending", trendingSongs)
                                             onNavigateToPlayer(song.id)
                                         }
                                     }
@@ -251,6 +257,9 @@ fun HomeScreen(
                                     song = song,
                                     onClick = { 
                                         viewModel.addToRecentlyPlayed(song)
+                                        // Pass the recommended songs as the playlist
+                                        val recommendedSongs = (recommendedSongsState as? UiState.Success)?.data ?: emptyList()
+                                        playerViewModel.loadSong(song, "recommended", recommendedSongs)
                                         onNavigateToPlayer(song.id)
                                     },
                                     onLikeClick = {
@@ -277,6 +286,9 @@ fun HomeScreen(
                                             playerViewModel.togglePlayPause()
                                         } else {
                                             viewModel.addToRecentlyPlayed(song)
+                                            // Pass the recommended songs as the playlist
+                                            val recommendedSongs = (recommendedSongsState as? UiState.Success)?.data ?: emptyList()
+                                            playerViewModel.loadSong(song, "recommended", recommendedSongs)
                                             onNavigateToPlayer(song.id)
                                         }
                                     }
@@ -321,6 +333,8 @@ fun HomeScreen(
                     song = song,
                     onClick = { 
                         viewModel.addToRecentlyPlayed(song)
+                        // Pass the recently played songs as the playlist
+                        playerViewModel.loadSong(song, "recently_played", recentlyPlayed)
                         onNavigateToPlayer(song.id)
                     },
                     onLikeClick = {
@@ -348,6 +362,8 @@ fun HomeScreen(
                             playerViewModel.togglePlayPause()
                         } else {
                             viewModel.addToRecentlyPlayed(song)
+                            // Pass the recently played songs as the playlist
+                            playerViewModel.loadSong(song, "recently_played", recentlyPlayed)
                             onNavigateToPlayer(song.id)
                         }
                     }
@@ -385,6 +401,9 @@ fun HomeScreen(
                             song = song,
                             onClick = { 
                                 viewModel.addToRecentlyPlayed(song)
+                                // Pass the popular tracks as the playlist
+                                val popularTracks = (trendingSongsState as? UiState.Success)?.data ?: emptyList()
+                                playerViewModel.loadSong(song, "popular", popularTracks)
                                 onNavigateToPlayer(song.id)
                             },
                             onLikeClick = {
@@ -412,6 +431,9 @@ fun HomeScreen(
                                     playerViewModel.togglePlayPause()
                                 } else {
                                     viewModel.addToRecentlyPlayed(song)
+                                    // Pass the popular tracks as the playlist
+                                    val popularTracks = (trendingSongsState as? UiState.Success)?.data ?: emptyList()
+                                    playerViewModel.loadSong(song, "popular", popularTracks)
                                     onNavigateToPlayer(song.id)
                                 }
                             }
@@ -572,38 +594,38 @@ fun HomeScreen(
                     Column(
                         modifier = Modifier.fillMaxWidth(),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
+                ) {
                         Text(
                             "Select your favorite genres:",
                             style = MaterialTheme.typography.titleMedium,
                             color = Color.White.copy(alpha = 0.9f)
                         )
                         
-                        FlowRow(
-                            modifier = Modifier.fillMaxWidth(),
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp),
-                            maxItemsInEachRow = 3
-                        ) {
-                            listOf("Pop", "Rock", "Hip Hop", "Electronic", "Jazz", "Classical", "R&B", "Country", "Indie").forEach { genre ->
-                                val isSelected = selectedGenres.contains(genre)
-                                FilterChip(
-                                    selected = isSelected,
-                                    onClick = {
-                                        selectedGenres = if (isSelected) {
-                                            selectedGenres - genre
-                                        } else {
-                                            selectedGenres + genre
-                                        }
-                                    },
+                        maxItemsInEachRow = 3
+                    ) {
+                        listOf("Pop", "Rock", "Hip Hop", "Electronic", "Jazz", "Classical", "R&B", "Country", "Indie").forEach { genre ->
+                            val isSelected = selectedGenres.contains(genre)
+                            FilterChip(
+                                selected = isSelected,
+                                onClick = {
+                                    selectedGenres = if (isSelected) {
+                                        selectedGenres - genre
+                                    } else {
+                                        selectedGenres + genre
+                                    }
+                                },
                                     label = { 
                                         Text(
                                             genre,
                                             style = MaterialTheme.typography.bodyMedium
                                         ) 
                                     },
-                                    colors = FilterChipDefaults.filterChipColors(
-                                        selectedContainerColor = Color(0xFFBB86FC),
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = Color(0xFFBB86FC),
                                         selectedLabelColor = Color.Black,
                                         containerColor = Color(0xFF2A2A2A)
                                     ),
@@ -630,31 +652,31 @@ fun HomeScreen(
                             color = Color.White.copy(alpha = 0.9f)
                         )
                         
-                        FlowRow(
-                            modifier = Modifier.fillMaxWidth(),
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp),
-                            maxItemsInEachRow = 3
-                        ) {
-                            listOf("English", "Spanish", "Hindi", "Malayalam", "French", "Korean", "Japanese", "Chinese", "Arabic", "Portuguese").forEach { language ->
-                                val isSelected = selectedLanguages.contains(language)
-                                FilterChip(
-                                    selected = isSelected,
-                                    onClick = {
-                                        selectedLanguages = if (isSelected) {
-                                            selectedLanguages - language
-                                        } else {
-                                            selectedLanguages + language
-                                        }
-                                    },
+                        maxItemsInEachRow = 3
+                    ) {
+                        listOf("English", "Spanish", "Hindi", "Malayalam", "French", "Korean", "Japanese", "Chinese", "Arabic", "Portuguese").forEach { language ->
+                            val isSelected = selectedLanguages.contains(language)
+                            FilterChip(
+                                selected = isSelected,
+                                onClick = {
+                                    selectedLanguages = if (isSelected) {
+                                        selectedLanguages - language
+                                    } else {
+                                        selectedLanguages + language
+                                    }
+                                },
                                     label = { 
                                         Text(
                                             language,
                                             style = MaterialTheme.typography.bodyMedium
                                         ) 
                                     },
-                                    colors = FilterChipDefaults.filterChipColors(
-                                        selectedContainerColor = Color(0xFFBB86FC),
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = Color(0xFFBB86FC),
                                         selectedLabelColor = Color.Black,
                                         containerColor = Color(0xFF2A2A2A)
                                     ),
@@ -681,37 +703,37 @@ fun HomeScreen(
                             color = Color.White.copy(alpha = 0.9f)
                         )
                         
-                        FlowRow(
-                            modifier = Modifier.fillMaxWidth(),
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                             maxItemsInEachRow = 2
-                        ) {
-                            val allArtists = listOf(
-                                "Taylor Swift", "Drake", "BTS", "Ed Sheeran", "Ariana Grande", 
-                                "The Weeknd", "Billie Eilish", "Bad Bunny", "Justin Bieber",
-                                "K.J. Yesudas", "K.S. Chithra", "Vidhu Prathap", "Sithara Krishnakumar", 
-                                "Vineeth Sreenivasan", "Shreya Ghoshal"
-                            )
-                            allArtists.forEach { artist ->
-                                val isSelected = selectedArtists.contains(artist)
-                                FilterChip(
-                                    selected = isSelected,
-                                    onClick = {
-                                        selectedArtists = if (isSelected) {
-                                            selectedArtists - artist
-                                        } else {
-                                            selectedArtists + artist
-                                        }
-                                    },
+                    ) {
+                        val allArtists = listOf(
+                            "Taylor Swift", "Drake", "BTS", "Ed Sheeran", "Ariana Grande", 
+                            "The Weeknd", "Billie Eilish", "Bad Bunny", "Justin Bieber",
+                            "K.J. Yesudas", "K.S. Chithra", "Vidhu Prathap", "Sithara Krishnakumar", 
+                            "Vineeth Sreenivasan", "Shreya Ghoshal"
+                        )
+                        allArtists.forEach { artist ->
+                            val isSelected = selectedArtists.contains(artist)
+                            FilterChip(
+                                selected = isSelected,
+                                onClick = {
+                                    selectedArtists = if (isSelected) {
+                                        selectedArtists - artist
+                                    } else {
+                                        selectedArtists + artist
+                                    }
+                                },
                                     label = { 
                                         Text(
                                             artist,
                                             style = MaterialTheme.typography.bodyMedium
                                         ) 
                                     },
-                                    colors = FilterChipDefaults.filterChipColors(
-                                        selectedContainerColor = Color(0xFFBB86FC),
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = Color(0xFFBB86FC),
                                         selectedLabelColor = Color.Black,
                                         containerColor = Color(0xFF2A2A2A)
                                     ),

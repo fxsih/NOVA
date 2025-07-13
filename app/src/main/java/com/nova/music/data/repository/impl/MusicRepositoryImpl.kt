@@ -10,6 +10,7 @@ import com.nova.music.data.local.MusicDao
 import com.nova.music.data.model.Song
 import com.nova.music.data.model.Playlist
 import com.nova.music.data.model.RecentlyPlayed
+import com.nova.music.data.model.SongPlaylistCrossRef
 import com.nova.music.data.repository.MusicRepository
 import com.nova.music.data.api.YTMusicService
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -38,28 +39,17 @@ class MusicRepositoryImpl @Inject constructor(
 
     override fun getAllSongs(): Flow<List<Song>> = musicDao.getAllSongs()
 
-    override fun getRecommendedSongs(): Flow<List<Song>> = flow {
-        // First emit local recommended songs
-        val localSongs = musicDao.getRecommendedSongs().first()
-        emit(localSongs)
-        
-        // Then try to fetch from backend if we have a song to base recommendations on
+    override fun getRecommendedSongs(genres: String, languages: String, artists: String): Flow<List<Song>> = flow {
         try {
-            if (localSongs.isNotEmpty()) {
-                val videoId = localSongs.first().id
-                val recommendations = ytMusicService.getRecommendations(videoId)
-                val songs = recommendations.map { it.toSong() }
+            val recommendedResults = ytMusicService.getRecommendations(
+                genres = genres.takeIf { it.isNotBlank() },
+                languages = languages.takeIf { it.isNotBlank() },
+                artists = artists.takeIf { it.isNotBlank() }
+            )
+            val songs = recommendedResults.map { it.toSong() }
                 emit(songs)
-            }
-        } catch (e: HttpException) {
-            Log.e(TAG, "HTTP error when fetching recommendations: ${e.code()}", e)
-            // If backend call fails, we already emitted local songs
-        } catch (e: IOException) {
-            Log.e(TAG, "Network error when fetching recommendations", e)
-            // Network error (no connection)
         } catch (e: Exception) {
-            Log.e(TAG, "Unknown error when fetching recommendations", e)
-            // Unknown error
+            emit(emptyList())
         }
     }
 
@@ -198,7 +188,7 @@ class MusicRepositoryImpl @Inject constructor(
         musicDao.getPlaylists().collect { playlists ->
             val playlistsWithSongs = playlists.map { playlist ->
                 playlist.apply {
-                    songs = musicDao.getPlaylistSongs(playlist.id).first()
+                    songs = musicDao.getPlaylistSongsV2(playlist.id).first()
                 }
             }
             emit(playlistsWithSongs)
@@ -206,7 +196,7 @@ class MusicRepositoryImpl @Inject constructor(
     }.distinctUntilChanged()
 
     override fun getPlaylistSongs(playlistId: String): Flow<List<Song>> = 
-        musicDao.getPlaylistSongs(playlistId)
+        musicDao.getPlaylistSongsV2(playlistId)
 
     override suspend fun createPlaylist(name: String) {
         val playlist = Playlist(
@@ -220,8 +210,8 @@ class MusicRepositoryImpl @Inject constructor(
         // First get the playlist, then delete it
         musicDao.getPlaylists().first().find { it.id == playlistId }?.let { playlist ->
             // Remove the playlist from all songs that have it
-            musicDao.getPlaylistSongs(playlistId).first().forEach { song ->
-                musicDao.removeSongFromPlaylist(song.id, playlistId)
+            musicDao.getPlaylistSongsV2(playlistId).first().forEach { song ->
+                musicDao.deleteSongPlaylistCrossRef(song.id, playlistId)
             }
             musicDao.deletePlaylist(playlist)
         }
@@ -239,15 +229,33 @@ class MusicRepositoryImpl @Inject constructor(
             musicDao.insertSong(song)
         }
         
-        // Then add to playlist
+        // Use the new join table approach
+        musicDao.insertSongPlaylistCrossRef(
+            SongPlaylistCrossRef(
+                songId = song.id,
+                playlistId = playlistId
+            )
+        )
+        
+        // Also update the legacy approach for backward compatibility
         musicDao.addSongToPlaylist(song.id, playlistId)
     }
 
     override suspend fun removeSongFromPlaylist(songId: String, playlistId: String) {
+        // Use the new join table approach
+        musicDao.deleteSongPlaylistCrossRef(songId, playlistId)
+        
+        // Also update the legacy approach for backward compatibility
         musicDao.removeSongFromPlaylist(songId, playlistId)
     }
 
+    override suspend fun isSongInPlaylist(songId: String, playlistId: String): Boolean {
+        // Use the new V2 method
+        return musicDao.isSongInPlaylistV2(songId, playlistId)
+    }
+
     override fun getPlaylistSongCount(playlistId: String): Flow<Int> {
-        return musicDao.getPlaylistSongCount(playlistId)
+        // Use the new V2 method
+        return musicDao.getPlaylistSongCountV2(playlistId)
     }
 } 
