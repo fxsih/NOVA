@@ -14,6 +14,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.isActive
 import javax.inject.Inject
 import android.util.Log
 import android.content.Context
@@ -24,6 +25,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
 import java.io.IOException
+import java.util.concurrent.TimeUnit
 
 /**
  * Repeat modes for music playback.
@@ -35,6 +37,18 @@ import java.io.IOException
  */
 enum class RepeatMode {
     NONE, ONE, ALL
+}
+
+/**
+ * Sleep timer options
+ */
+enum class SleepTimerOption {
+    OFF,
+    TEN_MINUTES,
+    FIFTEEN_MINUTES,
+    THIRTY_MINUTES,
+    ONE_HOUR,
+    END_OF_SONG
 }
 
 @HiltViewModel
@@ -84,8 +98,23 @@ class PlayerViewModel @Inject constructor(
     private val _downloadProgress = MutableStateFlow(0f)
     val downloadProgress: StateFlow<Float> = _downloadProgress.asStateFlow()
     
+    // Track sleep timer state
+    private val _sleepTimerActive = MutableStateFlow(false)
+    val sleepTimerActive: StateFlow<Boolean> = _sleepTimerActive.asStateFlow()
+    
+    // Track sleep timer remaining time
+    private val _sleepTimerRemaining = MutableStateFlow<Long>(0)
+    val sleepTimerRemaining: StateFlow<Long> = _sleepTimerRemaining.asStateFlow()
+    
+    // Track current sleep timer option
+    private val _sleepTimerOption = MutableStateFlow(SleepTimerOption.OFF)
+    val sleepTimerOption: StateFlow<SleepTimerOption> = _sleepTimerOption.asStateFlow()
+    
     // Track current loading job to cancel if needed
     private var loadingJob: Job? = null
+    
+    // Track sleep timer job
+    private var sleepTimerJob: Job? = null
     
     // OkHttpClient for downloads
     private val okHttpClient = OkHttpClient()
@@ -111,6 +140,31 @@ class PlayerViewModel @Inject constructor(
                     // If we have a song but no playlist, at least add the current song to the playlist
                     _currentPlaylistSongs.value = listOf(song)
                     println("DEBUG: Auto-updated playlist with current song: ${song.title}")
+                }
+                
+                // If sleep timer is set to END_OF_SONG and song changes, stop playback at the end
+                if (_sleepTimerOption.value == SleepTimerOption.END_OF_SONG) {
+                    // Cancel any existing timer
+                    sleepTimerJob?.cancel()
+                    
+                    // Set up a new timer for the end of this song
+                    sleepTimerJob = viewModelScope.launch {
+                        val songDuration = duration.value
+                        if (songDuration > 0) {
+                            val currentPosition = progress.value * songDuration
+                            val timeRemaining = songDuration - currentPosition
+                            
+                            if (timeRemaining > 0) {
+                                _sleepTimerActive.value = true
+                                delay(timeRemaining.toLong())
+                                if (isActive) {
+                                    stopPlayback()
+                                    _sleepTimerActive.value = false
+                                    _sleepTimerOption.value = SleepTimerOption.OFF
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -614,6 +668,104 @@ class PlayerViewModel @Inject constructor(
                 _downloadProgress.value = 0f
             }
         }
+    }
+
+    /**
+     * Sets a sleep timer with the specified option
+     */
+    fun setSleepTimer(option: SleepTimerOption) {
+        // Cancel any existing timer
+        sleepTimerJob?.cancel()
+        
+        _sleepTimerOption.value = option
+        
+        when (option) {
+            SleepTimerOption.OFF -> {
+                _sleepTimerActive.value = false
+                _sleepTimerRemaining.value = 0
+            }
+            SleepTimerOption.TEN_MINUTES -> startTimerWithDuration(10 * 60 * 1000L)
+            SleepTimerOption.FIFTEEN_MINUTES -> startTimerWithDuration(15 * 60 * 1000L)
+            SleepTimerOption.THIRTY_MINUTES -> startTimerWithDuration(30 * 60 * 1000L)
+            SleepTimerOption.ONE_HOUR -> startTimerWithDuration(60 * 60 * 1000L)
+            SleepTimerOption.END_OF_SONG -> {
+                // For END_OF_SONG, we'll handle this in the currentSong collector
+                _sleepTimerActive.value = true
+                
+                // Calculate remaining time for the current song
+                val songDuration = duration.value
+                if (songDuration > 0) {
+                    val currentPosition = progress.value * songDuration
+                    _sleepTimerRemaining.value = (songDuration - currentPosition).toLong()
+                    
+                    sleepTimerJob = viewModelScope.launch {
+                        val timeRemaining = _sleepTimerRemaining.value
+                        if (timeRemaining > 0) {
+                            delay(timeRemaining)
+                            if (isActive) {
+                                stopPlayback()
+                                _sleepTimerActive.value = false
+                                _sleepTimerOption.value = SleepTimerOption.OFF
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    /**
+     * Starts a timer with the specified duration in milliseconds
+     */
+    private fun startTimerWithDuration(durationMs: Long) {
+        _sleepTimerActive.value = true
+        _sleepTimerRemaining.value = durationMs
+        
+        sleepTimerJob = viewModelScope.launch {
+            val endTime = System.currentTimeMillis() + durationMs
+            
+            while (isActive && System.currentTimeMillis() < endTime) {
+                val remaining = endTime - System.currentTimeMillis()
+                _sleepTimerRemaining.value = remaining
+                delay(1000) // Update every second
+            }
+            
+            if (isActive) {
+                stopPlayback()
+                _sleepTimerActive.value = false
+                _sleepTimerOption.value = SleepTimerOption.OFF
+            }
+        }
+    }
+    
+    /**
+     * Cancels the current sleep timer
+     */
+    fun cancelSleepTimer() {
+        sleepTimerJob?.cancel()
+        _sleepTimerActive.value = false
+        _sleepTimerRemaining.value = 0
+        _sleepTimerOption.value = SleepTimerOption.OFF
+    }
+    
+    /**
+     * Formats the remaining time as a string (MM:SS)
+     */
+    fun formatSleepTimerRemaining(): String {
+        val remaining = _sleepTimerRemaining.value
+        
+        if (remaining <= 0) {
+            return "00:00"
+        }
+        
+        if (_sleepTimerOption.value == SleepTimerOption.END_OF_SONG) {
+            return "End of song"
+        }
+        
+        val minutes = TimeUnit.MILLISECONDS.toMinutes(remaining)
+        val seconds = TimeUnit.MILLISECONDS.toSeconds(remaining) - TimeUnit.MINUTES.toSeconds(minutes)
+        
+        return String.format("%02d:%02d", minutes, seconds)
     }
 
     override fun onCleared() {
