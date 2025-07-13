@@ -4,17 +4,27 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.nova.music.data.model.Playlist
 import com.nova.music.data.model.Song
+import com.nova.music.data.model.UserMusicPreferences
 import com.nova.music.data.repository.MusicRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
+import kotlinx.coroutines.flow.first
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.json.Json
 import javax.inject.Inject
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @HiltViewModel
 class LibraryViewModel @Inject constructor(
-    private val musicRepository: MusicRepository
+    private val musicRepository: MusicRepository,
+    private val dataStore: DataStore<Preferences>
 ) : ViewModel() {
     
     val playlists: StateFlow<List<Playlist>> = musicRepository.getPlaylists()
@@ -50,6 +60,16 @@ class LibraryViewModel @Inject constructor(
 
     private val _currentPlaylistSongs = MutableStateFlow<List<Song>>(emptyList())
     val currentPlaylistSongs: StateFlow<List<Song>> = _currentPlaylistSongs.asStateFlow()
+
+    // Preferences for recommendations
+    private val _userPreferences = MutableStateFlow(UserMusicPreferences())
+    val userPreferences: StateFlow<UserMusicPreferences> = _userPreferences.asStateFlow()
+
+    private val preferencesKey = stringPreferencesKey("user_music_preferences")
+
+    init {
+        viewModelScope.launch { loadUserPreferences() }
+    }
 
     fun createPlaylist(name: String) {
         viewModelScope.launch {
@@ -91,6 +111,10 @@ class LibraryViewModel @Inject constructor(
                 initialValue = emptyList()
             )
 
+    suspend fun isSongInPlaylist(songId: String, playlistId: String): Boolean {
+        return musicRepository.isSongInPlaylist(songId, playlistId)
+    }
+
     fun addSongToLiked(song: Song) {
         viewModelScope.launch {
             musicRepository.addSongToLiked(song)
@@ -100,6 +124,28 @@ class LibraryViewModel @Inject constructor(
     fun removeSongFromLiked(songId: String) {
         viewModelScope.launch {
             musicRepository.removeSongFromLiked(songId)
+        }
+    }
+
+    fun setUserPreferences(preferences: UserMusicPreferences) {
+        _userPreferences.value = preferences
+        viewModelScope.launch { saveUserPreferences(preferences) }
+    }
+
+    private suspend fun saveUserPreferences(preferences: UserMusicPreferences) {
+        val json = Json.encodeToString(preferences)
+        dataStore.edit { it[preferencesKey] = json }
+    }
+
+    suspend fun loadUserPreferences() {
+        try {
+            val json = dataStore.data.first()[preferencesKey]
+            if (json != null) {
+                _userPreferences.value = Json.decodeFromString(json)
+            }
+        } catch (e: Exception) {
+            // If there's an error loading preferences, keep the default empty preferences
+            _userPreferences.value = UserMusicPreferences()
         }
     }
 } 

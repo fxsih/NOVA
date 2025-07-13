@@ -7,7 +7,7 @@ import kotlinx.coroutines.flow.Flow
 interface MusicRepository {
     // Songs
     fun getAllSongs(): Flow<List<Song>>
-    fun getRecommendedSongs(): Flow<List<Song>>
+    fun getRecommendedSongs(genres: String = "", languages: String = "", artists: String = ""): Flow<List<Song>>
     fun searchSongs(query: String): Flow<List<Song>>
     fun getTrendingSongs(): Flow<List<Song>>
     
@@ -32,6 +32,7 @@ interface MusicRepository {
     suspend fun renamePlaylist(playlistId: String, newName: String)
     suspend fun addSongToPlaylist(song: Song, playlistId: String)
     suspend fun removeSongFromPlaylist(songId: String, playlistId: String)
+    suspend fun isSongInPlaylist(songId: String, playlistId: String): Boolean
     fun getPlaylistSongCount(playlistId: String): Flow<Int>
     fun getPlaylistSongs(playlistId: String): Flow<List<Song>>
 } 

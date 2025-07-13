@@ -19,7 +19,10 @@ interface YTMusicService {
     
     @GET("recommended")
     suspend fun getRecommendations(
-        @Query("video_id") videoId: String,
+        @Query("video_id") videoId: String? = null,
+        @Query("genres") genres: String? = null,
+        @Query("languages") languages: String? = null,
+        @Query("artists") artists: String? = null,
         @Query("limit") limit: Int = 20
     ): List<YTMusicSearchResult>
     

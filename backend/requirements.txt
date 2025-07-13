@@ -9,3 +9,4 @@ requests>=2.31.0
 ffmpeg-python>=0.2.0
 # For handling CORS in the FastAPI application
 aiofiles>=23.2.1 
+cachetools 

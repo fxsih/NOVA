@@ -32,6 +32,8 @@ import com.nova.music.ui.viewmodels.PlayerViewModel
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.compose.runtime.collectAsState
 import androidx.compose.animation.AnimatedVisibility
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
 
 sealed class Screen(val route: String) {
     object Home : Screen("home")
@@ -59,8 +61,7 @@ fun NovaNavigation(
         composable(Screen.Home.route) {
             HomeScreen(
                 onNavigateToPlayer = { songId ->
-                    playerViewModel.loadSong(songId)
-                    navController.navigate(Screen.Player.createRoute(songId))
+                    // Navigation to player is now handled by LaunchedEffect in NovaNavigation()
                 },
                 onNavigateToSearch = {
                     navController.navigate(Screen.Search.route)
@@ -71,8 +72,8 @@ fun NovaNavigation(
         composable(Screen.Search.route) {
             SearchScreen(
                 onSongClick = { songId ->
+                    // Directly load the song in PlayerViewModel instead of just navigating
                     playerViewModel.loadSong(songId)
-                    navController.navigate(Screen.Player.createRoute(songId))
                 },
                 navController = navController
             )
@@ -84,8 +85,7 @@ fun NovaNavigation(
                     navController.navigate("playlist/$playlistId")
                 },
                 onNavigateToPlayer = { songId ->
-                    playerViewModel.loadSong(songId)
-                    navController.navigate(Screen.Player.createRoute(songId))
+                    // Navigation to player is now handled by LaunchedEffect in NovaNavigation()
                 }
             )
         }
@@ -94,7 +94,19 @@ fun NovaNavigation(
             route = "player/{songId}",
             arguments = listOf(
                 navArgument("songId") { type = NavType.StringType }
-            )
+            ),
+            enterTransition = {
+                slideInVertically(
+                    initialOffsetY = { it }, // Start from bottom
+                    animationSpec = tween(300, easing = EaseOutQuart)
+                ) + fadeIn(animationSpec = tween(300))
+            },
+            exitTransition = {
+                slideOutVertically(
+                    targetOffsetY = { it }, // Exit to bottom
+                    animationSpec = tween(300, easing = EaseInQuart)
+                ) + fadeOut(animationSpec = tween(300))
+            }
         ) { backStackEntry ->
             val songId = backStackEntry.arguments?.getString("songId") ?: return@composable
             PlayerScreen(
@@ -104,7 +116,19 @@ fun NovaNavigation(
         }
         
         composable(
-            route = "player"
+            route = "player",
+            enterTransition = {
+                slideInVertically(
+                    initialOffsetY = { it }, // Start from bottom
+                    animationSpec = tween(300, easing = EaseOutQuart)
+                ) + fadeIn(animationSpec = tween(300))
+            },
+            exitTransition = {
+                slideOutVertically(
+                    targetOffsetY = { it }, // Exit to bottom
+                    animationSpec = tween(300, easing = EaseInQuart)
+                ) + fadeOut(animationSpec = tween(300))
+            }
         ) {
             PlayerScreen(
                 songId = null,
@@ -123,8 +147,8 @@ fun NovaNavigation(
                 playlistId = playlistId,
                 onNavigateBack = { navController.popBackStack() },
                 onNavigateToPlayer = { songId ->
-                    playerViewModel.loadSong(songId)
-                    navController.navigate(Screen.Player.createRoute(songId))
+                    // The playlist ID will be set by the PlaylistDetailScreen component
+                    // Navigation to player is now handled by LaunchedEffect in NovaNavigation()
                 }
             )
         }
@@ -140,6 +164,24 @@ fun NovaNavigation() {
         BottomNavItem.Library
     )
     
+    val playerViewModel: PlayerViewModel = hiltViewModel()
+    val shouldShowFullPlayer by playerViewModel.shouldShowFullPlayer.collectAsState()
+    val currentSong by playerViewModel.currentSong.collectAsState()
+    val isInPlayerScreen by playerViewModel.isInPlayerScreen.collectAsState()
+    val coroutineScope = rememberCoroutineScope()
+    
+    // Handle automatic navigation to full player based on shouldShowFullPlayer flag
+    LaunchedEffect(shouldShowFullPlayer, currentSong) {
+        if (shouldShowFullPlayer && currentSong != null && !isInPlayerScreen) {
+            navController.navigate(Screen.Player.createRoute())
+        }
+    }
+    
+    // Reset full player flag when app starts
+    LaunchedEffect(Unit) {
+        playerViewModel.resetFullPlayerShownFlag()
+    }
+    
     Box(modifier = Modifier.fillMaxSize()) {
         NovaNavigation(navController)
 
@@ -148,12 +190,13 @@ fun NovaNavigation() {
 
         // Only show mini player and bottom nav if not on PlayerScreen
         val isPlayerScreen = currentRoute?.startsWith("player") == true
+        
+        // Update the isInPlayerScreen flag in the ViewModel
+        LaunchedEffect(isPlayerScreen) {
+            playerViewModel.setInPlayerScreen(isPlayerScreen)
+        }
 
-        // Get current song from PlayerViewModel
-        val playerViewModel: PlayerViewModel = hiltViewModel()
-        val currentSong by playerViewModel.currentSong.collectAsState()
-
-        val navBarHeight = 80.dp
+        val navBarHeight = 72.dp
         val miniPlayerGap = 8.dp
 
         // Mini player hovers above nav bar
@@ -177,10 +220,9 @@ fun NovaNavigation() {
             Row(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    // No horizontal padding, stretch edge-to-edge
                     .fillMaxWidth()
                     .height(navBarHeight)
-                    .clip(RoundedCornerShape(24.dp))
+                    .clip(RoundedCornerShape(20.dp))
                     .background(Color(0xFF1E1E1E)),
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically
@@ -191,16 +233,12 @@ fun NovaNavigation() {
                         "playlist/${navBackStackEntry?.arguments?.getString("playlistId")}" -> item.route == Screen.Library.route
                         else -> currentRoute == item.route
                     }
-                    val iconSize by animateDpAsState(
-                        targetValue = if (selected) 24.dp else 20.dp,
-                        animationSpec = tween(
-                            durationMillis = 200,
-                            easing = FastOutSlowInEasing
-                        )
-                    )
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
+                    
+                    // Each nav item has equal width
+                    Box(
                         modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
                             .clickable(
                                 interactionSource = remember { MutableInteractionSource() },
                                 indication = null
@@ -209,43 +247,60 @@ fun NovaNavigation() {
                                     popUpTo(navController.graph.startDestinationId)
                                     launchSingleTop = true
                                 }
-                            }
-                            .padding(12.dp)
+                            },
+                        contentAlignment = Alignment.Center
                     ) {
-                        Icon(
-                            imageVector = if (selected) item.selectedIcon else item.unselectedIcon,
-                            contentDescription = item.label,
-                            modifier = Modifier.size(iconSize),
-                            tint = if (selected)
-                                Color(0xFFBB86FC)
-                            else
-                                Color(0xFFCCCCDF).copy(alpha = 0.5f)
-                        )
-                        AnimatedVisibility(
-                            visible = selected,
-                            enter = fadeIn(
-                                animationSpec = tween(200)
-                            ) + expandVertically(
-                                animationSpec = tween(200),
-                                expandFrom = Alignment.Top
-                            ),
-                            exit = fadeOut(
-                                animationSpec = tween(200)
-                            ) + shrinkVertically(
-                                animationSpec = tween(200),
-                                shrinkTowards = Alignment.Top
-                            )
+                        // Simple column with icon and text
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center,
+                            modifier = Modifier.padding(vertical = 7.dp)
                         ) {
-                            Text(
-                                text = item.label,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (selected)
-                                    Color(0xFFBB86FC)
-                                else
-                                    Color(0xFFCCCCDF).copy(alpha = 0.5f),
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier.padding(top = 4.dp)
-                            )
+                            // Use a Box with fixed height for the icon to ensure consistent positioning
+                            Box(
+                                modifier = Modifier
+                                    .size(24.dp) // Fixed container size for all icons
+                                    .padding(0.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                // Icon with size animation
+                                val iconSize by animateDpAsState(
+                                    targetValue = if (selected) 23.dp else 19.dp,
+                                    animationSpec = tween(
+                                        durationMillis = 200,
+                                        easing = FastOutSlowInEasing
+                                    )
+                                )
+                                
+                                Icon(
+                                    imageVector = if (selected) item.selectedIcon else item.unselectedIcon,
+                                    contentDescription = item.label,
+                                    modifier = Modifier.size(iconSize),
+                                    tint = if (selected)
+                                        Color(0xFFBB86FC)
+                                    else
+                                        Color(0xFFCCCCDF).copy(alpha = 0.5f)
+                                )
+                            }
+                            
+                            // Fixed height container for text to ensure consistent layout
+                            Box(
+                                modifier = Modifier
+                                    .height(18.dp) // Fixed height for text area
+                                    .fillMaxWidth(),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = item.label,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (selected)
+                                        Color(0xFFBB86FC)
+                                    else
+                                        Color(0xFFCCCCDF).copy(alpha = 0f), // Invisible but takes space
+                                    textAlign = TextAlign.Center,
+                                    maxLines = 1
+                                )
+                            }
                         }
                     }
                 }

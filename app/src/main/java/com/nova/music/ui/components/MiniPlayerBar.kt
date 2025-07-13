@@ -71,22 +71,19 @@ fun MiniPlayerBar(
         }.toFloat()
     }
 
+    // Don't render anything if there's no current song
     if (currentSong == null) return
 
-    val albumArtColor = remember(currentSong?.id) {
-        val colors = listOf(
-            Color(0xFF1DB954), // Spotify Green
-            Color(0xFFE91E63), // Pink
-            Color(0xFF9C27B0), // Purple
-            Color(0xFF2196F3), // Blue
-            Color(0xFF00BCD4), // Cyan
-            Color(0xFF4CAF50), // Green
-            Color(0xFFFFC107), // Amber
-            Color(0xFFFF9800), // Orange
-            Color(0xFFF44336), // Red
-            Color(0xFF795548)  // Brown
-        )
-        colors[currentSong?.id?.hashCode()?.absoluteValue?.rem(colors.size) ?: 0]
+    // Prepare tap handler with debounce to prevent double-tapping issues
+    val tapHandler = remember {
+        var lastTapTime = 0L
+        { 
+            val currentTime = System.currentTimeMillis()
+            if (currentTime - lastTapTime > 300) { // 300ms debounce
+                lastTapTime = currentTime
+                onTap()
+            }
+        }
     }
 
     LaunchedEffect(offsetX) {
@@ -101,7 +98,7 @@ fun MiniPlayerBar(
         modifier = modifier
             .fillMaxWidth()
             .offset { IntOffset(animatedOffset.value.roundToInt(), 0) }
-            .clickable(onClick = onTap)
+            .clickable(onClick = tapHandler)
             .draggable(
                 orientation = Orientation.Horizontal,
                 state = rememberDraggableState { delta ->

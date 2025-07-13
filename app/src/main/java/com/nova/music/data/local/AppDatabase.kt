@@ -7,15 +7,17 @@ import com.nova.music.data.model.Song
 import com.nova.music.data.model.Playlist
 import com.nova.music.data.model.PlaylistSongCrossRef
 import com.nova.music.data.model.RecentlyPlayed
+import com.nova.music.data.model.SongPlaylistCrossRef
 
 @Database(
     entities = [
         Song::class,
         Playlist::class,
         RecentlyPlayed::class,
-        PlaylistSongCrossRef::class
+        PlaylistSongCrossRef::class,
+        SongPlaylistCrossRef::class
     ],
-    version = 4,
+    version = 6,
     exportSchema = false
 )
 @TypeConverters(Converters::class)

@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.nova.music.data.model.Song
 import com.nova.music.data.repository.MusicRepository
+import com.nova.music.data.model.UserMusicPreferences
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -49,9 +50,7 @@ class HomeViewModel @Inject constructor(
             }
             _recentSearches.value = musicRepository.getRecentSearches()
         }
-        
         loadTrendingSongs()
-        loadRecommendedSongs()
     }
     
     private fun loadTrendingSongs() {
@@ -71,11 +70,19 @@ class HomeViewModel @Inject constructor(
         }
     }
     
-    private fun loadRecommendedSongs() {
+    fun loadRecommendedSongs(preferences: UserMusicPreferences) {
         viewModelScope.launch {
             _recommendedSongsState.value = UiState.Loading
             try {
-                musicRepository.getRecommendedSongs().collect { songs ->
+                val genres = preferences.genres.joinToString(",")
+                val languages = preferences.languages.joinToString(",")
+                val artists = preferences.artists.joinToString(",")
+                musicRepository.getRecommendedSongs(genres, languages, artists)
+                    .catch { e ->
+                        Log.e("HomeViewModel", "Error loading recommendations", e)
+                        _recommendedSongsState.value = UiState.Error("Failed to load recommendations: ${e.message}")
+                    }
+                    .collect { songs ->
                     if (songs.isEmpty()) {
                         _recommendedSongsState.value = UiState.Error("No recommended songs found")
                     } else {
@@ -83,7 +90,8 @@ class HomeViewModel @Inject constructor(
                     }
                 }
             } catch (e: Exception) {
-                _recommendedSongsState.value = UiState.Error("Failed to load recommended songs: ${e.message}")
+                Log.e("HomeViewModel", "Error in loadRecommendedSongs", e)
+                _recommendedSongsState.value = UiState.Error("Failed to load recommendations: ${e.message}")
             }
         }
     }
@@ -92,8 +100,8 @@ class HomeViewModel @Inject constructor(
         loadTrendingSongs()
     }
     
-    fun refreshRecommendedSongs() {
-        loadRecommendedSongs()
+    fun refreshRecommendedSongs(preferences: UserMusicPreferences) {
+        loadRecommendedSongs(preferences)
     }
 
     fun search(query: String) {

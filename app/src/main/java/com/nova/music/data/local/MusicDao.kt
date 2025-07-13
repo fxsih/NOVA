@@ -4,6 +4,7 @@ import androidx.room.*
 import com.nova.music.data.model.Song
 import com.nova.music.data.model.Playlist
 import com.nova.music.data.model.RecentlyPlayed
+import com.nova.music.data.model.SongPlaylistCrossRef
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -80,4 +81,28 @@ interface MusicDao {
 
     @Query("SELECT COUNT(*) FROM songs WHERE playlistIds LIKE '%' || :playlistId || '%'")
     fun getPlaylistSongCount(playlistId: String): Flow<Int>
+
+    /**
+     * Checks if a song is in a specific playlist
+     */
+    @Query("SELECT EXISTS(SELECT 1 FROM songs WHERE id = :songId AND playlistIds LIKE '%' || :playlistId || '%')")
+    suspend fun isSongInPlaylist(songId: String, playlistId: String): Boolean
+
+    /**
+     * Methods for the new join table approach
+     */
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertSongPlaylistCrossRef(crossRef: SongPlaylistCrossRef)
+    
+    @Query("DELETE FROM song_playlist_cross_ref WHERE songId = :songId AND playlistId = :playlistId")
+    suspend fun deleteSongPlaylistCrossRef(songId: String, playlistId: String)
+    
+    @Query("SELECT EXISTS(SELECT 1 FROM song_playlist_cross_ref WHERE songId = :songId AND playlistId = :playlistId)")
+    suspend fun isSongInPlaylistV2(songId: String, playlistId: String): Boolean
+    
+    @Query("SELECT s.* FROM songs s INNER JOIN song_playlist_cross_ref ref ON s.id = ref.songId WHERE ref.playlistId = :playlistId ORDER BY ref.addedAt DESC")
+    fun getPlaylistSongsV2(playlistId: String): Flow<List<Song>>
+    
+    @Query("SELECT COUNT(*) FROM song_playlist_cross_ref WHERE playlistId = :playlistId")
+    fun getPlaylistSongCountV2(playlistId: String): Flow<Int>
 } 

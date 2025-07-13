@@ -198,27 +198,45 @@ class MusicPlayerServiceImpl @Inject constructor(
                 Log.d(TAG, "Playing song: ${song.title}, ID: ${song.id}")
                 withContext(Dispatchers.Main) { ensurePlayerCreated() }
                 
-                // If we're playing a single song, clear the queue and add just this song
+                // Update the current song immediately
+                _currentSong.value = song
+                
+                // Update the queue to just this song
                 currentQueueInternal = listOf(song)
-                _currentQueue.value = listOf(song)
+                _currentQueue.value = currentQueueInternal
                 
-                // Clear the current playlist and add just this song
-                withContext(Dispatchers.Main) {
-                    exoPlayer?.clearMediaItems()
-                }
-                
+                // Create a media item for the song
                 val mediaItem = createMediaItem(song)
                 
                 withContext(Dispatchers.Main) {
-                    exoPlayer?.setMediaItem(mediaItem)
-                    exoPlayer?.prepare()
-                    exoPlayer?.playWhenReady = true
-                    Log.d(TAG, "Media item set and prepared")
+                    // Remember playback state - default to true since we want to play immediately
+                    val wasPlaying = true
+                    
+                    // Clear the current playlist and add the new song
+                    exoPlayer?.let { player ->
+                        player.clearMediaItems()
+                        player.addMediaItem(mediaItem)
+                        player.prepare()
+                        
+                        // Set playWhenReady to ensure playback starts
+                        player.playWhenReady = wasPlaying
+                        
+                        // Force play if needed
+                        if (wasPlaying) {
+                            player.play()
+                        }
+                        
+                        Log.d(TAG, "ExoPlayer prepared with single song, playWhenReady=$wasPlaying")
+                    }
                 }
                 
-                _currentSong.value = song
-                try { musicRepository.addToRecentlyPlayed(song) } catch (e: Exception) {
-                    Log.e(TAG, "Error adding song to recently played", e)
+                // Add to recently played
+                coroutineScope.launch {
+                    try {
+                        musicRepository.addToRecentlyPlayed(song)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error adding song to recently played", e)
+                    }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error in playSong", e)
@@ -245,7 +263,9 @@ class MusicPlayerServiceImpl @Inject constructor(
                 // Find the start song index (default to 0 if not found)
                 val startIndex = if (startSongId != null) {
                     songs.indexOfFirst { it.id == startSongId }.takeIf { it >= 0 } ?: 0
-                } else 0
+                } else {
+                    0
+                }
                 
                 Log.d(TAG, "Starting playback from index $startIndex: ${songs[startIndex].title}")
                 
@@ -267,18 +287,25 @@ class MusicPlayerServiceImpl @Inject constructor(
                     return@withContext
                 }
                 
-                withContext(Dispatchers.Main) {
+                    withContext(Dispatchers.Main) {
                     ensurePlayerCreated()
                     exoPlayer?.clearMediaItems()
                     exoPlayer?.setMediaItems(mediaItems)
                     
                     // Make sure we don't go out of bounds
-                    val safeStartIndex = if (startIndex < mediaItems.size) startIndex else 0
+                    val safeStartIndex = if (startIndex < mediaItems.size) {
+                        startIndex
+                    } else {
+                        0
+                    }
                     exoPlayer?.seekTo(safeStartIndex, 0)
-                    exoPlayer?.prepare()
-                    exoPlayer?.playWhenReady = true
-                    Log.d(TAG, "Queue set with ${mediaItems.size} items, starting at index $safeStartIndex")
-                }
+                        exoPlayer?.prepare()
+                        exoPlayer?.playWhenReady = true
+                    Log.d(TAG, "Queue set with ${mediaItems.size} items, starting at index $safeStartIndex, playWhenReady=true")
+                    
+                    // Force play to ensure playback starts immediately
+                    exoPlayer?.play()
+                    }
                 
                 // Update current song
                 _currentSong.value = songs[startIndex]
@@ -330,7 +357,9 @@ class MusicPlayerServiceImpl @Inject constructor(
                 
                 _progress.value = if (totalDuration > 0) {
                     currentPosition.toFloat() / totalDuration
-                } else 0f
+                } else {
+                    0f
+                }
                 
                 // Update duration in case it changed
                 _duration.value = totalDuration
@@ -347,6 +376,7 @@ class MusicPlayerServiceImpl @Inject constructor(
                 withContext(Dispatchers.Main) {
                     ensurePlayerCreated()
                     if (exoPlayer?.isPlaying == false) {
+                        exoPlayer?.playWhenReady = true
                         exoPlayer?.play()
                         Log.d(TAG, "ExoPlayer play() called")
                     }
@@ -381,8 +411,9 @@ class MusicPlayerServiceImpl @Inject constructor(
                 withContext(Dispatchers.Main) {
                     ensurePlayerCreated()
                     if (exoPlayer?.isPlaying == false) {
+                        exoPlayer?.playWhenReady = true
                         exoPlayer?.play()
-                        Log.d(TAG, "ExoPlayer resume/play() called")
+                        Log.d(TAG, "ExoPlayer resume() called")
                     }
                 }
             } catch (e: Exception) {
@@ -472,8 +503,26 @@ class MusicPlayerServiceImpl @Inject constructor(
             try {
                 withContext(Dispatchers.Main) {
                     ensurePlayerCreated()
+                    
+                    // Remember playback state
+                    val wasPlaying = exoPlayer?.isPlaying == true
+                    
+                    Log.d(TAG, "Before setShuffle($enabled): wasPlaying=$wasPlaying")
+                    
+                    // Set shuffle mode
                     exoPlayer?.shuffleModeEnabled = enabled
-                    Log.d(TAG, "ExoPlayer shuffle mode set to $enabled")
+                    
+                    // Restore playback state using playWhenReady for reliability
+                    Log.d(TAG, "Setting playWhenReady=$wasPlaying")
+                    exoPlayer?.playWhenReady = wasPlaying
+                    
+                    // Additional check to ensure playback is restored
+                    if (wasPlaying && exoPlayer?.isPlaying == false) {
+                        Log.d(TAG, "Playback not restored with playWhenReady, forcing play()")
+                        exoPlayer?.play()
+                    }
+                    
+                    Log.d(TAG, "ExoPlayer shuffle mode set to $enabled, playWhenReady=$wasPlaying")
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error setting shuffle mode", e)
@@ -517,6 +566,444 @@ class MusicPlayerServiceImpl @Inject constructor(
                 Log.e(TAG, "Error in skipToPrevious", e)
                 _error.value = "Error skipping to previous: ${e.message}"
             }
+        }
+    }
+    
+    override suspend fun moveSongUp(songId: String): Boolean {
+        return withContext(Dispatchers.IO) {
+            try {
+                val queue = currentQueueInternal.toMutableList()
+                val index = queue.indexOfFirst { it.id == songId }
+                
+                // Can't move up if it's the first song or not found
+                if (index <= 0) {
+                    Log.d(TAG, "Can't move song up: index=$index")
+                    return@withContext false
+                }
+                
+                // Swap with the song above it
+                val temp = queue[index]
+                queue[index] = queue[index - 1]
+                queue[index - 1] = temp
+                
+                // Update the queue
+                currentQueueInternal = queue
+                _currentQueue.value = queue
+                
+                // Update the ExoPlayer queue
+                withContext(Dispatchers.Main) {
+                    ensurePlayerCreated()
+                    
+                    // Remember the current position and index
+                    val currentPosition = exoPlayer?.currentPosition ?: 0
+                    val currentIndex = exoPlayer?.currentMediaItemIndex ?: 0
+                    val currentMediaId = exoPlayer?.currentMediaItem?.mediaId
+                    val wasPlaying = exoPlayer?.isPlaying == true
+                    
+                    Log.d(TAG, "Before moveSongUp: wasPlaying=$wasPlaying, currentPosition=$currentPosition, currentIndex=$currentIndex")
+                    
+                    // Use incremental queue changes instead of rebuilding the entire queue
+                    if (exoPlayer?.mediaItemCount ?: 0 > index && index > 0) {
+                        try {
+                            // Move the media item up using ExoPlayer's moveMediaItem
+                            exoPlayer?.moveMediaItem(index, index - 1)
+                            Log.d(TAG, "Used incremental moveMediaItem($index, ${index - 1})")
+                            
+                            // If the current song was moved or is adjacent to the moved song,
+                            // we need to update the current index
+                            if (currentIndex == index) {
+                                // Current song was moved up
+                                exoPlayer?.seekTo(index - 1, currentPosition)
+                                Log.d(TAG, "Current song moved up, seeking to index=${index - 1}")
+                            } else if (currentIndex == index - 1) {
+                                // Current song was moved down
+                                exoPlayer?.seekTo(index, currentPosition)
+                                Log.d(TAG, "Current song moved down, seeking to index=$index")
+                            }
+                        } catch (e: Exception) {
+                            // Fallback to rebuilding the queue if incremental update fails
+                            Log.e(TAG, "Incremental moveMediaItem failed, falling back to full rebuild", e)
+                            rebuildEntireQueue(queue, currentMediaId, currentPosition, currentIndex, wasPlaying)
+                        }
+                    } else {
+                        // Fallback to rebuilding the queue if indices are out of bounds
+                        Log.d(TAG, "Index out of bounds for incremental update, using full rebuild")
+                        rebuildEntireQueue(queue, currentMediaId, currentPosition, currentIndex, wasPlaying)
+                    }
+                    
+                    Log.d(TAG, "Queue reordered: moved song up at index $index, playWhenReady=$wasPlaying")
+                }
+                
+                return@withContext true
+            } catch (e: Exception) {
+                Log.e(TAG, "Error moving song up", e)
+                _error.value = "Error reordering queue: ${e.message}"
+                return@withContext false
+            }
+        }
+    }
+    
+    override suspend fun moveSongDown(songId: String): Boolean {
+        return withContext(Dispatchers.IO) {
+            try {
+                val queue = currentQueueInternal.toMutableList()
+                val index = queue.indexOfFirst { it.id == songId }
+                
+                // Can't move down if it's the last song or not found
+                if (index < 0 || index >= queue.size - 1) {
+                    Log.d(TAG, "Can't move song down: index=$index, size=${queue.size}")
+                    return@withContext false
+                }
+                
+                // Swap with the song below it
+                val temp = queue[index]
+                queue[index] = queue[index + 1]
+                queue[index + 1] = temp
+                
+                // Update the queue
+                currentQueueInternal = queue
+                _currentQueue.value = queue
+                
+                // Update the ExoPlayer queue
+                withContext(Dispatchers.Main) {
+                    ensurePlayerCreated()
+                    
+                    // Remember the current position and index
+                    val currentPosition = exoPlayer?.currentPosition ?: 0
+                    val currentIndex = exoPlayer?.currentMediaItemIndex ?: 0
+                    val currentMediaId = exoPlayer?.currentMediaItem?.mediaId
+                    val wasPlaying = exoPlayer?.isPlaying == true
+                    
+                    Log.d(TAG, "Before moveSongDown: wasPlaying=$wasPlaying, currentPosition=$currentPosition, currentIndex=$currentIndex")
+                    
+                    // Use incremental queue changes instead of rebuilding the entire queue
+                    if (exoPlayer?.mediaItemCount ?: 0 > index + 1) {
+                        try {
+                            // Move the media item down using ExoPlayer's moveMediaItem
+                            exoPlayer?.moveMediaItem(index, index + 1)
+                            Log.d(TAG, "Used incremental moveMediaItem($index, ${index + 1})")
+                            
+                            // If the current song was moved or is adjacent to the moved song,
+                            // we need to update the current index
+                            if (currentIndex == index) {
+                                // Current song was moved down
+                                exoPlayer?.seekTo(index + 1, currentPosition)
+                                Log.d(TAG, "Current song moved down, seeking to index=${index + 1}")
+                            } else if (currentIndex == index + 1) {
+                                // Current song was moved up
+                                exoPlayer?.seekTo(index, currentPosition)
+                                Log.d(TAG, "Current song moved up, seeking to index=$index")
+                            }
+                        } catch (e: Exception) {
+                            // Fallback to rebuilding the queue if incremental update fails
+                            Log.e(TAG, "Incremental moveMediaItem failed, falling back to full rebuild", e)
+                            rebuildEntireQueue(queue, currentMediaId, currentPosition, currentIndex, wasPlaying)
+                        }
+                    } else {
+                        // Fallback to rebuilding the queue if indices are out of bounds
+                        Log.d(TAG, "Index out of bounds for incremental update, using full rebuild")
+                        rebuildEntireQueue(queue, currentMediaId, currentPosition, currentIndex, wasPlaying)
+                    }
+                    
+                    Log.d(TAG, "Queue reordered: moved song down at index $index, playWhenReady=$wasPlaying")
+                }
+                
+                return@withContext true
+            } catch (e: Exception) {
+                Log.e(TAG, "Error moving song down", e)
+                _error.value = "Error reordering queue: ${e.message}"
+                return@withContext false
+            }
+        }
+    }
+    
+    override suspend fun reorderQueue(songs: List<Song>) {
+        withContext(Dispatchers.IO) {
+            try {
+                if (songs.isEmpty()) {
+                    Log.d(TAG, "Cannot reorder empty queue")
+                    return@withContext
+                }
+                
+                // Update the queue
+                currentQueueInternal = songs
+                _currentQueue.value = songs
+                
+                // Update the ExoPlayer queue
+                withContext(Dispatchers.Main) {
+                    ensurePlayerCreated()
+                    
+                    // Remember the current position, index, and playback state
+                    val currentPosition = exoPlayer?.currentPosition ?: 0
+                    val currentIndex = exoPlayer?.currentMediaItemIndex ?: 0
+                    val currentMediaId = exoPlayer?.currentMediaItem?.mediaId
+                    val wasPlaying = exoPlayer?.isPlaying == true
+                    
+                    Log.d(TAG, "Before reorderQueue: wasPlaying=$wasPlaying, currentPosition=$currentPosition, currentIndex=$currentIndex")
+                    
+                    // Rebuild the media items
+                    val mediaItems = songs.map { createMediaItem(it) }
+                    
+                    // Set the new queue
+                    exoPlayer?.clearMediaItems()
+                    exoPlayer?.setMediaItems(mediaItems)
+                    
+                    // Restore playback position
+                    if (currentMediaId != null) {
+                        // Find the new index of the current song
+                        val newIndex = songs.indexOfFirst { it.id == currentMediaId }
+                        if (newIndex >= 0) {
+                            exoPlayer?.seekTo(newIndex, currentPosition)
+                            Log.d(TAG, "Seeking to newIndex=$newIndex (found by mediaId)")
+                        } else {
+                            exoPlayer?.seekTo(currentIndex, currentPosition)
+                            Log.d(TAG, "Seeking to original currentIndex=$currentIndex (mediaId not found)")
+                        }
+                    } else {
+                        exoPlayer?.seekTo(currentIndex, currentPosition)
+                        Log.d(TAG, "Seeking to original currentIndex=$currentIndex (no mediaId)")
+                    }
+                    
+                    // Prepare if needed
+                    if (exoPlayer?.playbackState == Player.STATE_IDLE) {
+                        Log.d(TAG, "Player in STATE_IDLE, preparing")
+                        exoPlayer?.prepare()
+                    }
+                    
+                    // Restore playback state using playWhenReady for reliability
+                    Log.d(TAG, "Setting playWhenReady=$wasPlaying")
+                    exoPlayer?.playWhenReady = wasPlaying
+                    
+                    // Additional check to ensure playback is restored
+                    if (wasPlaying && exoPlayer?.isPlaying == false) {
+                        Log.d(TAG, "Playback not restored with playWhenReady, forcing play()")
+                        exoPlayer?.play()
+                    }
+                    
+                    Log.d(TAG, "Queue fully reordered with ${songs.size} songs, playWhenReady=$wasPlaying")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error reordering queue", e)
+                _error.value = "Error reordering queue: ${e.message}"
+            }
+        }
+    }
+    
+    override suspend fun removeFromQueue(songId: String): Boolean {
+        return withContext(Dispatchers.IO) {
+            try {
+                val queue = currentQueueInternal.toMutableList()
+                val index = queue.indexOfFirst { it.id == songId }
+                
+                // Can't remove if not found
+                if (index < 0) {
+                    Log.d(TAG, "Can't remove song: not found in queue")
+                    return@withContext false
+                }
+                
+                // Don't allow removing the currently playing song
+                val currentSongId = _currentSong.value?.id
+                if (songId == currentSongId) {
+                    Log.d(TAG, "Can't remove currently playing song from queue")
+                    return@withContext false
+                }
+                
+                // Remove the song
+                queue.removeAt(index)
+                
+                // Update the queue
+                currentQueueInternal = queue
+                _currentQueue.value = queue
+                
+                // Update the ExoPlayer queue
+                withContext(Dispatchers.Main) {
+                    ensurePlayerCreated()
+                    
+                    // Remember the current position and index
+                    val currentPosition = exoPlayer?.currentPosition ?: 0
+                    val currentIndex = exoPlayer?.currentMediaItemIndex ?: 0
+                    val wasPlaying = exoPlayer?.isPlaying == true
+                    
+                    Log.d(TAG, "Before removeFromQueue: wasPlaying=$wasPlaying, currentPosition=$currentPosition, currentIndex=$currentIndex, removedIndex=$index")
+                    
+                    // Use incremental queue changes instead of rebuilding the entire queue
+                    if (exoPlayer?.mediaItemCount ?: 0 > index) {
+                        try {
+                            // Remove the media item using ExoPlayer's removeMediaItem
+                            exoPlayer?.removeMediaItem(index)
+                            Log.d(TAG, "Used incremental removeMediaItem($index)")
+                            
+                            // If the removed item was before the current item, we need to adjust the current index
+                            if (index < currentIndex) {
+                                // Current index shifts down by 1
+                                exoPlayer?.seekTo(currentIndex - 1, currentPosition)
+                                Log.d(TAG, "Removed item was before current, seeking to index=${currentIndex - 1}")
+                            }
+                        } catch (e: Exception) {
+                            // Fallback to rebuilding the queue if incremental update fails
+                            Log.e(TAG, "Incremental removeMediaItem failed, falling back to full rebuild", e)
+                            
+                            // Rebuild the media items
+                            val mediaItems = queue.map { createMediaItem(it) }
+                            
+                            // Set the new queue
+                            exoPlayer?.clearMediaItems()
+                            exoPlayer?.setMediaItems(mediaItems)
+                            
+                            // Restore playback position
+                            val newCurrentIndex = if (index < currentIndex) {
+                                currentIndex - 1
+                            } else {
+                                currentIndex
+                            }
+                            val safeIndex = newCurrentIndex.coerceIn(0, mediaItems.size - 1)
+                            exoPlayer?.seekTo(safeIndex, currentPosition)
+                            Log.d(TAG, "Seeking to safeIndex=$safeIndex (adjusted from newCurrentIndex=$newCurrentIndex)")
+                            
+                            // Prepare if needed
+                            if (exoPlayer?.playbackState == Player.STATE_IDLE) {
+                                Log.d(TAG, "Player in STATE_IDLE, preparing")
+                                exoPlayer?.prepare()
+                            }
+                        }
+                    } else {
+                        // Fallback to rebuilding the queue if indices are out of bounds
+                        Log.d(TAG, "Index out of bounds for incremental update, using full rebuild")
+                        
+                        // Rebuild the media items
+                        val mediaItems = queue.map { createMediaItem(it) }
+                        
+                        // Set the new queue
+                        exoPlayer?.clearMediaItems()
+                        exoPlayer?.setMediaItems(mediaItems)
+                        
+                        // Restore playback position
+                        val newCurrentIndex = if (index < currentIndex) {
+                            currentIndex - 1
+                        } else {
+                            currentIndex
+                        }
+                        val safeIndex = newCurrentIndex.coerceIn(0, mediaItems.size - 1)
+                        exoPlayer?.seekTo(safeIndex, currentPosition)
+                        Log.d(TAG, "Seeking to safeIndex=$safeIndex (adjusted from newCurrentIndex=$newCurrentIndex)")
+                        
+                        // Prepare if needed
+                        if (exoPlayer?.playbackState == Player.STATE_IDLE) {
+                            Log.d(TAG, "Player in STATE_IDLE, preparing")
+                            exoPlayer?.prepare()
+                        }
+                    }
+                    
+                    // Always restore playback state using playWhenReady for reliability
+                    Log.d(TAG, "Setting playWhenReady=$wasPlaying")
+                    exoPlayer?.playWhenReady = wasPlaying
+                    
+                    // Additional check to ensure playback is restored
+                    if (wasPlaying && exoPlayer?.isPlaying == false) {
+                        Log.d(TAG, "Playback not restored with playWhenReady, forcing play()")
+                        exoPlayer?.play()
+                    }
+                    
+                    Log.d(TAG, "Queue updated: removed song at index $index, playWhenReady=$wasPlaying")
+                }
+                
+                return@withContext true
+            } catch (e: Exception) {
+                Log.e(TAG, "Error removing song from queue", e)
+                _error.value = "Error updating queue: ${e.message}"
+                return@withContext false
+            }
+        }
+    }
+    
+    override suspend fun playQueueItemAt(index: Int) {
+        withContext(Dispatchers.IO) {
+            try {
+                _error.value = null
+                withContext(Dispatchers.Main) {
+                    ensurePlayerCreated()
+                    
+                    // Remember playback state - we want to ensure playback starts
+                    val wasPlaying = if (exoPlayer?.isPlaying == true) {
+                        true
+                    } else {
+                        true // Force playback to start even if it wasn't playing before
+                    }
+                    
+                    Log.d(TAG, "Playing queue item at index $index, wasPlaying=$wasPlaying")
+                    
+                    // Seek to the specified index
+                    val mediaItemCount = exoPlayer?.mediaItemCount ?: 0
+                    if (index >= 0 && index < mediaItemCount) {
+                        exoPlayer?.seekTo(index, 0)
+                        
+                        // Ensure playback starts immediately
+                        exoPlayer?.playWhenReady = true
+                        exoPlayer?.play()
+                        
+                        // Update the current song
+                        if (currentQueueInternal.isNotEmpty() && index < currentQueueInternal.size) {
+                            _currentSong.value = currentQueueInternal[index]
+                            Log.d(TAG, "Updated current song to: ${_currentSong.value?.title}")
+                        } else {
+                            Log.d(TAG, "Could not update current song: queue is empty or index out of bounds")
+                        }
+                    } else {
+                        Log.e(TAG, "Invalid queue index: $index, queue size: ${exoPlayer?.mediaItemCount}")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in playQueueItemAt", e)
+                _error.value = "Error playing queue item: ${e.message}"
+            }
+        }
+    }
+    
+    // Helper method to rebuild the entire queue
+    private suspend fun rebuildEntireQueue(
+        queue: List<Song>,
+        currentMediaId: String?,
+        currentPosition: Long,
+        fallbackIndex: Int,
+        wasPlaying: Boolean
+    ) {
+        // Rebuild the media items
+        val mediaItems = queue.map { createMediaItem(it) }
+        
+        // Set the new queue
+        exoPlayer?.clearMediaItems()
+        exoPlayer?.setMediaItems(mediaItems)
+        
+        // Restore playback position
+        if (currentMediaId != null) {
+            // Find the new index of the current song
+            val newIndex = queue.indexOfFirst { it.id == currentMediaId }
+            if (newIndex >= 0) {
+                exoPlayer?.seekTo(newIndex, currentPosition)
+                Log.d(TAG, "Seeking to newIndex=$newIndex (found by mediaId)")
+            } else {
+                exoPlayer?.seekTo(fallbackIndex, currentPosition)
+                Log.d(TAG, "Seeking to fallbackIndex=$fallbackIndex (mediaId not found)")
+            }
+        } else {
+            exoPlayer?.seekTo(fallbackIndex, currentPosition)
+            Log.d(TAG, "Seeking to fallbackIndex=$fallbackIndex (no mediaId)")
+        }
+        
+        // Prepare if needed
+        if (exoPlayer?.playbackState == Player.STATE_IDLE) {
+            Log.d(TAG, "Player in STATE_IDLE, preparing")
+            exoPlayer?.prepare()
+        }
+        
+        // Restore playback state using playWhenReady for reliability
+        Log.d(TAG, "Setting playWhenReady=$wasPlaying")
+        exoPlayer?.playWhenReady = wasPlaying
+        
+        // Additional check to ensure playback is restored
+        if (wasPlaying && exoPlayer?.isPlaying == false) {
+            Log.d(TAG, "Playback not restored with playWhenReady, forcing play()")
+            exoPlayer?.play()
         }
     }
 
