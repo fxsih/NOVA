@@ -23,6 +23,11 @@ NOVA is a modern Android music player app built with Jetpack Compose, following 
 - **Active Branch**: main
 - **Current Focus**: Performance optimization and scalability
 - **Last Implemented Features**: 
+  - Added song download functionality with progress tracking
+  - Fixed song playback issues from search screen
+  - Improved auto-play functionality for better user experience
+  - Fixed API base URL configuration for proper server connectivity
+  - Enhanced playback reliability with explicit play commands
   - Fixed queue display discrepancy between service and UI
   - Enhanced personalization dialog with improved visual design
   - Visual cue for currently playing and selected songs
@@ -76,6 +81,8 @@ NOVA is a modern Android music player app built with Jetpack Compose, following 
    - Visual indication for currently selected song in mini player
    - Queue management with synchronized display between service and UI
    - Queue view in player screen with current and upcoming songs
+   - Song download functionality with progress tracking
+   - Improved playback reliability with auto-play enhancements
 
 4. User Interface
    - Material 3 design implementation
@@ -210,6 +217,8 @@ data class UserMusicPreferences(
    - Handles shuffle and repeat modes
    - Manages current song and progress updates
    - Provides queue display data for UI
+   - Implements song download functionality with progress tracking
+   - Ensures consistent playback with explicit play commands
 
 6. **MusicPlayerService** and **MusicPlayerServiceImpl**: 
    - Handles audio playback with ExoPlayer
@@ -400,14 +409,14 @@ val colors = listOf(
 ## Next Steps
 1. Implement user authentication
 2. Add cloud sync functionality
-3. Enhance offline support
+3. Enhance offline support with downloaded songs management
 4. Implement music visualization
 5. Add social sharing features
 6. Implement comprehensive testing
 7. Add more animation effects
 8. Enhance accessibility features
 9. Further improve performance optimization
-10. Add gesture support
+10. Add more gesture support
 11. Expand language and genre support
 12. Implement smart playlists based on user preferences
 
@@ -509,14 +518,14 @@ Backend optimizations:
    - Use local variables to safely handle Flow properties with custom getters
 
 10. If backend gets stuck or freezes:
-   - Check for deadlocks in lock acquisition
-   - Verify all locks are being released properly
-   - Check network timeouts in yt-dlp and requests operations
-   - Ensure proper error handling in background threads
-   - Verify signal handling is working correctly
-   - Check worker configuration in uvicorn settings
-   - Verify thread pool is not overloaded
-   - Check for lock cleanup execution
+    - Check for deadlocks in lock acquisition
+    - Verify all locks are being released properly
+    - Check network timeouts in yt-dlp and requests operations
+    - Ensure proper error handling in background threads
+    - Verify signal handling is working correctly
+    - Check worker configuration in uvicorn settings
+    - Verify thread pool is not overloaded
+    - Check for lock cleanup execution
 
 11. If audio playback fails:
     - Verify the client is using the /yt_audio endpoint directly
@@ -524,3 +533,16 @@ Backend optimizations:
     - Ensure proper error handling in MusicPlayerServiceImpl
     - Verify network connectivity between app and backend
     - Check logs for any extraction errors in backend
+
+12. If downloads are failing:
+    - Verify the API base URL is correctly set (not using localhost)
+    - Check storage permissions are granted on Android 10 and below
+    - Verify network connectivity between app and backend
+    - Check that the download directory exists and is writable
+    - Verify proper error handling in download function
+
+13. If songs don't play from search screen:
+    - Ensure the song is loaded directly in PlayerViewModel, not just navigated to
+    - Check that explicit play() calls are made after loading the song
+    - Verify that both onClick and onPlayPause handlers properly load the song
+    - Check that the search screen is properly collecting state from PlayerViewModel
