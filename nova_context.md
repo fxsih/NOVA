@@ -23,6 +23,7 @@ NOVA is a modern Android music player app built with Jetpack Compose, following 
 - **Active Branch**: main
 - **Current Focus**: Performance optimization and scalability
 - **Last Implemented Features**: 
+  - Added sleep timer with multiple duration options (10 min, 15 min, 30 min, 1 hour, end of song)
   - Added song download functionality with progress tracking
   - Fixed song playback issues from search screen
   - Improved auto-play functionality for better user experience
@@ -83,6 +84,7 @@ NOVA is a modern Android music player app built with Jetpack Compose, following 
    - Queue view in player screen with current and upcoming songs
    - Song download functionality with progress tracking
    - Improved playback reliability with auto-play enhancements
+   - Sleep timer with multiple duration options (10 min, 15 min, 30 min, 1 hour, end of song)
 
 4. User Interface
    - Material 3 design implementation
@@ -219,6 +221,7 @@ data class UserMusicPreferences(
    - Provides queue display data for UI
    - Implements song download functionality with progress tracking
    - Ensures consistent playback with explicit play commands
+   - Implements sleep timer with multiple duration options and real-time countdown
 
 6. **MusicPlayerService** and **MusicPlayerServiceImpl**: 
    - Handles audio playback with ExoPlayer
