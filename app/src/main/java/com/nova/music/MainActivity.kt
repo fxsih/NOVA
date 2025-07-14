@@ -8,6 +8,7 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -17,6 +18,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import com.nova.music.ui.navigation.NovaNavigation
 import com.nova.music.ui.theme.NovaTheme
+import com.nova.music.ui.viewmodels.PlayerViewModel
 import com.nova.music.util.PreferenceManager
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
@@ -26,6 +28,9 @@ class MainActivity : ComponentActivity() {
     
     @Inject
     lateinit var preferenceManager: PreferenceManager
+    
+    // Get the PlayerViewModel
+    private val playerViewModel: PlayerViewModel by viewModels()
     
     // Permission launcher for storage access
     private val requestPermissionLauncher = registerForActivityResult(
@@ -52,9 +57,25 @@ class MainActivity : ComponentActivity() {
         // Check and request storage permission for downloads
         checkAndRequestStoragePermission()
         
+        // Verify downloaded songs on app start
+        playerViewModel.verifyDownloadedSongs(this)
+        
+        // Also update the current song's download state
+        playerViewModel.updateCurrentSongDownloadState(this)
+        
         setContent {
             AppContent()
         }
+    }
+    
+    override fun onResume() {
+        super.onResume()
+        
+        // Also verify downloads when app comes back to foreground
+        playerViewModel.verifyDownloadedSongs(this)
+        
+        // Update the current song's download state
+        playerViewModel.updateCurrentSongDownloadState(this)
     }
     
     private fun checkAndRequestStoragePermission() {

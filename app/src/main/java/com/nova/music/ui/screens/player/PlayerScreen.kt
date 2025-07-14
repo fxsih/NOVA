@@ -61,6 +61,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material.icons.filled.CheckCircle
 
 // Data class to track dragging state
 data class DragInfo(
@@ -86,6 +88,15 @@ fun PlayerScreen(
         }
         // Set the flag to indicate we're in the player screen
         viewModel.setInPlayerScreen(true)
+    }
+
+    // Get context for download operations
+    val context = LocalContext.current
+
+    // Update download state whenever the screen is shown
+    LaunchedEffect(Unit) {
+        // Verify the current song's download state
+        viewModel.updateCurrentSongDownloadState(context)
     }
     
     val currentSong by viewModel.currentSong.collectAsState()
@@ -297,33 +308,56 @@ fun PlayerScreen(
                 
                 IconButton(
                     onClick = { 
-                        // Download the current song
+                        // Update download state first
+                        viewModel.updateCurrentSongDownloadState(context)
+                        
+                        // Then verify all downloaded songs
+                        viewModel.verifyDownloadedSongs(context)
+                        
+                        // Finally, download if needed
                         viewModel.downloadCurrentSong(context)
                     },
                     modifier = Modifier.size(48.dp)
                 ) {
-                    // Show download icon or progress indicator
+                    // Show download icon, progress indicator, or downloaded icon
                     val isDownloading by viewModel.isDownloading.collectAsState()
                     val downloadProgress by viewModel.downloadProgress.collectAsState()
+                    val isDownloaded by viewModel.isCurrentSongDownloaded.collectAsState()
                     
                     if (isDownloading) {
-                        // Use a Box with circular shape to create a custom progress indicator
+                        // Use CircularProgressIndicator with percentage text
                         Box(
-                            modifier = Modifier
-                                .size(24.dp)
-                                .background(Color(0xFFBB86FC).copy(alpha = 0.3f), CircleShape),
+                            modifier = Modifier.size(32.dp),
                             contentAlignment = Alignment.Center
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(12.dp)
-                                    .background(Color(0xFFBB86FC), CircleShape)
+                            CircularProgressIndicator(
+                                progress = { downloadProgress },
+                                modifier = Modifier.fillMaxSize(),
+                                color = Color(0xFFBB86FC),
+                                trackColor = Color(0xFFBB86FC).copy(alpha = 0.2f),
+                                strokeWidth = 2.dp
+                            )
+                            
+                            // Display percentage
+                            Text(
+                                text = "${(downloadProgress * 100).toInt()}%",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color.White,
+                                fontSize = 8.sp
                             )
                         }
+                    } else if (isDownloaded) {
+                        // Show downloaded icon with purple tint
+                        Icon(
+                            imageVector = Icons.Default.CheckCircle,
+                            contentDescription = "Downloaded",
+                            tint = Color(0xFFBB86FC),
+                            modifier = Modifier.size(24.dp)
+                        )
                     } else {
                         // Show download icon when not downloading
                     Icon(
-                            imageVector = Icons.Default.Download,
+                            imageVector = Icons.Default.FileDownload,
                             contentDescription = "Download",
                             tint = controlIconColor.copy(alpha = 0.6f),
                         modifier = Modifier.size(24.dp)

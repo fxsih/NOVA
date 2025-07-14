@@ -142,6 +142,9 @@ from concurrent.futures import ThreadPoolExecutor
 # Create a thread pool with max 3 workers to limit concurrency
 prefetch_thread_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="prefetch")
 
+# Add after the prefetch_thread_pool declaration
+download_thread_pool = ThreadPoolExecutor(max_workers=5, thread_name_prefix="download")
+
 # Background pre-fetch for audio URLs
 def background_prefetch_audio_urls(video_ids):
     def fetch_single(vid):
@@ -441,6 +444,8 @@ async def get_yt_audio(request: Request, video_id: str = Query(..., description=
                 'noplaylist': True,
                 'skip_download': True,
                 'socket_timeout': 15,  # Add timeout for network operations
+                # Prioritize faster formats with smaller file sizes
+                'format_sort': ['asr', 'abr', 'size', 'quality'],
             }
             
             try:
@@ -486,9 +491,10 @@ async def get_yt_audio(request: Request, video_id: str = Query(..., description=
                             logger.warning("No audio formats found, using all formats")
                             audio_formats = formats
                         
-                        # Sort by quality (prefer audio only, then by bitrate)
+                        # Sort by quality (prefer audio only, smaller file size, then by bitrate)
                         audio_formats.sort(key=lambda f: (
                             0 if f.get('vcodec') in (None, 'none') else 1,  # Prefer audio only
+                            f.get('filesize') or float('inf'),  # Then prefer smaller file size
                             -(f.get('abr', 0) or 0)  # Then by audio bitrate (higher first)
                         ))
                         
@@ -501,7 +507,7 @@ async def get_yt_audio(request: Request, video_id: str = Query(..., description=
                         if not audio_url:
                             return {"error": "No URL found in best audio format"}
                         
-                        logger.info(f"Selected format: {best_audio.get('format_id')}")
+                        logger.info(f"Selected format: {best_audio.get('format_id')}, filesize: {best_audio.get('filesize') or 'unknown'}")
                         
                         # Get content type
                         content_type = best_audio.get('mime_type', 'audio/mpeg').split(';')[0]
@@ -524,10 +530,20 @@ async def get_yt_audio(request: Request, video_id: str = Query(..., description=
         if "range" in request.headers:
             headers["Range"] = request.headers["range"]
             logger.info(f"Forwarding Range header: {headers['Range']}")
+            
+        # Add compression support
+        headers["Accept-Encoding"] = "gzip, deflate"
         
-        # Make the request to YouTube
+        # Make the request to YouTube with increased timeout
         try:
-            response = requests.get(audio_url, headers=headers, stream=True, timeout=10)
+            # Use session for connection pooling
+            session = requests.Session()
+            response = session.get(
+                audio_url, 
+                headers=headers, 
+                stream=True, 
+                timeout=15
+            )
         except requests.exceptions.Timeout:
             logger.error(f"Timeout when requesting audio URL: {audio_url}")
             return {"error": "Timeout when requesting audio stream"}
@@ -541,7 +557,7 @@ async def get_yt_audio(request: Request, video_id: str = Query(..., description=
         # Forward important headers from YouTube's response
         important_headers = [
             "Content-Type", "Content-Length", "Content-Range", 
-            "Accept-Ranges", "Content-Disposition"
+            "Accept-Ranges", "Content-Disposition", "Content-Encoding"
         ]
         
         for header in important_headers:
@@ -555,9 +571,15 @@ async def get_yt_audio(request: Request, video_id: str = Query(..., description=
         # Set Content-Disposition
         response_headers["Content-Disposition"] = f'inline; filename="{video_id}.mp3"'
         
+        # Add caching headers for better performance
+        response_headers["Cache-Control"] = "max-age=3600"
+        
+        # Use a larger chunk size for faster streaming (64KB instead of 1KB)
+        chunk_size = 65536  # 64KB chunks
+        
         # Return the streaming response with the status code from YouTube
         return StreamingResponse(
-            response.iter_content(chunk_size=1024),
+            response.iter_content(chunk_size=chunk_size),
             status_code=response.status_code,
             headers=response_headers
         )
@@ -565,6 +587,119 @@ async def get_yt_audio(request: Request, video_id: str = Query(..., description=
     except Exception as e:
         logger.error(f"Error in yt_audio: {str(e)}", exc_info=True)
         return {"error": f"Error streaming audio: {str(e)}"}
+
+@app.get("/download_audio")
+async def download_audio(video_id: str = Query(..., description="YouTube video ID")):
+    """
+    Optimized endpoint for downloading audio files (not for streaming).
+    This endpoint is optimized for download speed rather than streaming playback.
+    """
+    try:
+        # Get audio URL (reusing existing function)
+        audio_url, expire_timestamp, content_type = get_or_cache_audio_url(video_id)
+        
+        if not audio_url:
+            return {"error": "Could not extract audio URL"}
+            
+        # Make request with optimized settings
+        session = requests.Session()
+        
+        # Use a HEAD request to get content info
+        head_response = session.head(
+            audio_url, 
+            timeout=10,
+            headers={"Accept-Encoding": "gzip, deflate"}
+        )
+        
+        # Check if the source supports range requests
+        supports_ranges = "accept-ranges" in head_response.headers and head_response.headers["accept-ranges"] == "bytes"
+        
+        # Get response headers
+        response_headers = {
+            "Content-Type": content_type,
+            "Content-Disposition": f'attachment; filename="{video_id}.mp3"',
+            "Cache-Control": "max-age=3600"
+        }
+        
+        # Forward content length if available
+        if "content-length" in head_response.headers:
+            response_headers["Content-Length"] = head_response.headers["content-length"]
+            
+        # If range requests supported, prepare for faster download
+        if supports_ranges:
+            # Use a custom streaming response generator for parallel range requests
+            async def download_generator():
+                content_length = int(head_response.headers.get("content-length", "0"))
+                
+                # Only use parallel downloads for files over 1MB
+                if content_length > 1024 * 1024:
+                    # Use 4MB chunks for parallel downloading
+                    chunk_size = 4 * 1024 * 1024
+                    chunk_count = (content_length + chunk_size - 1) // chunk_size
+                    
+                    # Limit chunks to 5 to avoid too many parallel requests
+                    chunk_count = min(chunk_count, 5)
+                    
+                    # Define chunk ranges
+                    ranges = []
+                    for i in range(chunk_count):
+                        start = i * chunk_size
+                        end = min(start + chunk_size - 1, content_length - 1)
+                        ranges.append((start, end))
+                    
+                    # Download chunks in parallel
+                    responses = []
+                    for start, end in ranges:
+                        range_header = f"bytes={start}-{end}"
+                        responses.append(session.get(
+                            audio_url,
+                            headers={"Range": range_header, "Accept-Encoding": "gzip, deflate"},
+                            stream=True,
+                            timeout=30
+                        ))
+                    
+                    # Yield chunks in order
+                    for resp in responses:
+                        for chunk in resp.iter_content(65536):  # 64KB chunks
+                            yield chunk
+                            
+                else:
+                    # For smaller files, use a simple download
+                    response = session.get(
+                        audio_url, 
+                        headers={"Accept-Encoding": "gzip, deflate"},
+                        stream=True, 
+                        timeout=30
+                    )
+                    
+                    # Use larger chunk size for faster downloads
+                    for chunk in response.iter_content(65536):  # 64KB chunks
+                        yield chunk
+            
+            # Return streaming response with improved download performance
+            return StreamingResponse(
+                download_generator(),
+                headers=response_headers
+            )
+            
+        else:
+            # Fallback to simple download if range requests not supported
+            response = session.get(
+                audio_url, 
+                headers={"Accept-Encoding": "gzip, deflate"},
+                stream=True, 
+                timeout=30
+            )
+            
+            # Return streaming response with 64KB chunks for better performance
+            return StreamingResponse(
+                response.iter_content(chunk_size=65536),  # 64KB chunks
+                headers=response_headers
+            )
+            
+    except Exception as e:
+        logger.error(f"Error in download_audio: {str(e)}", exc_info=True)
+        return {"error": f"Error downloading audio: {str(e)}"}
 
 @app.get("/youtube-dl-helper.js")
 async def youtube_dl_helper():

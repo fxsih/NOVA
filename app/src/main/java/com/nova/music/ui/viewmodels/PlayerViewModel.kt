@@ -23,6 +23,9 @@ import android.os.Environment
 import android.widget.Toast
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.ResponseBody
+import okio.buffer
+import okio.sink
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.TimeUnit
@@ -56,6 +59,7 @@ class PlayerViewModel @Inject constructor(
     private val musicRepository: MusicRepository,
     private val musicPlayerService: IMusicPlayerService,
     private val preferenceManager: PreferenceManager,
+    private val okHttpClient: OkHttpClient, // Inject OkHttpClient from DI
     savedStateHandle: SavedStateHandle
 ) : ViewModel() {
     // Use the service's state flows directly
@@ -98,6 +102,13 @@ class PlayerViewModel @Inject constructor(
     private val _downloadProgress = MutableStateFlow(0f)
     val downloadProgress: StateFlow<Float> = _downloadProgress.asStateFlow()
     
+    // Track which songs have been downloaded
+    private val downloadedSongIds = mutableSetOf<String>()
+    
+    // Track if the current song is downloaded
+    private val _isCurrentSongDownloaded = MutableStateFlow(false)
+    val isCurrentSongDownloaded: StateFlow<Boolean> = _isCurrentSongDownloaded.asStateFlow()
+    
     // Track sleep timer state
     private val _sleepTimerActive = MutableStateFlow(false)
     val sleepTimerActive: StateFlow<Boolean> = _sleepTimerActive.asStateFlow()
@@ -116,9 +127,66 @@ class PlayerViewModel @Inject constructor(
     // Track sleep timer job
     private var sleepTimerJob: Job? = null
     
-    // OkHttpClient for downloads
-    private val okHttpClient = OkHttpClient()
+    // Track current download job to cancel if needed
+    private var downloadJob: Job? = null
 
+    /**
+     * Checks if a song file actually exists in the Downloads directory
+     */
+    private fun isSongFileExists(context: Context, song: Song): Boolean {
+        val sanitizedTitle = song.title.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+        val sanitizedArtist = song.artist.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+        val fileName = "${sanitizedArtist} - ${sanitizedTitle}.mp3"
+        
+        val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+        val file = File(downloadsDir, fileName)
+        
+        return file.exists() && file.length() > 0
+    }
+
+    /**
+     * Verifies all downloaded songs and removes entries for files that no longer exist
+     */
+    fun verifyDownloadedSongs(context: Context) {
+        viewModelScope.launch {
+            val songsToRemove = mutableListOf<String>()
+            
+            // Get all songs that are marked as downloaded
+            val downloadedIds = preferenceManager.getDownloadedSongIds()
+            
+            // Check each song to see if the file exists
+            for (songId in downloadedIds) {
+                // Get the song details
+                val song = musicRepository.getSongById(songId)
+                if (song != null) {
+                    if (!isSongFileExists(context, song)) {
+                        songsToRemove.add(songId)
+                    }
+                } else {
+                    // If song doesn't exist in repository, remove it from downloads
+                    songsToRemove.add(songId)
+                }
+            }
+            
+            // Remove songs that don't have files
+            for (songId in songsToRemove) {
+                downloadedSongIds.remove(songId)
+                preferenceManager.removeDownloadedSongId(songId)
+            }
+            
+            // Update current song download state
+            currentSong.value?.id?.let { id ->
+                _isCurrentSongDownloaded.value = downloadedSongIds.contains(id) && 
+                    currentSong.value?.let { isSongFileExists(context, it) } ?: false
+            }
+            
+            if (songsToRemove.isNotEmpty()) {
+                Log.i("PlayerViewModel", "Removed ${songsToRemove.size} songs from download tracking that no longer exist")
+            }
+        }
+    }
+
+    // Update the init block to verify download status when a song changes
     init {
         // Load initial song if ID is provided
         savedStateHandle.get<String>("songId")?.let { songId ->
@@ -141,6 +209,10 @@ class PlayerViewModel @Inject constructor(
                     _currentPlaylistSongs.value = listOf(song)
                     println("DEBUG: Auto-updated playlist with current song: ${song.title}")
                 }
+                
+                // Update the downloaded state for the current song without context check
+                // We'll do a full verification when the app starts and when needed
+                _isCurrentSongDownloaded.value = song?.id?.let { id -> downloadedSongIds.contains(id) } ?: false
                 
                 // If sleep timer is set to END_OF_SONG and song changes, stop playback at the end
                 if (_sleepTimerOption.value == SleepTimerOption.END_OF_SONG) {
@@ -166,6 +238,17 @@ class PlayerViewModel @Inject constructor(
                         }
                     }
                 }
+            }
+        }
+        
+        // Load downloaded song IDs from preferences
+        viewModelScope.launch {
+            val savedDownloadedIds = preferenceManager.getDownloadedSongIds()
+            if (savedDownloadedIds.isNotEmpty()) {
+                downloadedSongIds.addAll(savedDownloadedIds)
+                
+                // Update current song download state immediately
+                updateCurrentSongDownloadState()
             }
         }
     }
@@ -544,13 +627,32 @@ class PlayerViewModel @Inject constructor(
     }
 
     /**
-     * Downloads the current song to the device.
+     * Downloads the current song to the device with optimized performance.
      * 
      * @param context The application context needed for file operations
-     * @return A Flow that emits download status updates
      */
     fun downloadCurrentSong(context: Context) {
         val song = currentSong.value ?: return
+        
+        // Check if the file already exists in storage
+        if (isSongFileExists(context, song)) {
+            // File exists, just update our tracking
+            if (!downloadedSongIds.contains(song.id)) {
+                downloadedSongIds.add(song.id)
+                _isCurrentSongDownloaded.value = true
+                preferenceManager.addDownloadedSongId(song.id)
+            }
+            Toast.makeText(context, "Song already exists in Downloads folder", Toast.LENGTH_SHORT).show()
+            return
+        }
+        
+        // Don't download if already downloaded according to our tracking
+        if (downloadedSongIds.contains(song.id)) {
+            // Song is marked as downloaded but file doesn't exist - update tracking
+            downloadedSongIds.remove(song.id)
+            _isCurrentSongDownloaded.value = false
+            preferenceManager.removeDownloadedSongId(song.id)
+        }
         
         // Don't start a new download if one is already in progress
         if (_isDownloading.value) {
@@ -558,7 +660,10 @@ class PlayerViewModel @Inject constructor(
             return
         }
         
-        viewModelScope.launch {
+        // Cancel any existing download job
+        downloadJob?.cancel()
+        
+        downloadJob = viewModelScope.launch {
             _isDownloading.value = true
             _downloadProgress.value = 0f
             
@@ -574,8 +679,8 @@ class PlayerViewModel @Inject constructor(
                 
                 // Get the URL for downloading
                 val downloadUrl = if (isYouTubeSong) {
-                    // For YouTube songs, use the backend API
-                    "${preferenceManager.getApiBaseUrl()}/yt_audio?video_id=$videoId"
+                    // For YouTube songs, use the optimized download endpoint
+                    "${preferenceManager.getApiBaseUrl()}/download_audio?video_id=$videoId"
                 } else {
                     // For local songs, use the direct file path
                     song.audioUrl
@@ -601,51 +706,48 @@ class PlayerViewModel @Inject constructor(
                     Toast.makeText(context, "Starting download: $fileName", Toast.LENGTH_SHORT).show()
                 }
                 
-                // Download the file
+                // Download the file with optimized buffering
                 withContext(Dispatchers.IO) {
                     try {
+                        // Create an optimized request with cache control and compression support
                         val request = Request.Builder()
                             .url(downloadUrl)
+                            .header("Accept-Encoding", "gzip, deflate")
+                            .cacheControl(okhttp3.CacheControl.Builder().noCache().build()) // Bypass cache for downloads
                             .build()
                         
+                        // Execute the request
                         okHttpClient.newCall(request).execute().use { response ->
                             if (!response.isSuccessful) {
                                 throw IOException("Failed to download: ${response.code}")
                             }
                             
                             val responseBody = response.body
-                            if (responseBody == null) {
-                                throw IOException("Empty response body")
-                            }
+                                ?: throw IOException("Empty response body")
                             
-                            val contentLength = responseBody.contentLength()
-                            var bytesWritten = 0L
-                            
-                            file.outputStream().use { fileOut ->
-                                responseBody.byteStream().use { inputStream ->
-                                    val buffer = ByteArray(8192)
-                                    var bytes: Int
-                                    
-                                    while (inputStream.read(buffer).also { bytes = it } != -1) {
-                                        fileOut.write(buffer, 0, bytes)
-                                        bytesWritten += bytes
-                                        
-                                        // Update progress if content length is known
-                                        if (contentLength > 0) {
-                                            _downloadProgress.value = bytesWritten.toFloat() / contentLength.toFloat()
-                                        }
-                                    }
-                                }
-                            }
+                            // Use Okio for more efficient I/O
+                            downloadWithProgress(responseBody, file)
                         }
                         
-                        // Show success toast
-                        withContext(Dispatchers.Main) {
-                            Toast.makeText(
-                                context,
-                                "Downloaded: $fileName to Downloads folder",
-                                Toast.LENGTH_LONG
-                            ).show()
+                        // Verify the file was downloaded successfully
+                        if (file.exists() && file.length() > 0) {
+                            // Mark song as downloaded
+                            downloadedSongIds.add(song.id)
+                            _isCurrentSongDownloaded.value = true
+                            
+                            // Save to preferences
+                            preferenceManager.addDownloadedSongId(song.id)
+                            
+                            // Show success toast
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(
+                                    context,
+                                    "Downloaded: $fileName to Downloads folder",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        } else {
+                            throw IOException("Download completed but file is empty or missing")
                         }
                     } catch (e: Exception) {
                         Log.e("PlayerViewModel", "Download failed", e)
@@ -655,6 +757,11 @@ class PlayerViewModel @Inject constructor(
                                 "Download failed: ${e.message}",
                                 Toast.LENGTH_LONG
                             ).show()
+                        }
+                        
+                        // Delete the partial file if it exists
+                        if (file.exists()) {
+                            file.delete()
                         }
                     }
                 }
@@ -667,6 +774,50 @@ class PlayerViewModel @Inject constructor(
                 _isDownloading.value = false
                 _downloadProgress.value = 0f
             }
+        }
+    }
+    
+    /**
+     * Helper method to download a file with progress tracking using Okio's efficient I/O
+     */
+    private suspend fun downloadWithProgress(responseBody: ResponseBody, file: File) {
+        val contentLength = responseBody.contentLength()
+        var bytesWritten = 0L
+        
+        // Use larger buffer size for faster downloads
+        val bufferSize = 8192 * 4 // 32KB buffer instead of the default 8KB
+        
+        try {
+            // Use Okio's buffered sink for efficient writing
+            file.sink().buffer().use { bufferedSink ->
+                // Read the response body in chunks
+                responseBody.source().use { source ->
+                    val buffer = okio.Buffer()
+                    var read: Long
+                    
+                    // Read until there's no more data
+                    while (source.read(buffer, bufferSize.toLong()).also { read = it } != -1L) {
+                        // Write the chunk to the file
+                        bufferedSink.write(buffer, read)
+                        
+                        // Update progress
+                        bytesWritten += read
+                        if (contentLength > 0) {
+                            val progress = bytesWritten.toFloat() / contentLength.toFloat()
+                            // Update progress on the main thread
+                            withContext(Dispatchers.Main) {
+                                _downloadProgress.value = progress
+                            }
+                        }
+                    }
+                    
+                    // Ensure all data is written
+                    bufferedSink.flush()
+                }
+            }
+        } catch (e: IOException) {
+            Log.e("PlayerViewModel", "Error writing downloaded file", e)
+            throw e
         }
     }
 
@@ -766,6 +917,37 @@ class PlayerViewModel @Inject constructor(
         val seconds = TimeUnit.MILLISECONDS.toSeconds(remaining) - TimeUnit.MINUTES.toSeconds(minutes)
         
         return String.format("%02d:%02d", minutes, seconds)
+    }
+
+    /**
+     * Updates the current song's download state by checking if the file exists
+     */
+    fun updateCurrentSongDownloadState(context: Context? = null) {
+        viewModelScope.launch {
+            val song = currentSong.value ?: return@launch
+            val songId = song.id
+            
+            // First check if the song is in our tracked downloads
+            val isTrackedAsDownloaded = downloadedSongIds.contains(songId)
+            
+            if (isTrackedAsDownloaded && context != null) {
+                // If we have context, verify the file actually exists
+                val fileExists = isSongFileExists(context, song)
+                
+                if (!fileExists) {
+                    // File doesn't exist but is tracked as downloaded - update tracking
+                    downloadedSongIds.remove(songId)
+                    preferenceManager.removeDownloadedSongId(songId)
+                    _isCurrentSongDownloaded.value = false
+                } else {
+                    // File exists and is tracked - confirm download state
+                    _isCurrentSongDownloaded.value = true
+                }
+            } else {
+                // If no context provided, just use the tracking data
+                _isCurrentSongDownloaded.value = isTrackedAsDownloaded
+            }
+        }
     }
 
     override fun onCleared() {
