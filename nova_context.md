@@ -23,6 +23,10 @@ NOVA is a modern Android music player app built with Jetpack Compose, following 
 - **Active Branch**: main
 - **Current Focus**: Performance optimization and scalability
 - **Last Implemented Features**: 
+  - Optimized download functionality with improved speed and reliability
+  - Added file verification for downloaded songs to ensure UI state accuracy
+  - Enhanced download progress tracking with visual indicators
+  - Implemented persistent download state tracking across app sessions
   - Added sleep timer with multiple duration options (10 min, 15 min, 30 min, 1 hour, end of song)
   - Added song download functionality with progress tracking
   - Fixed song playback issues from search screen
@@ -82,7 +86,9 @@ NOVA is a modern Android music player app built with Jetpack Compose, following 
    - Visual indication for currently selected song in mini player
    - Queue management with synchronized display between service and UI
    - Queue view in player screen with current and upcoming songs
-   - Song download functionality with progress tracking
+   - Optimized song download functionality with progress indicator and status tracking
+   - File verification for downloaded songs with automatic UI state updates
+   - Improved download speed with connection pooling and parallel downloads
    - Improved playback reliability with auto-play enhancements
    - Sleep timer with multiple duration options (10 min, 15 min, 30 min, 1 hour, end of song)
 
@@ -108,6 +114,8 @@ NOVA is a modern Android music player app built with Jetpack Compose, following 
    - On-demand audio extraction only when needed for playback
    - Efficient background prefetching using thread pool (max 3 workers)
    - Streaming endpoint with proper range support for seeking
+   - Optimized download endpoint with parallel chunk downloading for faster speeds
+   - Improved caching and compression for better download performance
    - Recommendations endpoint with personalization support
    - Trending music endpoint for popular tracks
    - Efficient video extraction with yt-dlp
@@ -219,7 +227,9 @@ data class UserMusicPreferences(
    - Handles shuffle and repeat modes
    - Manages current song and progress updates
    - Provides queue display data for UI
-   - Implements song download functionality with progress tracking
+   - Implements optimized song download functionality with progress tracking
+   - Verifies downloaded files to ensure accurate UI state
+   - Manages persistent download state tracking across app sessions
    - Ensures consistent playback with explicit play commands
    - Implements sleep timer with multiple duration options and real-time countdown
 
@@ -434,6 +444,7 @@ The backend service is built with FastAPI and provides the following endpoints:
 The Android app connects to the backend using these specific endpoints:
 - `GET /search?query={query}&limit={limit}` - Search for songs with the given query
 - `GET /yt_audio?video_id={video_id}` - Stream audio for a specific YouTube video ID
+- `GET /download_audio?video_id={video_id}` - Optimized endpoint for downloading audio with parallel chunk processing
 - `GET /recommended?video_id={video_id}&genres={genres}&languages={languages}&artists={artists}&limit={limit}` - Get personalized recommendations
 - `GET /trending?limit={limit}` - Get current trending music
 - `GET /playlist?playlist_id={playlist_id}&limit={limit}` - Get songs from a specific YouTube Music playlist
@@ -447,6 +458,9 @@ Backend optimizations:
 - On-demand audio extraction only when needed for playback
 - Efficient background prefetching using thread pool (max 3 workers)
 - Enhanced audio URL caching with larger TTLCache (2048 entries, 2h TTL)
+- Optimized download endpoint with parallel chunk downloading and larger buffer sizes
+- Improved compression support with gzip/deflate for faster downloads
+- Connection pooling for better network performance
 - Automatic lock cleanup to prevent memory leaks
 - Per-video_id locks with timeouts to prevent deadlocks
 - Lock acquisition with try/finally blocks for guaranteed release
@@ -497,10 +511,11 @@ Backend optimizations:
    - Verify animation duration
    - Ensure proper recomposition
 
-6. If Flow exceptions are occurring:
-   - Add proper catch operators in Flow chains
-   - Use try-catch blocks in suspend functions
-   - Ensure proper error handling in ViewModels
+6. If download status isn't updating correctly:
+   - Verify file existence in Downloads directory
+   - Check PreferenceManager for stored download IDs
+   - Call verifyDownloadedSongs() to refresh download states
+   - Ensure updateCurrentSongDownloadState() is called when needed
 
 7. If recommended songs aren't loading:
    - Check user preferences in DataStore
@@ -521,14 +536,14 @@ Backend optimizations:
    - Use local variables to safely handle Flow properties with custom getters
 
 10. If backend gets stuck or freezes:
-    - Check for deadlocks in lock acquisition
-    - Verify all locks are being released properly
-    - Check network timeouts in yt-dlp and requests operations
-    - Ensure proper error handling in background threads
-    - Verify signal handling is working correctly
-    - Check worker configuration in uvicorn settings
-    - Verify thread pool is not overloaded
-    - Check for lock cleanup execution
+   - Check for deadlocks in lock acquisition
+   - Verify all locks are being released properly
+   - Check network timeouts in yt-dlp and requests operations
+   - Ensure proper error handling in background threads
+   - Verify signal handling is working correctly
+   - Check worker configuration in uvicorn settings
+   - Verify thread pool is not overloaded
+   - Check for lock cleanup execution
 
 11. If audio playback fails:
     - Verify the client is using the /yt_audio endpoint directly

@@ -43,6 +43,43 @@ class PreferenceManager @Inject constructor(
         setString(KEY_API_BASE_URL, url)
     }
     
+    /**
+     * Gets the set of downloaded song IDs.
+     * @return A set of song IDs that have been downloaded
+     */
+    fun getDownloadedSongIds(): Set<String> {
+        return prefs.getStringSet(KEY_DOWNLOADED_SONGS, emptySet()) ?: emptySet()
+    }
+    
+    /**
+     * Adds a song ID to the set of downloaded songs.
+     * @param songId The ID of the downloaded song
+     */
+    fun addDownloadedSongId(songId: String) {
+        val currentIds = getDownloadedSongIds().toMutableSet()
+        currentIds.add(songId)
+        prefs.edit().putStringSet(KEY_DOWNLOADED_SONGS, currentIds).apply()
+    }
+    
+    /**
+     * Checks if a song has been downloaded.
+     * @param songId The ID of the song to check
+     * @return true if the song has been downloaded, false otherwise
+     */
+    fun isSongDownloaded(songId: String): Boolean {
+        return getDownloadedSongIds().contains(songId)
+    }
+    
+    /**
+     * Removes a song ID from the set of downloaded songs.
+     * @param songId The ID of the song to remove from downloaded list
+     */
+    fun removeDownloadedSongId(songId: String) {
+        val currentIds = getDownloadedSongIds().toMutableSet()
+        currentIds.remove(songId)
+        prefs.edit().putStringSet(KEY_DOWNLOADED_SONGS, currentIds).apply()
+    }
+    
     fun getBoolean(key: String, defaultValue: Boolean): Boolean {
         return prefs.getBoolean(key, defaultValue)
     }
@@ -87,6 +124,7 @@ class PreferenceManager @Inject constructor(
         const val KEY_THEME_MODE = "theme_mode"
         const val KEY_LAST_PLAYED_SONG_ID = "last_played_song_id"
         const val KEY_API_BASE_URL = "api_base_url"
+        const val KEY_DOWNLOADED_SONGS = "downloaded_songs"
         
         // Default values
         const val DEFAULT_API_BASE_URL = "http://192.168.29.154:8000"

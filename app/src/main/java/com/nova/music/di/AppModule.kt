@@ -34,6 +34,7 @@ import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import java.util.concurrent.TimeUnit
 import javax.inject.Singleton
+import java.io.File
 
 @Module
 @InstallIn(SingletonComponent::class)
@@ -103,6 +104,26 @@ abstract class AppModule {
                 .readTimeout(30, TimeUnit.SECONDS)
                 .writeTimeout(30, TimeUnit.SECONDS)
                 .addInterceptor(loggingInterceptor)
+                // Configure connection pooling for better performance
+                .connectionPool(okhttp3.ConnectionPool(
+                    maxIdleConnections = 10,
+                    keepAliveDuration = 5, 
+                    timeUnit = TimeUnit.MINUTES
+                ))
+                // Enable response caching
+                .cache(okhttp3.Cache(
+                    directory = File(System.getProperty("java.io.tmpdir"), "okhttp_cache"),
+                    maxSize = 30 * 1024 * 1024L // 30 MB cache
+                ))
+                // Enable gzip compression
+                .addInterceptor { chain ->
+                    val originalRequest = chain.request()
+                    val requestWithCompression = originalRequest.newBuilder()
+                        .header("Accept-Encoding", "gzip, deflate")
+                        .build()
+                    chain.proceed(requestWithCompression)
+                }
+                .retryOnConnectionFailure(true)
                 .build()
         }
         

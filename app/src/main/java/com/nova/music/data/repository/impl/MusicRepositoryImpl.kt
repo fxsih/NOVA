@@ -258,4 +258,8 @@ class MusicRepositoryImpl @Inject constructor(
         // Use the new V2 method
         return musicDao.getPlaylistSongCountV2(playlistId)
     }
+
+    override suspend fun getSongById(songId: String): Song? {
+        return musicDao.getSongById(songId)
+    }
 } 

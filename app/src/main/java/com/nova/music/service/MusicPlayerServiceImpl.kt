@@ -208,7 +208,7 @@ class MusicPlayerServiceImpl @Inject constructor(
                 // Create a media item for the song
                 val mediaItem = createMediaItem(song)
                 
-                withContext(Dispatchers.Main) {
+                        withContext(Dispatchers.Main) {
                     // Remember playback state - default to true since we want to play immediately
                     val wasPlaying = true
                     
@@ -238,12 +238,12 @@ class MusicPlayerServiceImpl @Inject constructor(
                         Log.e(TAG, "Error adding song to recently played", e)
                     }
                 }
-            } catch (e: Exception) {
+                                        } catch (e: Exception) {
                 Log.e(TAG, "Error in playSong", e)
-                _error.value = "Error playing song: ${e.message}"
-            }
-        }
-    }
+                                            _error.value = "Error playing song: ${e.message}"
+                                        }
+                                    }
+                                }
     
     override suspend fun setPlaylistQueue(songs: List<Song>, startSongId: String?) {
         withContext(Dispatchers.IO) {
