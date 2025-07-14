@@ -23,6 +23,13 @@ NOVA is a modern Android music player app built with Jetpack Compose, following 
 - **Active Branch**: main
 - **Current Focus**: Bug fixes for download feature and Downloads playlist
 - **Last Implemented Features**: 
+  - Enhanced search functionality with improved album and artist filtering
+  - Added album and artist sections in search results with visual cards
+  - Implemented artist image support using album art as fallback
+  - Fixed issues with incorrect songs showing in album/artist filters
+  - Added song count indicators for albums and artists
+  - Improved search accuracy with exact and partial matching
+  - Centered filter chips horizontally for better UI layout
   - Fixed bug where downloads wouldn't complete when navigating away from player screen
   - Fixed duplicate "Downloads" entries in library screen
   - Fixed incorrect download status indicators for songs
@@ -68,7 +75,10 @@ NOVA is a modern Android music player app built with Jetpack Compose, following 
 ## Key Features Implemented
 1. Music Library Management
    - Song listing and playback
-   - Search functionality with history
+   - Search functionality with history and filter options (All, Songs, Artists, Albums)
+   - Album and artist browsing with visual cards and song counts
+   - Improved search accuracy with exact and partial matching
+   - Clickable album and artist cards to filter songs by specific album/artist
    - Recently played tracks (limited to 10)
    - Personalized recommended songs section
    - Song details view
@@ -240,7 +250,17 @@ data class UserMusicPreferences(
    - Handles liked songs
    - Manages user preferences for personalization
 
-5. **PlayerViewModel**: 
+5. **SearchViewModel**:
+   - Manages search functionality and results
+   - Handles search history with DataStore
+   - Provides search filtering options (All, Songs, Artists, Albums)
+   - Implements specialized search methods for albums and artists
+   - Supports exact and partial matching for better accuracy
+   - Tracks current filter item for UI state management
+   - Manages loading states and error handling
+   - Integrates with repository for data access
+
+6. **PlayerViewModel**: 
    - Manages audio playback state
    - Handles playlist queue management
    - Provides synchronized queue between service and UI
@@ -254,7 +274,7 @@ data class UserMusicPreferences(
    - Ensures consistent playback with explicit play commands
    - Implements sleep timer with multiple duration options and real-time countdown
 
-6. **MusicPlayerService** and **MusicPlayerServiceImpl**: 
+7. **MusicPlayerService** and **MusicPlayerServiceImpl**: 
    - Handles audio playback with ExoPlayer
    - Manages the queue of songs
    - Provides StateFlow for current song, playback state, and queue
@@ -263,14 +283,14 @@ data class UserMusicPreferences(
    - Implements shuffle and repeat functionality
    - Provides synchronized queue data to the UI
 
-7. **PlaylistSelectionDialog**: 
+8. **PlaylistSelectionDialog**: 
    - Handles playlist selection
    - Shows real-time song counts
    - Supports multi-select
    - Provides create/rename options
    - Manages liked songs state
 
-8. **PlaylistItem**: 
+9. **PlaylistItem**: 
    - Displays individual playlists
    - Shows real-time song count
    - Handles playlist actions
@@ -278,7 +298,7 @@ data class UserMusicPreferences(
    - Enhanced visual design
    - Dynamic color scheme
 
-9. **MarqueeText**: 
+10. **MarqueeText**: 
    - Handles text animation for long content
    - Uses graphicsLayer for smooth animation
    - Only animates when text overflows
@@ -286,7 +306,7 @@ data class UserMusicPreferences(
    - 5-second animation duration
    - Smooth start/stop transitions
 
-10. **MiniPlayerBar**: 
+11. **MiniPlayerBar**: 
    - Enhanced visual design
    - Marquee text for song info
    - Colored album art backgrounds
@@ -295,7 +315,7 @@ data class UserMusicPreferences(
    - Dynamic bottom spacing
    - Swipe-to-dismiss functionality
 
-11. **PlayerScreen**: 
+12. **PlayerScreen**: 
     - Full-screen music player interface
     - Album art display with proper transformations
     - Playback controls with visual feedback
@@ -304,14 +324,14 @@ data class UserMusicPreferences(
     - Smart handling of queue data from service
     - Proper handling of null safety with local variables
 
-12. **DynamicBottomPadding**:
+13. **DynamicBottomPadding**:
    - Handles spacing for mini player
    - Automatically adjusts content padding (80dp/160dp)
    - Smooth transitions
    - Screen-specific customization
    - Maintains scroll position
 
-13. **Backend Service**:
+14. **Backend Service**:
     - FastAPI server for YouTube Music integration
     - Non-blocking list/discovery endpoints for instant response
     - On-demand audio extraction only when needed for playback
@@ -329,7 +349,7 @@ data class UserMusicPreferences(
     - Optimized multi-worker configuration with proper import strings
     - Graceful signal handling and shutdown procedures
 
-14. **User Onboarding**:
+15. **User Onboarding**:
     - Personalization dialog for new users
     - Genre selection with scrollable UI
     - Language selection with 16 supported languages
@@ -338,7 +358,7 @@ data class UserMusicPreferences(
     - Vertical scrolling for all content
     - DataStore persistence of preferences
 
-15. **Album Art Processing**:
+16. **Album Art Processing**:
     - Smart transformation to detect and remove extended color bars
     - Analysis of all four edges of album art images
     - Cropping to the tightest bounding box containing real content
