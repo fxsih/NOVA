@@ -19,10 +19,14 @@ NOVA is a modern Android music player app built with Jetpack Compose, following 
 - **Caching**: TTLCache for audio URLs
 
 ## Current Development State
-- **Database Version**: 5
+- **Database Version**: 7
 - **Active Branch**: main
 - **Current Focus**: Performance optimization and scalability
 - **Last Implemented Features**: 
+  - Added Downloads playlist for offline playback of downloaded songs
+  - Updated database schema to track downloaded songs and local file paths
+  - Enhanced MusicPlayerService to play from local files when available
+  - Added UI for managing downloaded songs with delete functionality
   - Optimized download functionality with improved speed and reliability
   - Added file verification for downloaded songs to ensure UI state accuracy
   - Enhanced download progress tracking with visual indicators
@@ -49,6 +53,7 @@ NOVA is a modern Android music player app built with Jetpack Compose, following 
   - Scrollable UI components for better user experience
   - Language-specific artist suggestions
   - Malayalam language support
+  - Downloads playlist for offline playback of downloaded songs
 
 ## Key Features Implemented
 1. Music Library Management
@@ -63,15 +68,18 @@ NOVA is a modern Android music player app built with Jetpack Compose, following 
    - User preference-based recommendations
    - Smart album art cropping to remove extended color bars
    - Visual cue (purple background) for currently playing songs
+   - Downloads management with offline playback support
 
 2. Playlist System
    - Create, rename, and delete playlists
    - Add/remove songs to/from playlists
    - "Liked Songs" as a permanent playlist
+   - "Downloads" as a permanent playlist for offline songs
    - Real-time song count updates
    - Multi-select support in playlist dialogs
    - Playlist cover management
    - Dynamic playlist item design
+   - Downloaded song management with delete functionality
 
 3. Player Features
    - Play/pause/skip controls
@@ -91,6 +99,7 @@ NOVA is a modern Android music player app built with Jetpack Compose, following 
    - Improved download speed with connection pooling and parallel downloads
    - Improved playback reliability with auto-play enhancements
    - Sleep timer with multiple duration options (10 min, 15 min, 30 min, 1 hour, end of song)
+   - Local file playback for downloaded songs with automatic fallback to streaming
 
 4. User Interface
    - Material 3 design implementation
@@ -161,7 +170,9 @@ data class Song(
     val audioUrl: String? = null,
     val isRecommended: Boolean = false,
     val isLiked: Boolean = false,
-    @ColumnInfo(defaultValue = "") val playlistIds: String = ""
+    @ColumnInfo(defaultValue = "") val playlistIds: String = "",
+    val isDownloaded: Boolean = false,
+    val localFilePath: String? = null
 )
 
 @Entity(tableName = "playlists")
@@ -422,7 +433,7 @@ val colors = listOf(
 ## Next Steps
 1. Implement user authentication
 2. Add cloud sync functionality
-3. Enhance offline support with downloaded songs management
+3. Enhance offline support with playlist download functionality
 4. Implement music visualization
 5. Add social sharing features
 6. Implement comprehensive testing
@@ -558,9 +569,17 @@ Backend optimizations:
     - Verify network connectivity between app and backend
     - Check that the download directory exists and is writable
     - Verify proper error handling in download function
+    - Ensure download status is properly tracked in database and preferences
 
 13. If songs don't play from search screen:
     - Ensure the song is loaded directly in PlayerViewModel, not just navigated to
     - Check that explicit play() calls are made after loading the song
     - Verify that both onClick and onPlayPause handlers properly load the song
     - Check that the search screen is properly collecting state from PlayerViewModel
+
+14. If downloaded songs aren't playing offline:
+    - Check if the song's isDownloaded flag is true in the database
+    - Verify the localFilePath is correctly stored and points to an existing file
+    - Ensure MusicPlayerServiceImpl is checking for local files before streaming
+    - Verify the file exists in the Downloads directory
+    - Check that the song was properly added to the Downloads playlist

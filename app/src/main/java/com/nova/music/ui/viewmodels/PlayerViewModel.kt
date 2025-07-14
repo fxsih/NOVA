@@ -161,6 +161,9 @@ class PlayerViewModel @Inject constructor(
                 if (song != null) {
                     if (!isSongFileExists(context, song)) {
                         songsToRemove.add(songId)
+                        
+                        // Also update the database to mark as not downloaded
+                        musicRepository.markSongAsNotDownloaded(songId)
                     }
                 } else {
                     // If song doesn't exist in repository, remove it from downloads
@@ -731,20 +734,21 @@ class PlayerViewModel @Inject constructor(
                         
                         // Verify the file was downloaded successfully
                         if (file.exists() && file.length() > 0) {
-                            // Mark song as downloaded
+                            // Mark song as downloaded in preferences
                             downloadedSongIds.add(song.id)
                             _isCurrentSongDownloaded.value = true
-                            
-                            // Save to preferences
                             preferenceManager.addDownloadedSongId(song.id)
                             
-                            // Show success toast
-                            withContext(Dispatchers.Main) {
-                                Toast.makeText(
-                                    context,
-                                    "Downloaded: $fileName to Downloads folder",
-                                    Toast.LENGTH_LONG
-                                ).show()
+                            // Also mark as downloaded in the database with the local file path
+                            musicRepository.markSongAsDownloaded(song, file.absolutePath)
+                        
+                        // Show success toast
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(
+                                context,
+                                "Downloaded: $fileName to Downloads folder",
+                                Toast.LENGTH_LONG
+                            ).show()
                             }
                         } else {
                             throw IOException("Download completed but file is empty or missing")
@@ -946,6 +950,65 @@ class PlayerViewModel @Inject constructor(
             } else {
                 // If no context provided, just use the tracking data
                 _isCurrentSongDownloaded.value = isTrackedAsDownloaded
+            }
+        }
+    }
+
+    /**
+     * Deletes a downloaded song from storage and updates the database.
+     * 
+     * @param context The application context needed for file operations
+     * @param songId The ID of the song to delete
+     */
+    fun deleteDownloadedSong(context: Context, songId: String) {
+        viewModelScope.launch {
+            try {
+                // Get the song from the repository
+                val song = musicRepository.getSongById(songId) ?: return@launch
+                
+                // Check if the song is actually downloaded
+                if (!song.isDownloaded || song.localFilePath == null) {
+                    Toast.makeText(context, "Song is not downloaded", Toast.LENGTH_SHORT).show()
+                    return@launch
+                }
+                
+                // Delete the file
+                val file = File(song.localFilePath)
+                if (file.exists()) {
+                    val deleted = file.delete()
+                    if (deleted) {
+                        // Update the database
+                        musicRepository.markSongAsNotDownloaded(songId)
+                        
+                        // Update our tracking
+                        downloadedSongIds.remove(songId)
+                        preferenceManager.removeDownloadedSongId(songId)
+                        
+                        // Update UI state if this is the current song
+                        if (currentSong.value?.id == songId) {
+                            _isCurrentSongDownloaded.value = false
+                        }
+                        
+                        Toast.makeText(context, "Song deleted from downloads", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(context, "Failed to delete song file", Toast.LENGTH_SHORT).show()
+                    }
+                } else {
+                    // File doesn't exist, but update database anyway
+                    musicRepository.markSongAsNotDownloaded(songId)
+                    downloadedSongIds.remove(songId)
+                    preferenceManager.removeDownloadedSongId(songId)
+                    
+                    // Update UI state if this is the current song
+                    if (currentSong.value?.id == songId) {
+                        _isCurrentSongDownloaded.value = false
+                    }
+                    
+                    Toast.makeText(context, "Song removed from downloads", Toast.LENGTH_SHORT).show()
+                }
+            } catch (e: Exception) {
+                Log.e("PlayerViewModel", "Error deleting downloaded song", e)
+                Toast.makeText(context, "Error deleting song: ${e.message}", Toast.LENGTH_SHORT).show()
             }
         }
     }

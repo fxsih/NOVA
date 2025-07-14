@@ -26,6 +26,12 @@ interface MusicRepository {
     suspend fun addSongToLiked(song: Song)
     suspend fun removeSongFromLiked(songId: String)
     
+    // Downloaded songs
+    fun getDownloadedSongs(): Flow<List<Song>>
+    suspend fun markSongAsDownloaded(song: Song, localFilePath: String)
+    suspend fun markSongAsNotDownloaded(songId: String)
+    suspend fun isDownloaded(songId: String): Boolean
+    
     // Playlists
     fun getPlaylists(): Flow<List<Playlist>>
     suspend fun createPlaylist(name: String)

@@ -262,4 +262,28 @@ class MusicRepositoryImpl @Inject constructor(
     override suspend fun getSongById(songId: String): Song? {
         return musicDao.getSongById(songId)
     }
+
+    // Downloaded songs methods
+    override fun getDownloadedSongs(): Flow<List<Song>> = musicDao.getDownloadedSongs()
+
+    override suspend fun markSongAsDownloaded(song: Song, localFilePath: String) {
+        // First check if song exists in database
+        val existingSong = musicDao.getSongById(song.id)
+        if (existingSong == null) {
+            // If song doesn't exist, insert it with downloaded flag
+            musicDao.insertSong(song.copy(isDownloaded = true, localFilePath = localFilePath))
+        } else {
+            // If song exists, update download status
+            musicDao.updateSongDownloadStatus(song.id, true, localFilePath)
+        }
+    }
+
+    override suspend fun markSongAsNotDownloaded(songId: String) {
+        musicDao.updateSongDownloadStatus(songId, false, null)
+    }
+
+    override suspend fun isDownloaded(songId: String): Boolean {
+        val song = musicDao.getSongById(songId)
+        return song?.isDownloaded == true
+    }
 } 

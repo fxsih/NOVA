@@ -17,10 +17,12 @@ data class Song(
     val albumArt: String,
     val albumArtUrl: String? = null,
     val duration: Long,
+    val audioUrl: String? = null,
     val isRecommended: Boolean = false,
     val isLiked: Boolean = false,
-    @ColumnInfo(defaultValue = "") val playlistIds: String = "",
-    val audioUrl: String? = null
+    val isDownloaded: Boolean = false,
+    val localFilePath: String? = null,
+    @ColumnInfo(defaultValue = "") val playlistIds: String = ""
 ) {
     fun getPlaylistIdsList(): List<String> = 
         if (playlistIds.isBlank()) emptyList() 

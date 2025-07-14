@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.util.Log
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.exoplayer.ExoPlayer
@@ -12,6 +13,7 @@ import com.nova.music.data.model.Song
 import com.nova.music.data.repository.MusicRepository
 import com.nova.music.data.api.YTMusicService
 import com.nova.music.ui.viewmodels.RepeatMode
+import com.nova.music.util.PreferenceManager
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -26,7 +28,8 @@ private const val TAG = "MusicPlayerServiceImpl"
 class MusicPlayerServiceImpl @Inject constructor(
     @ApplicationContext private val context: Context,
     private val musicRepository: MusicRepository,
-    private val ytMusicService: YTMusicService
+    private val ytMusicService: YTMusicService,
+    private val preferenceManager: PreferenceManager
 ) : IMusicPlayerService {
 
     private val coroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -191,6 +194,9 @@ class MusicPlayerServiceImpl @Inject constructor(
         }
     }
 
+    /**
+     * Plays the given song.
+     */
     override suspend fun playSong(song: Song) {
         withContext(Dispatchers.IO) {
             try {
@@ -205,8 +211,13 @@ class MusicPlayerServiceImpl @Inject constructor(
                 currentQueueInternal = listOf(song)
                 _currentQueue.value = currentQueueInternal
                 
-                // Create a media item for the song
-                val mediaItem = createMediaItem(song)
+                // Create a media item for the song - check if downloaded first
+                val mediaItem = if (song.isDownloaded && song.localFilePath != null) {
+                    Log.d(TAG, "Using local file for playback: ${song.localFilePath}")
+                    MediaItem.fromUri(song.localFilePath)
+                } else {
+                    createMediaItem(song)
+                }
                 
                         withContext(Dispatchers.Main) {
                     // Remember playback state - default to true since we want to play immediately
@@ -248,71 +259,72 @@ class MusicPlayerServiceImpl @Inject constructor(
     override suspend fun setPlaylistQueue(songs: List<Song>, startSongId: String?) {
         withContext(Dispatchers.IO) {
             try {
-                if (songs.isEmpty()) {
-                    Log.d(TAG, "Playlist is empty, not setting queue")
-                    return@withContext
-                }
-                
                 _error.value = null
-                Log.d(TAG, "Setting playlist queue with ${songs.size} songs")
+                Log.d(TAG, "Setting playlist queue with ${songs.size} songs, starting with $startSongId")
+                withContext(Dispatchers.Main) { ensurePlayerCreated() }
                 
-                // Store the current queue
+                // Update the queue
                 currentQueueInternal = songs
-                _currentQueue.value = songs
+                _currentQueue.value = currentQueueInternal
                 
-                // Find the start song index (default to 0 if not found)
+                // Find the start song index
                 val startIndex = if (startSongId != null) {
                     songs.indexOfFirst { it.id == startSongId }.takeIf { it >= 0 } ?: 0
                 } else {
                     0
                 }
                 
-                Log.d(TAG, "Starting playback from index $startIndex: ${songs[startIndex].title}")
-                
                 // Create media items for all songs
-                val mediaItems = mutableListOf<MediaItem>()
-                for (song in songs) {
-                    try {
-                        val mediaItem = createMediaItem(song)
-                        mediaItems.add(mediaItem)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error creating media item for song ${song.id}: ${e.message}")
-                        // Continue with other songs, don't fail the entire queue
+                val mediaItems = songs.map { song ->
+                    // Check if the song is downloaded
+                    if (song.isDownloaded && song.localFilePath != null) {
+                        MediaItem.fromUri(song.localFilePath)
+                    } else {
+                        createMediaItem(song)
                     }
-                }
-                
-                if (mediaItems.isEmpty()) {
-                    Log.e(TAG, "Failed to create any media items for the playlist")
-                    _error.value = "Failed to create media items for the playlist"
-                    return@withContext
                 }
                 
                     withContext(Dispatchers.Main) {
-                    ensurePlayerCreated()
-                    exoPlayer?.clearMediaItems()
-                    exoPlayer?.setMediaItems(mediaItems)
+                    // Remember playback state - default to true since we want to play immediately
+                    val wasPlaying = true
                     
-                    // Make sure we don't go out of bounds
-                    val safeStartIndex = if (startIndex < mediaItems.size) {
-                        startIndex
-                    } else {
-                        0
-                    }
-                    exoPlayer?.seekTo(safeStartIndex, 0)
-                        exoPlayer?.prepare()
-                        exoPlayer?.playWhenReady = true
-                    Log.d(TAG, "Queue set with ${mediaItems.size} items, starting at index $safeStartIndex, playWhenReady=true")
+                    exoPlayer?.let { player ->
+                        // Clear the current playlist
+                        player.clearMediaItems()
                     
-                    // Force play to ensure playback starts immediately
-                    exoPlayer?.play()
+                        // Add all songs
+                        player.addMediaItems(mediaItems)
+                        
+                        // Set the start position
+                        player.seekTo(startIndex, 0)
+                        
+                        // Prepare the player
+                        player.prepare()
+                        
+                        // Set playWhenReady to ensure playback starts
+                        player.playWhenReady = wasPlaying
+                        
+                        // Force play if needed
+                        if (wasPlaying) {
+                            player.play()
                     }
                 
-                // Update current song
+                        // Update the current song
                 _currentSong.value = songs[startIndex]
+                        
+                        Log.d(TAG, "ExoPlayer prepared with ${songs.size} songs, starting at index $startIndex, playWhenReady=$wasPlaying")
+                    }
+                }
+                
+                // Add the start song to recently played
+                if (startIndex < songs.size) {
+                    coroutineScope.launch {
                 try { 
                     musicRepository.addToRecentlyPlayed(songs[startIndex]) 
                 } catch (e: Exception) {
                     Log.e(TAG, "Error adding song to recently played", e)
+                        }
+                    }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error in setPlaylistQueue", e)
@@ -321,26 +333,42 @@ class MusicPlayerServiceImpl @Inject constructor(
         }
     }
     
-    // Helper function to create a MediaItem from a Song
-    private suspend fun createMediaItem(song: Song): MediaItem {
-        return if (song.id.startsWith("yt_")) {
-            val videoId = song.id.removePrefix("yt_")
-            Log.d(TAG, "Creating MediaItem for YouTube song with ID: $videoId")
-            val baseUrl = "http://192.168.29.154:8000"
-            
-            // Add a metadata property to store the video ID for potential retries
-            MediaItem.Builder()
-                .setUri("$baseUrl/yt_audio?video_id=$videoId")
-                .setMediaId(song.id)
-                .build()
-        } else {
-            // Local song
-            Log.d(TAG, "Creating MediaItem for local song: ${song.albumArt}")
-            MediaItem.Builder()
-                .setUri(Uri.parse(song.albumArt))
-                .setMediaId(song.id)
-                .build()
+    /**
+     * Creates a MediaItem for the given song.
+     */
+    private fun createMediaItem(song: Song): MediaItem {
+        // Check if the song is downloaded and has a local file path
+        if (song.isDownloaded && song.localFilePath != null) {
+            return MediaItem.fromUri(song.localFilePath)
         }
+
+        // Otherwise, use streaming URL
+        val videoId = if (song.id.startsWith("yt_")) {
+            song.id.removePrefix("yt_")
+        } else {
+            song.id
+        }
+        
+        val audioUrl = if (song.audioUrl != null) {
+            song.audioUrl
+        } else {
+            // Fetch from API
+            val apiBaseUrl = preferenceManager.getApiBaseUrl()
+            "${apiBaseUrl}/yt_audio?video_id=$videoId"
+        }
+        
+        return MediaItem.Builder()
+            .setUri(audioUrl)
+                .setMediaId(song.id)
+            .setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setTitle(song.title)
+                    .setArtist(song.artist)
+                    .setAlbumTitle(song.album)
+                    .setArtworkUri(Uri.parse(song.albumArtUrl ?: song.albumArt))
+                    .build()
+            )
+                .build()
     }
 
     private fun startProgressUpdates() {

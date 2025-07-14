@@ -60,6 +60,7 @@ abstract class AppModule {
                 "music.db"
             )
             .addMigrations(MIGRATION_5_6)
+            .addMigrations(MIGRATION_6_7)
             .fallbackToDestructiveMigration()
             .build()
         }
@@ -169,6 +170,15 @@ abstract class AppModule {
                     FROM songs s, playlists p
                     WHERE s.playlistIds LIKE '%' || p.id || '%'
                 """)
+            }
+        }
+
+        // Migration from version 6 to 7
+        private val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                // Add the new isDownloaded and localFilePath fields to the songs table
+                database.execSQL("ALTER TABLE songs ADD COLUMN isDownloaded INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE songs ADD COLUMN localFilePath TEXT")
             }
         }
     }

@@ -353,7 +353,7 @@ fun PlayerScreen(
                             contentDescription = "Downloaded",
                             tint = Color(0xFFBB86FC),
                             modifier = Modifier.size(24.dp)
-                        )
+                            )
                     } else {
                         // Show download icon when not downloading
                     Icon(
