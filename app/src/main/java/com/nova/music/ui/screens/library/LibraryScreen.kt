@@ -17,6 +17,7 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -266,6 +267,101 @@ fun LibraryScreen(
                                     imageVector = if (isPlaying && currentPlaylistId == "liked_songs") 
                                         Icons.Default.Pause else Icons.Default.PlayArrow,
                                     contentDescription = if (isPlaying && currentPlaylistId == "liked_songs") 
+                                        "Pause" else "Play",
+                                    tint = Color.Black,
+                                    modifier = Modifier.size(32.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Downloads Card
+            item {
+                val downloadedSongs by viewModel.downloadedSongs.collectAsState(initial = emptyList())
+                val downloadedSongsCount by viewModel.downloadedSongsCount.collectAsState(initial = 0)
+                
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(240.dp)
+                        .padding(16.dp)
+                        .clickable { onNavigateToPlaylist("downloads") },
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = Color(0xFF1A3B5C) // Darker blue
+                    )
+                ) {
+                    Box(
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(24.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(80.dp)
+                                    .background(
+                                        color = Color(0xFF2196F3),
+                                        shape = RoundedCornerShape(16.dp)
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.FileDownload,
+                                    contentDescription = null,
+                                    tint = Color.Black,
+                                    modifier = Modifier.size(40.dp)
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(16.dp))
+
+                            Text(
+                                text = "Downloads",
+                                style = MaterialTheme.typography.headlineMedium,
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold
+                            )
+
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            Text(
+                                text = "$downloadedSongsCount songs",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = Color(0xFFE1E1E1)
+                            )
+                        }
+
+                        // Play Button
+                        IconButton(
+                            onClick = { 
+                                downloadedSongs.firstOrNull()?.let { song ->
+                                    if (currentPlaylistId == "downloads") {
+                                        playerViewModel.togglePlayPause()
+                                    } else {
+                                        playSongFromPlaylist(song, "downloads", downloadedSongs)
+                                    }
+                                }
+                            },
+                            modifier = Modifier
+                                .align(Alignment.BottomEnd)
+                                .padding(16.dp)
+                                .size(56.dp)
+                                .background(
+                                    color = Color(0xFF2196F3),
+                                    shape = CircleShape
+                                )
+                        ) {
+                            // Use a key to force recomposition only when these values change
+                            key(isPlaying, currentSong?.id) {
+                                Icon(
+                                    imageVector = if (isPlaying && currentPlaylistId == "downloads") 
+                                        Icons.Default.Pause else Icons.Default.PlayArrow,
+                                    contentDescription = if (isPlaying && currentPlaylistId == "downloads") 
                                         "Pause" else "Play",
                                     tint = Color.Black,
                                     modifier = Modifier.size(32.dp)

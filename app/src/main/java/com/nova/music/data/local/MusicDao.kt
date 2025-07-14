@@ -38,8 +38,14 @@ interface MusicDao {
     @Query("SELECT * FROM songs WHERE isLiked = 1")
     fun getLikedSongs(): Flow<List<Song>>
 
+    @Query("SELECT * FROM songs WHERE isDownloaded = 1")
+    fun getDownloadedSongs(): Flow<List<Song>>
+
     @Query("UPDATE songs SET isLiked = :isLiked WHERE id = :songId")
     suspend fun updateSongLikedStatus(songId: String, isLiked: Boolean)
+
+    @Query("UPDATE songs SET isDownloaded = :isDownloaded, localFilePath = :localFilePath WHERE id = :songId")
+    suspend fun updateSongDownloadStatus(songId: String, isDownloaded: Boolean, localFilePath: String?)
 
     @Query("SELECT * FROM playlists")
     fun getPlaylists(): Flow<List<Playlist>>

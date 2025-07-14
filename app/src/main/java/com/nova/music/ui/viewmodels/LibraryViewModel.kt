@@ -41,6 +41,13 @@ class LibraryViewModel @Inject constructor(
             initialValue = emptyList()
         )
 
+    val downloadedSongs: StateFlow<List<Song>> = musicRepository.getDownloadedSongs()
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+
     val playlistSongCounts: StateFlow<Map<String, Int>> = playlists
         .flatMapLatest { playlists ->
             combine(
@@ -56,6 +63,15 @@ class LibraryViewModel @Inject constructor(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5000),
             initialValue = emptyMap()
+        )
+        
+    // Count of downloaded songs
+    val downloadedSongsCount: StateFlow<Int> = downloadedSongs
+        .map { it.size }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = 0
         )
 
     private val _currentPlaylistSongs = MutableStateFlow<List<Song>>(emptyList())
@@ -124,6 +140,16 @@ class LibraryViewModel @Inject constructor(
     fun removeSongFromLiked(songId: String) {
         viewModelScope.launch {
             musicRepository.removeSongFromLiked(songId)
+        }
+    }
+    
+    fun toggleLike(song: Song) {
+        viewModelScope.launch {
+            if (song.isLiked) {
+                musicRepository.removeSongFromLiked(song.id)
+            } else {
+                musicRepository.addSongToLiked(song)
+            }
         }
     }
 

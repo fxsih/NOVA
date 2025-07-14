@@ -17,7 +17,7 @@ import com.nova.music.data.model.SongPlaylistCrossRef
         PlaylistSongCrossRef::class,
         SongPlaylistCrossRef::class
     ],
-    version = 6,
+    version = 7,
     exportSchema = false
 )
 @TypeConverters(Converters::class)

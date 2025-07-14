@@ -530,7 +530,7 @@ async def get_yt_audio(request: Request, video_id: str = Query(..., description=
         if "range" in request.headers:
             headers["Range"] = request.headers["range"]
             logger.info(f"Forwarding Range header: {headers['Range']}")
-            
+        
         # Add compression support
         headers["Accept-Encoding"] = "gzip, deflate"
         
