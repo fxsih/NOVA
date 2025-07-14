@@ -63,6 +63,8 @@ import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.CheckCircle
+import kotlinx.coroutines.delay
+import androidx.compose.runtime.DisposableEffect
 
 // Data class to track dragging state
 data class DragInfo(
@@ -95,8 +97,30 @@ fun PlayerScreen(
 
     // Update download state whenever the screen is shown
     LaunchedEffect(Unit) {
-        // Verify the current song's download state
+        // First verify all downloaded songs to ensure accurate state
+        viewModel.verifyDownloadedSongs(context)
+        
+        // Then verify the current song's download state
         viewModel.updateCurrentSongDownloadState(context)
+        
+        // Set up a repeating check for download status in case a background download completes
+        while (true) {
+            delay(1000) // Check every second
+            val isDownloading = viewModel.isDownloading.value
+            
+            // Only update if we're actively downloading to avoid unnecessary database calls
+            if (isDownloading) {
+                viewModel.updateCurrentSongDownloadState(context)
+            }
+        }
+    }
+    
+    // Clean up when leaving the screen
+    DisposableEffect(Unit) {
+        onDispose {
+            // Set the flag to indicate we're no longer in the player screen
+            viewModel.setInPlayerScreen(false)
+        }
     }
     
     val currentSong by viewModel.currentSong.collectAsState()
@@ -308,11 +332,11 @@ fun PlayerScreen(
                 
                 IconButton(
                     onClick = { 
-                        // Update download state first
-                        viewModel.updateCurrentSongDownloadState(context)
-                        
-                        // Then verify all downloaded songs
+                        // First verify all downloaded songs to ensure accurate state
                         viewModel.verifyDownloadedSongs(context)
+                        
+                        // Then update the current song's download state
+                        viewModel.updateCurrentSongDownloadState(context)
                         
                         // Finally, download if needed
                         viewModel.downloadCurrentSong(context)

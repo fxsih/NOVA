@@ -31,6 +31,7 @@ import com.nova.music.data.model.Song
 import com.nova.music.ui.viewmodels.LibraryViewModel
 import com.nova.music.ui.viewmodels.PlayerViewModel
 import com.nova.music.ui.util.rememberDynamicBottomPadding
+import androidx.compose.ui.platform.LocalContext
 
 @Composable
 fun PlaylistItem(
@@ -132,6 +133,12 @@ fun LibraryScreen(
     val isPlaying by playerViewModel.isPlaying.collectAsState()
     val currentSong by playerViewModel.currentSong.collectAsState()
     val currentPlaylistId by playerViewModel.currentPlaylistId.collectAsState()
+    
+    // Verify downloaded songs when the screen is shown
+    val context = LocalContext.current
+    LaunchedEffect(Unit) {
+        playerViewModel.verifyDownloadedSongs(context)
+    }
     
     // Function to play a song from a specific playlist
     fun playSongFromPlaylist(song: Song, playlistId: String, songs: List<Song>) {
@@ -420,7 +427,7 @@ fun LibraryScreen(
                 }
 
                 // Custom Playlist Cards
-            items(playlists) { playlist ->
+            items(playlists.filter { it.id != "downloads" }) { playlist ->
                     val playlistSongs by viewModel.getPlaylistSongs(playlist.id).collectAsState(initial = emptyList())
                     
                     // Log playlist songs for debugging
