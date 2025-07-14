@@ -29,6 +29,7 @@ import okio.sink
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+import com.nova.music.NovaApplication
 
 /**
  * Repeat modes for music playback.
@@ -132,8 +133,18 @@ class PlayerViewModel @Inject constructor(
 
     /**
      * Checks if a song file actually exists in the Downloads directory
+     * Checks both the stored local file path and the generated file name
      */
     private fun isSongFileExists(context: Context, song: Song): Boolean {
+        // First check if the song has a stored local file path and if that file exists
+        if (song.localFilePath != null) {
+            val storedFile = File(song.localFilePath)
+            if (storedFile.exists() && storedFile.length() > 0) {
+                return true
+            }
+        }
+        
+        // If the stored path doesn't exist, check with the generated file name
         val sanitizedTitle = song.title.replace(Regex("[^a-zA-Z0-9._-]"), "_")
         val sanitizedArtist = song.artist.replace(Regex("[^a-zA-Z0-9._-]"), "_")
         val fileName = "${sanitizedArtist} - ${sanitizedTitle}.mp3"
@@ -154,12 +165,17 @@ class PlayerViewModel @Inject constructor(
             // Get all songs that are marked as downloaded
             val downloadedIds = preferenceManager.getDownloadedSongIds()
             
+            Log.d("PlayerViewModel", "Verifying ${downloadedIds.size} downloaded songs")
+            
             // Check each song to see if the file exists
             for (songId in downloadedIds) {
                 // Get the song details
                 val song = musicRepository.getSongById(songId)
                 if (song != null) {
-                    if (!isSongFileExists(context, song)) {
+                    val exists = isSongFileExists(context, song)
+                    Log.d("PlayerViewModel", "Song ${song.title}: exists=$exists, path=${song.localFilePath}")
+                    
+                    if (!exists) {
                         songsToRemove.add(songId)
                         
                         // Also update the database to mark as not downloaded
@@ -168,6 +184,7 @@ class PlayerViewModel @Inject constructor(
                 } else {
                     // If song doesn't exist in repository, remove it from downloads
                     songsToRemove.add(songId)
+                    Log.d("PlayerViewModel", "Song with ID $songId not found in repository")
                 }
             }
             
@@ -185,6 +202,7 @@ class PlayerViewModel @Inject constructor(
             
             if (songsToRemove.isNotEmpty()) {
                 Log.i("PlayerViewModel", "Removed ${songsToRemove.size} songs from download tracking that no longer exist")
+                Toast.makeText(context, "Fixed ${songsToRemove.size} incorrectly tracked downloads", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -269,6 +287,16 @@ class PlayerViewModel @Inject constructor(
         // Debug logging
         println("DEBUG: loadSong(Song) called with playlistId: $playlistId, playlistSongs size: ${playlistSongs?.size}")
         
+        // Log more details for Downloads playlist
+        if (playlistId == "downloads") {
+            println("DEBUG: Loading song from Downloads playlist")
+            println("DEBUG: Song: ${song.title} (${song.id})")
+            println("DEBUG: isDownloaded: ${song.isDownloaded}, localFilePath: ${song.localFilePath}")
+            playlistSongs?.forEachIndexed { index, s ->
+                println("DEBUG: Downloads song $index: ${s.title} (${s.id}), isDownloaded: ${s.isDownloaded}")
+            }
+        }
+        
         loadingJob?.cancel()
         loadingJob = viewModelScope.launch {
             _isLoading.value = true
@@ -303,7 +331,7 @@ class PlayerViewModel @Inject constructor(
                     
                     // Just play a single song
                     musicPlayerService.playSong(song)
-                    // Ensure playback starts
+                
                     musicPlayerService.resume()
                     // Force play to ensure it starts
                     musicPlayerService.play()
@@ -637,24 +665,47 @@ class PlayerViewModel @Inject constructor(
     fun downloadCurrentSong(context: Context) {
         val song = currentSong.value ?: return
         
-        // Check if the file already exists in storage
-        if (isSongFileExists(context, song)) {
-            // File exists, just update our tracking
-            if (!downloadedSongIds.contains(song.id)) {
+        // First, verify if the song is actually downloaded
+        if (downloadedSongIds.contains(song.id)) {
+            // If it's marked as downloaded, verify the file actually exists
+            if (isSongFileExists(context, song)) {
+                Toast.makeText(context, "Song already exists in Downloads folder", Toast.LENGTH_SHORT).show()
+                return
+            } else {
+                // Song is marked as downloaded but file doesn't exist - fix tracking
+                Log.d("PlayerViewModel", "Song ${song.title} marked as downloaded but file not found - fixing tracking")
+                downloadedSongIds.remove(song.id)
+                _isCurrentSongDownloaded.value = false
+                preferenceManager.removeDownloadedSongId(song.id)
+                // Use viewModelScope to call the suspend function
+                viewModelScope.launch {
+                    musicRepository.markSongAsNotDownloaded(song.id)
+                }
+                // Continue with download
+            }
+        } else {
+            // Not marked as downloaded, but check if file exists anyway
+            if (isSongFileExists(context, song)) {
+                // File exists but not tracked - update tracking
                 downloadedSongIds.add(song.id)
                 _isCurrentSongDownloaded.value = true
                 preferenceManager.addDownloadedSongId(song.id)
+                
+                // Get the file path to update in the database
+                val sanitizedTitle = song.title.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+                val sanitizedArtist = song.artist.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+                val fileName = "${sanitizedArtist} - ${sanitizedTitle}.mp3"
+                val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                val file = File(downloadsDir, fileName)
+                
+                // Update the database using viewModelScope
+                viewModelScope.launch {
+                    musicRepository.markSongAsDownloaded(song, file.absolutePath)
+                }
+                
+                Toast.makeText(context, "Song found in Downloads folder and added to library", Toast.LENGTH_SHORT).show()
+                return
             }
-            Toast.makeText(context, "Song already exists in Downloads folder", Toast.LENGTH_SHORT).show()
-            return
-        }
-        
-        // Don't download if already downloaded according to our tracking
-        if (downloadedSongIds.contains(song.id)) {
-            // Song is marked as downloaded but file doesn't exist - update tracking
-            downloadedSongIds.remove(song.id)
-            _isCurrentSongDownloaded.value = false
-            preferenceManager.removeDownloadedSongId(song.id)
         }
         
         // Don't start a new download if one is already in progress
@@ -666,7 +717,8 @@ class PlayerViewModel @Inject constructor(
         // Cancel any existing download job
         downloadJob?.cancel()
         
-        downloadJob = viewModelScope.launch {
+        // Use application scope instead of viewModelScope to ensure download continues in background
+        downloadJob = NovaApplication.applicationScope.launch {
             _isDownloading.value = true
             _downloadProgress.value = 0f
             
@@ -690,7 +742,9 @@ class PlayerViewModel @Inject constructor(
                 }
                 
                 if (downloadUrl.isNullOrEmpty()) {
+                    withContext(Dispatchers.Main) {
                     Toast.makeText(context, "Download URL not available", Toast.LENGTH_SHORT).show()
+                    }
                     _isDownloading.value = false
                     return@launch
                 }
@@ -736,43 +790,52 @@ class PlayerViewModel @Inject constructor(
                         if (file.exists() && file.length() > 0) {
                             // Mark song as downloaded in preferences
                             downloadedSongIds.add(song.id)
-                            _isCurrentSongDownloaded.value = true
                             preferenceManager.addDownloadedSongId(song.id)
                             
                             // Also mark as downloaded in the database with the local file path
                             musicRepository.markSongAsDownloaded(song, file.absolutePath)
+                            
+                            // Update UI state if we're still on the same song
+                            if (currentSong.value?.id == song.id) {
+                                _isCurrentSongDownloaded.value = true
+                        }
                         
                         // Show success toast
                         withContext(Dispatchers.Main) {
                             Toast.makeText(
                                 context,
-                                "Downloaded: $fileName to Downloads folder",
-                                Toast.LENGTH_LONG
+                                    "Download complete: $fileName",
+                                    Toast.LENGTH_SHORT
                             ).show()
-                            }
-                        } else {
-                            throw IOException("Download completed but file is empty or missing")
                         }
-                    } catch (e: Exception) {
-                        Log.e("PlayerViewModel", "Download failed", e)
+                        } else {
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(
+                                    context,
+                                    "Download failed: File not created",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        }
+                    } catch (e: IOException) {
+                        Log.e("PlayerViewModel", "Error downloading file", e)
                         withContext(Dispatchers.Main) {
                             Toast.makeText(
                                 context,
                                 "Download failed: ${e.message}",
-                                Toast.LENGTH_LONG
+                                Toast.LENGTH_SHORT
                             ).show()
-                        }
-                        
-                        // Delete the partial file if it exists
-                        if (file.exists()) {
-                            file.delete()
                         }
                     }
                 }
             } catch (e: Exception) {
-                Log.e("PlayerViewModel", "Download failed", e)
+                Log.e("PlayerViewModel", "Error in download process", e)
                 withContext(Dispatchers.Main) {
-                    Toast.makeText(context, "Download failed: ${e.message}", Toast.LENGTH_LONG).show()
+                    Toast.makeText(
+                        context,
+                        "Download error: ${e.message}",
+                        Toast.LENGTH_SHORT
+                    ).show()
                 }
             } finally {
                 _isDownloading.value = false
@@ -782,9 +845,9 @@ class PlayerViewModel @Inject constructor(
     }
     
     /**
-     * Helper method to download a file with progress tracking using Okio's efficient I/O
+     * Downloads a file with progress tracking
      */
-    private suspend fun downloadWithProgress(responseBody: ResponseBody, file: File) {
+    private suspend fun downloadWithProgress(responseBody: okhttp3.ResponseBody, file: File) {
         val contentLength = responseBody.contentLength()
         var bytesWritten = 0L
         
@@ -821,6 +884,12 @@ class PlayerViewModel @Inject constructor(
             }
         } catch (e: IOException) {
             Log.e("PlayerViewModel", "Error writing downloaded file", e)
+            
+            // Delete the partial file if it exists
+            if (file.exists()) {
+                file.delete()
+            }
+            
             throw e
         }
     }

@@ -21,8 +21,18 @@ NOVA is a modern Android music player app built with Jetpack Compose, following 
 ## Current Development State
 - **Database Version**: 7
 - **Active Branch**: main
-- **Current Focus**: Performance optimization and scalability
+- **Current Focus**: Bug fixes for download feature and Downloads playlist
 - **Last Implemented Features**: 
+  - Fixed bug where downloads wouldn't complete when navigating away from player screen
+  - Fixed duplicate "Downloads" entries in library screen
+  - Fixed incorrect download status indicators for songs
+  - Improved queue and shuffle handling for the Downloads playlist
+  - Enhanced file existence verification for downloaded songs
+  - Added applicationScope in NovaApplication for background tasks
+  - Updated PlayerViewModel to use applicationScope for downloads
+  - Added better logging and user feedback for download tracking
+  - Improved error handling and cleanup of database entries
+  - Fixed play button functionality in song cards
   - Added Downloads playlist for offline playback of downloaded songs
   - Updated database schema to track downloaded songs and local file paths
   - Enhanced MusicPlayerService to play from local files when available
@@ -527,26 +537,48 @@ Backend optimizations:
    - Check PreferenceManager for stored download IDs
    - Call verifyDownloadedSongs() to refresh download states
    - Ensure updateCurrentSongDownloadState() is called when needed
+   - Check that both stored paths and generated filenames are verified
+   - Ensure database entries are cleaned up if files don't exist
 
-7. If recommended songs aren't loading:
+7. If downloads don't complete when navigating away:
+   - Use applicationScope in NovaApplication instead of viewModelScope
+   - Ensure download coroutines are launched in the applicationScope
+   - Add proper monitoring in PlayerScreen to track download status
+   - Handle suspend function calls properly in coroutines
+
+8. If duplicate "Downloads" entries appear in library:
+   - Filter out any regular playlist with ID "downloads" from custom playlists section
+   - Ensure consistent naming between screens
+
+9. If queue and shuffle don't work properly for Downloads playlist:
+   - Add detailed logging to diagnose queue issues
+   - Enhance downloaded song handling in MusicPlayerServiceImpl
+   - Fix MediaItem creation for downloaded songs
+   - Add proper file existence checks before using local paths
+
+10. If play button in song cards isn't working:
+    - Add missing onPlayPause and onDetailsClick parameters to components
+    - Implement proper play/pause logic for song items
+
+11. If recommended songs aren't loading:
    - Check user preferences in DataStore
    - Verify backend API connection
    - Ensure proper Flow collection in HomeViewModel
    - Check LaunchedEffect triggers
 
-8. If artist suggestions aren't showing:
+12. If artist suggestions aren't showing:
    - Verify language selection
    - Check ArtistSuggestions composable
    - Ensure proper recomposition on language change 
 
-9. If queue display shows incorrect number of songs:
+13. If queue display shows incorrect number of songs:
    - Check that MusicPlayerService exposes currentQueue StateFlow
    - Verify PlayerViewModel is collecting from service's queue
    - Ensure getCurrentPlaylistSongs() prioritizes service queue
    - Check for smart cast issues with currentSong in PlayerScreen
    - Use local variables to safely handle Flow properties with custom getters
 
-10. If backend gets stuck or freezes:
+14. If backend gets stuck or freezes:
    - Check for deadlocks in lock acquisition
    - Verify all locks are being released properly
    - Check network timeouts in yt-dlp and requests operations
@@ -556,14 +588,14 @@ Backend optimizations:
    - Verify thread pool is not overloaded
    - Check for lock cleanup execution
 
-11. If audio playback fails:
+15. If audio playback fails:
     - Verify the client is using the /yt_audio endpoint directly
     - Check that fallback mechanism to /audio_fallback is working
     - Ensure proper error handling in MusicPlayerServiceImpl
     - Verify network connectivity between app and backend
     - Check logs for any extraction errors in backend
 
-12. If downloads are failing:
+16. If downloads are failing:
     - Verify the API base URL is correctly set (not using localhost)
     - Check storage permissions are granted on Android 10 and below
     - Verify network connectivity between app and backend
@@ -571,13 +603,13 @@ Backend optimizations:
     - Verify proper error handling in download function
     - Ensure download status is properly tracked in database and preferences
 
-13. If songs don't play from search screen:
+17. If songs don't play from search screen:
     - Ensure the song is loaded directly in PlayerViewModel, not just navigated to
     - Check that explicit play() calls are made after loading the song
     - Verify that both onClick and onPlayPause handlers properly load the song
     - Check that the search screen is properly collecting state from PlayerViewModel
 
-14. If downloaded songs aren't playing offline:
+18. If downloaded songs aren't playing offline:
     - Check if the song's isDownloaded flag is true in the database
     - Verify the localFilePath is correctly stored and points to an existing file
     - Ensure MusicPlayerServiceImpl is checking for local files before streaming

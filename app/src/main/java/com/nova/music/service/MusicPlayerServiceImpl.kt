@@ -18,6 +18,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import retrofit2.HttpException
+import java.io.File
 import java.io.IOException
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -202,6 +203,11 @@ class MusicPlayerServiceImpl @Inject constructor(
             try {
                 _error.value = null
                 Log.d(TAG, "Playing song: ${song.title}, ID: ${song.id}")
+                
+                if (song.isDownloaded) {
+                    Log.d(TAG, "Song is marked as downloaded, isDownloaded=${song.isDownloaded}, localFilePath=${song.localFilePath}")
+                }
+                
                 withContext(Dispatchers.Main) { ensurePlayerCreated() }
                 
                 // Update the current song immediately
@@ -213,13 +219,22 @@ class MusicPlayerServiceImpl @Inject constructor(
                 
                 // Create a media item for the song - check if downloaded first
                 val mediaItem = if (song.isDownloaded && song.localFilePath != null) {
-                    Log.d(TAG, "Using local file for playback: ${song.localFilePath}")
-                    MediaItem.fromUri(song.localFilePath)
+                    val file = File(song.localFilePath)
+                    if (file.exists() && file.length() > 0) {
+                        Log.d(TAG, "Using local file for playback: ${song.localFilePath}")
+                        MediaItem.Builder()
+                            .setMediaId(song.id)
+                            .setUri(song.localFilePath)
+                            .build()
+                    } else {
+                        Log.d(TAG, "Local file doesn't exist, falling back to streaming")
+                        createMediaItem(song)
+                    }
                 } else {
                     createMediaItem(song)
                 }
                 
-                        withContext(Dispatchers.Main) {
+                withContext(Dispatchers.Main) {
                     // Remember playback state - default to true since we want to play immediately
                     val wasPlaying = true
                     
@@ -259,8 +274,13 @@ class MusicPlayerServiceImpl @Inject constructor(
     override suspend fun setPlaylistQueue(songs: List<Song>, startSongId: String?) {
         withContext(Dispatchers.IO) {
             try {
-                _error.value = null
+            
                 Log.d(TAG, "Setting playlist queue with ${songs.size} songs, starting with $startSongId")
+                
+                // Log downloaded songs info
+                val downloadedCount = songs.count { it.isDownloaded }
+                Log.d(TAG, "Queue contains $downloadedCount downloaded songs")
+                
                 withContext(Dispatchers.Main) { ensurePlayerCreated() }
                 
                 // Update the queue
@@ -278,7 +298,17 @@ class MusicPlayerServiceImpl @Inject constructor(
                 val mediaItems = songs.map { song ->
                     // Check if the song is downloaded
                     if (song.isDownloaded && song.localFilePath != null) {
-                        MediaItem.fromUri(song.localFilePath)
+                        val file = File(song.localFilePath)
+                        if (file.exists() && file.length() > 0) {
+                            Log.d(TAG, "Using local file for song ${song.title}: ${song.localFilePath}")
+                            MediaItem.Builder()
+                                .setMediaId(song.id)
+                                .setUri(song.localFilePath)
+                                .build()
+                        } else {
+                            Log.d(TAG, "Local file for song ${song.title} doesn't exist, falling back to streaming")
+                            createMediaItem(song)
+                        }
                     } else {
                         createMediaItem(song)
                     }
@@ -339,7 +369,16 @@ class MusicPlayerServiceImpl @Inject constructor(
     private fun createMediaItem(song: Song): MediaItem {
         // Check if the song is downloaded and has a local file path
         if (song.isDownloaded && song.localFilePath != null) {
-            return MediaItem.fromUri(song.localFilePath)
+            val file = File(song.localFilePath)
+            if (file.exists() && file.length() > 0) {
+                Log.d(TAG, "Using local file for playback: ${song.localFilePath}")
+                return MediaItem.Builder()
+                    .setMediaId(song.id)
+                    .setUri(song.localFilePath)
+                    .build()
+            } else {
+                Log.d(TAG, "Local file doesn't exist, falling back to streaming: ${song.title}")
+            }
         }
 
         // Otherwise, use streaming URL
@@ -349,26 +388,13 @@ class MusicPlayerServiceImpl @Inject constructor(
             song.id
         }
         
-        val audioUrl = if (song.audioUrl != null) {
-            song.audioUrl
-        } else {
-            // Fetch from API
-            val apiBaseUrl = preferenceManager.getApiBaseUrl()
-            "${apiBaseUrl}/yt_audio?video_id=$videoId"
-        }
+        val streamUrl = "${preferenceManager.getApiBaseUrl()}/yt_audio?video_id=$videoId"
+        Log.d(TAG, "Creating media item with streaming URL: $streamUrl")
         
         return MediaItem.Builder()
-            .setUri(audioUrl)
-                .setMediaId(song.id)
-            .setMediaMetadata(
-                MediaMetadata.Builder()
-                    .setTitle(song.title)
-                    .setArtist(song.artist)
-                    .setAlbumTitle(song.album)
-                    .setArtworkUri(Uri.parse(song.albumArtUrl ?: song.albumArt))
-                    .build()
-            )
-                .build()
+            .setMediaId(song.id)
+            .setUri(streamUrl)
+            .build()
     }
 
     private fun startProgressUpdates() {

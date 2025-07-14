@@ -79,11 +79,26 @@ fun PlaylistDetailScreen(
     // Check if current song is from this playlist
     val isCurrentPlaylist = currentPlaylistId == playlistId
     
+    // Verify downloaded songs when showing the Downloads playlist
+    LaunchedEffect(playlistId) {
+        if (playlistId == "downloads") {
+            playerViewModel.verifyDownloadedSongs(context)
+        }
+    }
+    
     // Function to play a song from this playlist
     fun playSongFromPlaylist(song: Song) {
         viewModel.addToRecentlyPlayed(song)
+        
         // Make sure to pass the full playlist songs to the player
         println("DEBUG: Playing song from playlist: $playlistId with ${playlistSongs.size} songs")
+        
+        // Log the playlist songs for debugging
+        playlistSongs.forEachIndexed { index, s ->
+            println("DEBUG: Playlist song $index: ${s.title} (${s.id})")
+        }
+        
+        // Ensure we're passing the full list of songs to maintain proper queue
         playerViewModel.loadSong(song, playlistId, playlistSongs)
         onNavigateToPlayer(song.id)
     }
@@ -237,7 +252,8 @@ fun PlaylistDetailScreen(
                         .height(56.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = if (playlistId == "liked_songs") 
-                            Color(0xFFBB86FC) else Color(0xFF1DB954)
+                            Color(0xFFBB86FC) else if (playlistId == "downloads")
+                            Color(0xFF2196F3) else Color(0xFF1DB954)
                     )
                 ) {
                     Row(
@@ -291,6 +307,17 @@ fun PlaylistDetailScreen(
                         onRemoveFromPlaylist = {
                             // Delete the downloaded song
                             playerViewModel.deleteDownloadedSong(context, song.id)
+                        },
+                        onPlayPause = { 
+                            if (isSongPlaying) {
+                                playerViewModel.togglePlayPause()
+                            } else {
+                                playSongFromPlaylist(song)
+                            }
+                        },
+                        onDetailsClick = {
+                            detailsSong = song
+                            showDetailsDialog = true
                         }
                     )
                 } else {
@@ -307,7 +334,18 @@ fun PlaylistDetailScreen(
                         onLikeClick = {
                             libraryViewModel.toggleLike(song)
                         },
-                        isLiked = song.isLiked
+                        isLiked = song.isLiked,
+                        onPlayPause = { 
+                            if (isSongPlaying) {
+                                playerViewModel.togglePlayPause()
+                            } else {
+                                playSongFromPlaylist(song)
+                            }
+                        },
+                        onDetailsClick = {
+                            detailsSong = song
+                            showDetailsDialog = true
+                        }
                 )
                 }
             }

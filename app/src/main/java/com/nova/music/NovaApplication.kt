@@ -14,7 +14,14 @@ class NovaApplication : Application() {
     @Inject
     lateinit var databaseInitializer: DatabaseInitializer
 
-    private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    // Private instance scope
+    private val _applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    
+    // Companion object to expose the application scope
+    companion object {
+        // Application scope that persists for the entire app lifecycle
+        val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -22,7 +29,7 @@ class NovaApplication : Application() {
     }
 
     private fun initializeDatabase() {
-        applicationScope.launch {
+        _applicationScope.launch {
             try {
                 databaseInitializer.populateDatabase()
             } catch (e: Exception) {
