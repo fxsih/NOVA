@@ -153,9 +153,7 @@ fun SearchScreen(
                 },
                 modifier = Modifier.fillMaxWidth(),
                 hasRecentSearches = recentSearches.isNotEmpty(),
-                suggestions = emptyList(), // No suggestions
-                onSuggestionClick = { } // Empty handler
-            )
+                 )
         }
 
         // Main content area

@@ -22,6 +22,8 @@ import com.nova.music.ui.viewmodels.PlayerViewModel
 import com.nova.music.util.PreferenceManager
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
+import androidx.core.app.ActivityCompat
+import android.Manifest.permission.POST_NOTIFICATIONS
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
@@ -63,6 +65,11 @@ class MainActivity : ComponentActivity() {
         // Also update the current song's download state
         playerViewModel.updateCurrentSongDownloadState(this)
         
+        // For Android 13+ (API level 33+), request notification permission
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            requestNotificationPermission()
+        }
+        
         setContent {
             AppContent()
         }
@@ -102,6 +109,23 @@ class MainActivity : ComponentActivity() {
                     // Request permission
                     requestPermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
                 }
+            }
+        }
+    }
+
+    // Add this method to request notification permission
+    private fun requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(
+                    this,
+                    POST_NOTIFICATIONS
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                ActivityCompat.requestPermissions(
+                    this,
+                    arrayOf(POST_NOTIFICATIONS),
+                    100
+                )
             }
         }
     }

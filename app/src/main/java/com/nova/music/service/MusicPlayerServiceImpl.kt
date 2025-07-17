@@ -111,19 +111,31 @@ class MusicPlayerServiceImpl @Inject constructor(
             }
             
             val currentMediaItemIndex = exoPlayer?.currentMediaItemIndex ?: 0
-            if (currentQueueInternal.isNotEmpty() && currentMediaItemIndex < currentQueueInternal.size) {
-                _currentSong.value = currentQueueInternal[currentMediaItemIndex]
-                Log.d(TAG, "Media item transitioned to: ${_currentSong.value?.title}")
+            val mediaId = mediaItem.mediaId
+            Log.d(TAG, "Media item transitioned to index: $currentMediaItemIndex, mediaId: $mediaId, reason: $reason")
+            
+            // Find the song in the current queue with this media ID
+            val song = currentQueueInternal.find { it.id == mediaId }
+            if (song != null) {
+                _currentSong.value = song
+                Log.d(TAG, "Media item transitioned to: ${song.title}")
                 
                 // Add to recently played
-                _currentSong.value?.let { song ->
-                    coroutineScope.launch {
-                        try {
-                            musicRepository.addToRecentlyPlayed(song)
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Error adding song to recently played", e)
-                        }
+                coroutineScope.launch {
+                    try {
+                        musicRepository.addToRecentlyPlayed(song)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error adding song to recently played", e)
                     }
+                }
+            } else {
+                Log.d(TAG, "Could not find song with mediaId=$mediaId in the queue")
+                
+                // If the current queue doesn't have this song (unusual case),
+                // try to find it in the media items directly
+                if (currentMediaItemIndex < currentQueueInternal.size) {
+                    _currentSong.value = currentQueueInternal[currentMediaItemIndex]
+                    Log.d(TAG, "Falling back to song at index $currentMediaItemIndex: ${_currentSong.value?.title}")
                 }
             }
         }
@@ -212,6 +224,9 @@ class MusicPlayerServiceImpl @Inject constructor(
                 
                 // Update the current song immediately
                 _currentSong.value = song
+                
+                // Log current song details for debugging
+                logCurrentSongDetails()
                 
                 // Update the queue to just this song
                 currentQueueInternal = listOf(song)
@@ -314,11 +329,21 @@ class MusicPlayerServiceImpl @Inject constructor(
                     }
                 }
                 
-                    withContext(Dispatchers.Main) {
+                withContext(Dispatchers.Main) {
                     // Remember playback state - default to true since we want to play immediately
                     val wasPlaying = true
                     
+                    // Remember current shuffle state
+                    val isShuffleEnabled = exoPlayer?.shuffleModeEnabled ?: false
+                    Log.d(TAG, "Current shuffle mode is $isShuffleEnabled")
+                    
                     exoPlayer?.let { player ->
+                        // Temporarily disable shuffle while setting up the queue
+                        if (isShuffleEnabled) {
+                            player.shuffleModeEnabled = false
+                            Log.d(TAG, "Temporarily disabled shuffle mode to set up queue")
+                        }
+                        
                         // Clear the current playlist
                         player.clearMediaItems()
                     
@@ -331,28 +356,58 @@ class MusicPlayerServiceImpl @Inject constructor(
                         // Prepare the player
                         player.prepare()
                         
+                        // Re-enable shuffle if it was enabled before
+                        if (isShuffleEnabled) {
+                            // We need to make sure the start song is played first, then enable shuffle
+                            player.shuffleModeEnabled = true
+                            Log.d(TAG, "Re-enabled shuffle mode")
+                            
+                            // Give time for shuffle to take effect
+                            delay(100)
+                            
+                            // Update our internal queue to match the shuffled order
+                            val updatedQueue = mutableListOf<Song>()
+                            for (i in 0 until player.mediaItemCount) {
+                                val mediaItem = player.getMediaItemAt(i)
+                                val mediaId = mediaItem.mediaId
+                                
+                                // Find the song in the original queue with this media ID
+                                val song = songs.find { it.id == mediaId }
+                                if (song != null) {
+                                    updatedQueue.add(song)
+                                }
+                            }
+                            
+                            // Update our internal queue with the new order
+                            if (updatedQueue.isNotEmpty()) {
+                                currentQueueInternal = updatedQueue
+                                _currentQueue.value = updatedQueue
+                                Log.d(TAG, "Updated internal queue to match ExoPlayer's shuffled order")
+                            }
+                        }
+                        
                         // Set playWhenReady to ensure playback starts
                         player.playWhenReady = wasPlaying
                         
                         // Force play if needed
                         if (wasPlaying) {
                             player.play()
-                    }
+                        }
                 
                         // Update the current song
-                _currentSong.value = songs[startIndex]
+                        _currentSong.value = songs[startIndex]
                         
-                        Log.d(TAG, "ExoPlayer prepared with ${songs.size} songs, starting at index $startIndex, playWhenReady=$wasPlaying")
+                        Log.d(TAG, "ExoPlayer prepared with ${songs.size} songs, starting at index $startIndex, playWhenReady=$wasPlaying, shuffle=$isShuffleEnabled")
                     }
                 }
                 
                 // Add the start song to recently played
                 if (startIndex < songs.size) {
                     coroutineScope.launch {
-                try { 
-                    musicRepository.addToRecentlyPlayed(songs[startIndex]) 
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error adding song to recently played", e)
+                        try { 
+                            musicRepository.addToRecentlyPlayed(songs[startIndex]) 
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Error adding song to recently played", e)
                         }
                     }
                 }
@@ -552,7 +607,11 @@ class MusicPlayerServiceImpl @Inject constructor(
         }
     }
     
-    override suspend fun setShuffle(enabled: Boolean) {
+    /**
+     * Shuffles the current queue while keeping the current song at the top.
+     * This method doesn't toggle the shuffle mode state but just reorders the queue.
+     */
+    override suspend fun shuffleQueue() {
         withContext(Dispatchers.IO) {
             try {
                 withContext(Dispatchers.Main) {
@@ -560,14 +619,56 @@ class MusicPlayerServiceImpl @Inject constructor(
                     
                     // Remember playback state
                     val wasPlaying = exoPlayer?.isPlaying == true
+                    val currentPosition = exoPlayer?.currentPosition ?: 0
+                    val currentSongId = exoPlayer?.currentMediaItem?.mediaId
+                    val currentIndex = exoPlayer?.currentMediaItemIndex ?: 0
                     
-                    Log.d(TAG, "Before setShuffle($enabled): wasPlaying=$wasPlaying")
+                    Log.d(TAG, "shuffleQueue: wasPlaying=$wasPlaying, currentSongId=$currentSongId, currentIndex=$currentIndex")
                     
-                    // Set shuffle mode
-                    exoPlayer?.shuffleModeEnabled = enabled
+                    // Save the current queue before shuffling
+                    val originalQueue = currentQueueInternal.toList()
+                    if (originalQueue.isEmpty()) {
+                        Log.d(TAG, "Queue is empty, nothing to shuffle")
+                        return@withContext
+                    }
                     
-                    // Restore playback state using playWhenReady for reliability
-                    Log.d(TAG, "Setting playWhenReady=$wasPlaying")
+                    // Get the current song for later
+                    val currentSong = currentQueueInternal.find { it.id == currentSongId }
+                    
+                    // Create a new shuffled queue while keeping the current song at the top
+                    val shuffledQueue = if (currentSong != null) {
+                        // Remove current song from the queue
+                        val remainingQueue = originalQueue.filter { it.id != currentSongId }
+                        
+                        // Shuffle the remaining songs
+                        val shuffled = remainingQueue.shuffled()
+                        
+                        // Put current song at the beginning
+                        listOf(currentSong) + shuffled
+                    } else {
+                        // No current song, just shuffle everything
+                        originalQueue.shuffled()
+                    }
+                    
+                    // Update our internal queue with the new shuffled order
+                    currentQueueInternal = shuffledQueue
+                    _currentQueue.value = shuffledQueue
+                    
+                    Log.d(TAG, "Created shuffled queue with ${shuffledQueue.size} songs")
+                    
+                    // Create media items for the shuffled queue
+                    val mediaItems = shuffledQueue.map { createMediaItem(it) }
+                    
+                    // Clear and rebuild the queue in ExoPlayer
+                    exoPlayer?.clearMediaItems()
+                    exoPlayer?.setMediaItems(mediaItems)
+                    exoPlayer?.prepare()
+                    
+                    // Restore playback position - the current song should be at index 0
+                    exoPlayer?.seekTo(0, currentPosition)
+                    Log.d(TAG, "Restored position to index 0 (current song), position $currentPosition")
+                    
+                    // Restore playback state
                     exoPlayer?.playWhenReady = wasPlaying
                     
                     // Additional check to ensure playback is restored
@@ -576,13 +677,22 @@ class MusicPlayerServiceImpl @Inject constructor(
                         exoPlayer?.play()
                     }
                     
-                    Log.d(TAG, "ExoPlayer shuffle mode set to $enabled, playWhenReady=$wasPlaying")
+                    Log.d(TAG, "Queue shuffled successfully, playWhenReady=$wasPlaying")
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Error setting shuffle mode", e)
-                _error.value = "Error setting shuffle mode: ${e.message}"
+                Log.e(TAG, "Error shuffling queue", e)
+                _error.value = "Error shuffling queue: ${e.message}"
             }
         }
+    }
+    
+    /**
+     * Legacy method to support old behavior. Now just calls shuffleQueue().
+     * This method is kept for backward compatibility.
+     */
+    override suspend fun setShuffle(enabled: Boolean) {
+        // Just shuffle the queue regardless of the enabled parameter
+        shuffleQueue()
     }
     
     override suspend fun skipToNext() {
@@ -593,6 +703,9 @@ class MusicPlayerServiceImpl @Inject constructor(
                     if (exoPlayer?.hasNextMediaItem() == true) {
                         exoPlayer?.seekToNextMediaItem()
                         Log.d(TAG, "ExoPlayer skipToNext() called")
+                        
+                        // Update the current song based on the new media item index
+                        updateCurrentSongAfterNavigation()
                     } else {
                         Log.d(TAG, "No next media item available")
                     }
@@ -612,6 +725,9 @@ class MusicPlayerServiceImpl @Inject constructor(
                     if (exoPlayer?.hasPreviousMediaItem() == true) {
                         exoPlayer?.seekToPreviousMediaItem()
                         Log.d(TAG, "ExoPlayer skipToPrevious() called")
+                        
+                        // Update the current song based on the new media item index
+                        updateCurrentSongAfterNavigation()
                     } else {
                         Log.d(TAG, "No previous media item available")
                     }
@@ -619,6 +735,36 @@ class MusicPlayerServiceImpl @Inject constructor(
             } catch (e: Exception) {
                 Log.e(TAG, "Error in skipToPrevious", e)
                 _error.value = "Error skipping to previous: ${e.message}"
+            }
+        }
+    }
+    
+    /**
+     * Updates the current song after navigation (next/previous)
+     * This ensures the current song is correctly updated after shuffle changes
+     */
+    private suspend fun updateCurrentSongAfterNavigation() {
+        val currentIndex = exoPlayer?.currentMediaItemIndex ?: 0
+        val currentMediaItem = exoPlayer?.currentMediaItem
+        
+        if (currentMediaItem != null) {
+            val mediaId = currentMediaItem.mediaId
+            Log.d(TAG, "After navigation: currentIndex=$currentIndex, mediaId=$mediaId")
+            
+            // Find the song in the current queue with this media ID
+            val song = currentQueueInternal.find { it.id == mediaId }
+            if (song != null) {
+                _currentSong.value = song
+                Log.d(TAG, "Updated current song to: ${song.title}")
+                
+                // Add to recently played
+                try {
+                    musicRepository.addToRecentlyPlayed(song)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error adding song to recently played", e)
+                }
+            } else {
+                Log.d(TAG, "Could not find song with mediaId=$mediaId in the queue")
             }
         }
     }
@@ -986,24 +1132,58 @@ class MusicPlayerServiceImpl @Inject constructor(
                     
                     Log.d(TAG, "Playing queue item at index $index, wasPlaying=$wasPlaying")
                     
-                    // Seek to the specified index
+                    // Validate index
+                    if (index < 0 || index >= currentQueueInternal.size) {
+                        Log.e(TAG, "Invalid queue index: $index, queue size: ${currentQueueInternal.size}")
+                        return@withContext
+                    }
+                    
+                    // Get the song at the requested index from our internal queue
+                    val songToPlay = currentQueueInternal[index]
+                    val songId = songToPlay.id
+                    
+                    Log.d(TAG, "Looking for song ID $songId in ExoPlayer's media items")
+                    
+                    // Find the correct index in ExoPlayer's media items by matching the song ID
+                    var exoPlayerIndex = -1
                     val mediaItemCount = exoPlayer?.mediaItemCount ?: 0
-                    if (index >= 0 && index < mediaItemCount) {
-                        exoPlayer?.seekTo(index, 0)
+                    
+                    for (i in 0 until mediaItemCount) {
+                        val mediaItem = exoPlayer?.getMediaItemAt(i)
+                        if (mediaItem?.mediaId == songId) {
+                            exoPlayerIndex = i
+                            break
+                        }
+                    }
+                    
+                    if (exoPlayerIndex >= 0) {
+                        Log.d(TAG, "Found song ID $songId at ExoPlayer index $exoPlayerIndex")
+                        
+                        // Seek to the correct index in ExoPlayer
+                        exoPlayer?.seekTo(exoPlayerIndex, 0)
                         
                         // Ensure playback starts immediately
                         exoPlayer?.playWhenReady = true
                         exoPlayer?.play()
                         
                         // Update the current song
-                        if (currentQueueInternal.isNotEmpty() && index < currentQueueInternal.size) {
-                            _currentSong.value = currentQueueInternal[index]
-                            Log.d(TAG, "Updated current song to: ${_currentSong.value?.title}")
-                        } else {
-                            Log.d(TAG, "Could not update current song: queue is empty or index out of bounds")
-                        }
+                        _currentSong.value = songToPlay
                     } else {
-                        Log.e(TAG, "Invalid queue index: $index, queue size: ${exoPlayer?.mediaItemCount}")
+                        Log.e(TAG, "Could not find song ID $songId in ExoPlayer's media items")
+                        
+                        // Fallback to using the provided index directly if we can't find the song ID
+                        if (index < mediaItemCount) {
+                            Log.d(TAG, "Falling back to direct index $index")
+                            exoPlayer?.seekTo(index, 0)
+                            exoPlayer?.playWhenReady = true
+                            exoPlayer?.play()
+                            
+                            // Update the current song
+                            _currentSong.value = songToPlay
+                            Log.d(TAG, "Updated current song to: ${songToPlay.title} (using fallback)")
+                        } else {
+                            Log.e(TAG, "Index $index is out of bounds for ExoPlayer media items (count: $mediaItemCount)")
+                        }
                     }
                 }
             } catch (e: Exception) {
@@ -1058,6 +1238,22 @@ class MusicPlayerServiceImpl @Inject constructor(
         if (wasPlaying && exoPlayer?.isPlaying == false) {
             Log.d(TAG, "Playback not restored with playWhenReady, forcing play()")
             exoPlayer?.play()
+        }
+    }
+
+    // Add this debug method to log the current song details
+    private fun logCurrentSongDetails() {
+        val song = _currentSong.value
+        if (song != null) {
+            Log.d(TAG, "Current song details: " +
+                "id=${song.id}, " +
+                "title=${song.title}, " +
+                "artist=${song.artist}, " +
+                "isDownloaded=${song.isDownloaded}, " +
+                "localFilePath=${song.localFilePath}"
+            )
+        } else {
+            Log.d(TAG, "No current song set")
         }
     }
 

@@ -65,6 +65,7 @@ import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.CheckCircle
 import kotlinx.coroutines.delay
 import androidx.compose.runtime.DisposableEffect
+import android.util.Log
 
 // Data class to track dragging state
 data class DragInfo(
@@ -125,7 +126,6 @@ fun PlayerScreen(
     
     val currentSong by viewModel.currentSong.collectAsState()
     val isPlaying by viewModel.isPlaying.collectAsState()
-    val isShuffle by viewModel.isShuffle.collectAsState()
     val repeatMode by viewModel.repeatMode.collectAsState()
     val progress by viewModel.progress.collectAsState()
     val duration by viewModel.duration.collectAsState()
@@ -536,9 +536,6 @@ fun QueueContent(
         dragState = DragInfo()
     }
     
-    // Track shuffle state
-    val isShuffle by viewModel.isShuffle.collectAsState()
-    
     // Apply queue changes immediately when drag ends
     val applyQueueChanges = {
         if (mutableQueue.isNotEmpty()) {
@@ -549,67 +546,17 @@ fun QueueContent(
         }
     }
     
-    // Function to shuffle the queue
+    // Function to shuffle the queue manually (not used anymore since we're using the ViewModel's shuffleQueue)
     val shuffleQueue = {
-        if (mutableQueue.isNotEmpty()) {
-            val currentSongId = currentSong?.id
-            
-            // Create a shuffled version of the queue
-            val shuffledQueue = mutableQueue.toMutableList()
-            
-            // If there's a current song, move it to the top (index 0)
-            if (currentSongId != null) {
-                val currentSongItem = shuffledQueue.find { it.id == currentSongId }
-                // Remove current song from the list
-                shuffledQueue.removeAll { it.id == currentSongId }
-                // Shuffle the remaining songs
-                shuffledQueue.shuffle()
-                // Add current song at the top
-                if (currentSongItem != null) {
-                    shuffledQueue.add(0, currentSongItem)
-                }
-            } else {
-                // No current song, shuffle everything
-                shuffledQueue.shuffle()
-            }
-            
-            // Update the queue
-            mutableQueue.clear()
-            mutableQueue.addAll(shuffledQueue)
-            
-            // Apply the changes
-            scope.launch {
-                viewModel.reorderQueue(mutableQueue.toList())
-            }
-        }
+        // This is now handled by the ViewModel's shuffleQueue method
     }
     
-    // Function to restore original queue order
+    // Function to restore original queue order (not used anymore)
     val restoreOriginalOrder = {
-        if (queueSongs.isNotEmpty()) {
-            // Use the latest queueSongs as the source of truth
-            mutableQueue.clear()
-            mutableQueue.addAll(queueSongs)
-            
-            // Apply the changes
-            scope.launch {
-                viewModel.reorderQueue(mutableQueue.toList())
-            }
-        }
+        // This is no longer needed since we're not toggling shuffle mode
     }
     
-    // Effect to handle shuffle state changes - only apply when shuffle state actually changes
-    var previousShuffleState by remember { mutableStateOf(isShuffle) }
-    LaunchedEffect(isShuffle) {
-        if (isShuffle != previousShuffleState) {
-            if (isShuffle) {
-                shuffleQueue()
-            } else {
-                restoreOriginalOrder()
-            }
-            previousShuffleState = isShuffle
-        }
-    }
+    // Remove the LaunchedEffect for shuffle state changes since we're not toggling shuffle mode anymore
     
             Column(
                 modifier = Modifier
@@ -635,26 +582,18 @@ fun QueueContent(
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // Shuffle button
-                val isShuffle by viewModel.isShuffle.collectAsState()
+                // Shuffle button - now just shuffles the queue each time it's pressed
                 IconButton(
                     onClick = { 
-                        // Toggle shuffle mode
-                        viewModel.toggleShuffle()
-                        
-                        // Apply shuffle immediately if enabled
-                        if (!isShuffle) {
-                            shuffleQueue()
-                        } else {
-                            restoreOriginalOrder()
-                        }
+                        // Shuffle the queue
+                        viewModel.shuffleQueue()
                     },
                     modifier = Modifier.size(40.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.Shuffle,
-                        contentDescription = "Shuffle",
-                        tint = if (isShuffle) Color(0xFFBB86FC) else Color.White,
+                        contentDescription = "Shuffle Queue",
+                        tint = Color.White,
                     )
                 }
                 
@@ -779,8 +718,8 @@ fun QueueContent(
             
             LazyColumn(
                 state = lazyListState,
-                        modifier = Modifier
-                            .fillMaxWidth()
+                modifier = Modifier
+                    .fillMaxWidth()
                     .heightIn(max = 400.dp)
                     .pointerInput(Unit) {
                         detectDragGesturesAfterLongPress(
@@ -795,6 +734,9 @@ fun QueueContent(
                                 // Allow dragging any song
                                 if (touchedItem != null && touchedItem.index >= 0 && touchedItem.index < mutableQueue.size) {
                                     val draggedSong = mutableQueue[touchedItem.index]
+                                    
+                                    // Log drag start
+                                    Log.d("QueueDragDrop", "Started dragging song at index ${touchedItem.index}: ${draggedSong.title}")
                                     
                                     // Start dragging this item
                                     dragState = dragState.copy(
@@ -820,103 +762,151 @@ fun QueueContent(
                             onDrag = { change, dragAmount ->
                                 change.consume()
                                 if (dragState.isDragging && dragState.draggedItem != null) {
+                                    // Update drag offset
                                     val dragOffset = dragState.draggedOffset.copy(
                                         y = dragState.draggedOffset.y + dragAmount.y
                                     )
                                     
-                                    // Find the item under the current drag position
-                                    val targetItem = lazyListState.layoutInfo.visibleItemsInfo.firstOrNull { itemInfo ->
-                                        val itemTop = itemInfo.offset
-                                        val itemBottom = itemInfo.offset + itemInfo.size
-                                        dragOffset.y.toInt() in itemTop..itemBottom
-                                    }
+                                    // Get all visible items
+                                    val visibleItems = lazyListState.layoutInfo.visibleItemsInfo
                                     
-                                    // Allow reordering any song
-                                    if (targetItem != null && targetItem.index != dragState.draggedItemIndex &&
-                                        targetItem.index >= 0 && targetItem.index < mutableQueue.size) {
-                                        
-                                        // Get the songs being moved
-                                        val draggedSong = dragState.draggedItem!!
-                                        val targetIndex = targetItem.index
-                                        
-                                        // Find their positions in the queue
-                                        val draggedIndex = mutableQueue.indexOfFirst { it.id == draggedSong.id }
-                                        
-                                        if (draggedIndex >= 0) {
-                                            // Move the item in the queue
-                                            val temp = mutableQueue[draggedIndex]
-                                            mutableQueue.removeAt(draggedIndex)
-                                            mutableQueue.add(targetIndex, temp)
+                                    // Get the current dragged item's index in the queue
+                                    val draggedSong = dragState.draggedItem!!
+                                    val currentDraggedIndex = mutableQueue.indexOfFirst { it.id == draggedSong.id }
+                                    
+                                    // Log the current state
+                                    Log.d("QueueDragDrop", "Current drag position: y=${dragOffset.y}, dragged index=$currentDraggedIndex")
+                                    
+                                    // Calculate target position based on drag position
+                                    var targetIndex = -1
+                                    
+                                    // Special case for the very top of the list (above first item)
+                                    val firstItem = visibleItems.firstOrNull()
+                                    if (firstItem != null && dragOffset.y <= firstItem.offset + (firstItem.size / 3)) {
+                                        targetIndex = 0
+                                        Log.d("QueueDragDrop", "Detected position above first item, targeting index 0")
+                                    } else {
+                                        // Find which item we're hovering over
+                                        for (i in visibleItems.indices) {
+                                            val item = visibleItems[i]
+                                            val itemTop = item.offset
+                                            val itemBottom = item.offset + item.size
                                             
-                                            // Update the dragged item index
-                                            dragState = dragState.copy(
-                                                draggedItemIndex = targetIndex,
-                                                draggedOffset = dragOffset
-                                            )
+                                            if (dragOffset.y.toInt() in itemTop..itemBottom) {
+                                                // Determine if we're in the top half or bottom half of the item
+                                                val itemMiddle = itemTop + (item.size / 2)
+                                                targetIndex = if (dragOffset.y < itemMiddle) {
+                                                    item.index
+                                                } else {
+                                                    item.index + 1
+                                                }
+                                                
+                                                // Make sure target index is valid
+                                                targetIndex = targetIndex.coerceIn(0, mutableQueue.size - 1)
+                                                
+                                                Log.d("QueueDragDrop", "Detected position at item ${item.index}, targeting index $targetIndex")
+                                                break
+                                            }
                                         }
                                     }
                                     
-                                    // Update the drag offset
-                                    dragState = dragState.copy(draggedOffset = dragOffset)
+                                    // If we found a valid target position and it's different from the current position
+                                    if (targetIndex >= 0 && targetIndex != currentDraggedIndex) {
+                                        Log.d("QueueDragDrop", "Moving song from index $currentDraggedIndex to index $targetIndex: ${draggedSong.title}")
+                                        
+                                        // Move the item in the queue
+                                        val temp = mutableQueue[currentDraggedIndex]
+                                        mutableQueue.removeAt(currentDraggedIndex)
+                                        
+                                        // Adjust target index if needed after removal
+                                        val adjustedTargetIndex = if (targetIndex > currentDraggedIndex) {
+                                            targetIndex - 1
+                                        } else {
+                                            targetIndex
+                                        }
+                                        
+                                        // Insert at the target position
+                                        mutableQueue.add(adjustedTargetIndex, temp)
+                                        
+                                        // Update the dragged item index
+                                        dragState = dragState.copy(
+                                            draggedItemIndex = adjustedTargetIndex,
+                                            draggedOffset = dragOffset
+                                        )
+                                    } else {
+                                        // Just update the drag offset
+                                        dragState = dragState.copy(draggedOffset = dragOffset)
+                                    }
                                 }
                             }
                         )
                     }
             ) {
                 // Show all songs in the queue as a simple list
-                items(mutableQueue.toList(), key = { it.id }) { song ->
-                    val isCurrentSong = song.id == currentSong?.id
-                    val isSongPlaying = isCurrentSong && isPlaying
-                    val isDragged = dragState.isDragging && dragState.draggedItem?.id == song.id
-                    
-                    // Only render non-dragged items normally
-                    if (!isDragged) {
-                        QueueSongItem(
-                            song = song,
-                            onClick = { 
-                                // Play the song immediately when clicked
-                                if (isCurrentSong) {
-                                    viewModel.togglePlayPause()
-                                } else {
-                                    // Use loadQueueSongInContext to maintain queue context
-                                    viewModel.loadQueueSongInContext(song)
-                                }
-                            },
-                            isPlaying = isSongPlaying,
-                            isSelected = isCurrentSong,
-                            onPlayPause = { 
-                                if (isCurrentSong) {
-                                    viewModel.togglePlayPause()
-                                } else {
-                                    // Use loadQueueSongInContext to maintain queue context
-                                    viewModel.loadQueueSongInContext(song)
-                                }
-                            },
-                            modifier = Modifier
-                                .animateItemPlacement(
-                                    animationSpec = tween(
-                                        durationMillis = 300,
-                                        easing = FastOutSlowInEasing
+                items(
+                    items = mutableQueue.toList(),
+                    key = { it.id },
+                    // Use itemContent lambda for better control over item rendering
+                    itemContent = { song ->
+                        val isCurrentSong = song.id == currentSong?.id
+                        val isSongPlaying = isCurrentSong && isPlaying
+                        val isDragged = dragState.isDragging && dragState.draggedItem?.id == song.id
+                        
+                        // Only render non-dragged items normally
+                        if (!isDragged) {
+                            // Wrap in a Box to ensure proper animation
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .animateItemPlacement(
+                                        animationSpec = tween(
+                                            durationMillis = 300,
+                                            easing = FastOutSlowInEasing
+                                        )
                                     )
-                    )
-                        )
-                    } else {
-                        // Placeholder for dragged item with the same height
-                        // This keeps layout stable while the item is being dragged
-                        Spacer(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(72.dp) // Approximate height of SongItem
-                                .padding(horizontal = 8.dp, vertical = 4.dp)
-                                .animateItemPlacement(
-                                    animationSpec = tween(
-                                        durationMillis = 300,
-                                        easing = FastOutSlowInEasing
-                                    )
+                            ) {
+                                QueueSongItem(
+                                    song = song,
+                                    onClick = { 
+                                        // Play the song immediately when clicked
+                                        if (isCurrentSong) {
+                                            viewModel.togglePlayPause()
+                                        } else {
+                                            // Use loadQueueSongInContext to maintain queue context
+                                            viewModel.loadQueueSongInContext(song)
+                                        }
+                                    },
+                                    isPlaying = isSongPlaying,
+                                    isSelected = isCurrentSong,
+                                    onPlayPause = { 
+                                        if (isCurrentSong) {
+                                            viewModel.togglePlayPause()
+                                        } else {
+                                            // Use loadQueueSongInContext to maintain queue context
+                                            viewModel.loadQueueSongInContext(song)
+                                        }
+                                    },
+                                    modifier = Modifier
                                 )
-                        )
+                            }
+                        } else {
+                            // Placeholder for dragged item with the same height
+                            // This keeps layout stable while the item is being dragged
+                            Spacer(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(72.dp) // Approximate height of SongItem
+                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                                    .animateItemPlacement(
+                                        animationSpec = tween(
+                                            durationMillis = 300,
+                                            easing = FastOutSlowInEasing
+                                        )
+                                    )
+                            )
+                        }
                     }
-                }
+                )
                 
                 // Show message if queue is empty
                 if (mutableQueue.isEmpty()) {
