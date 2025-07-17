@@ -27,6 +27,7 @@ interface IMusicPlayerService {
     suspend fun setRepeatMode(mode: RepeatMode)
     suspend fun clearCurrentSong()
     suspend fun setShuffle(enabled: Boolean)
+    suspend fun shuffleQueue()
     suspend fun skipToNext()
     suspend fun skipToPrevious()
     suspend fun moveSongUp(songId: String): Boolean

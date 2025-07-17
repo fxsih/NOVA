@@ -40,18 +40,26 @@
         <service
             android:name=".service.MusicPlayerService"
             android:exported="false"
-            android:foregroundServiceType="mediaPlayback">
-            <intent-filter>
-                <action android:name="androidx.media3.session.MediaSessionService"/>
-            </intent-filter>
+            android:foregroundServiceType="mediaPlayback"
+            android:stopWithTask="true">
         </service>
 
+        <!-- Register the BroadcastReceiver for media notification actions -->
+        <receiver
+            android:name=".service.MediaNotificationReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.nova.music.ACTION_PLAY" />
+                <action android:name="com.nova.music.ACTION_PAUSE" />
+                <action android:name="com.nova.music.ACTION_NEXT" />
+                <action android:name="com.nova.music.ACTION_PREVIOUS" />
+                <action android:name="com.nova.music.ACTION_STOP" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Remove the old service registrations that we're not using anymore -->
         <service
             android:name=".service.MusicPlayerServiceImpl"
-            android:exported="false" />
-
-        <service
-            android:name=".service.NovaMediaService"
             android:exported="false" />
 
     </application>

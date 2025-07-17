@@ -19,12 +19,17 @@ class NovaApplication : Application() {
     
     // Companion object to expose the application scope
     companion object {
-        // Application scope that persists for the entire app lifecycle
-        val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        // Static application scope for operations that should survive configuration changes
+        val applicationScope = CoroutineScope(SupervisorJob())
+        
+        // Static instance of the application for use in ViewModels
+        lateinit var instance: NovaApplication
+            private set
     }
 
     override fun onCreate() {
         super.onCreate()
+        instance = this
         initializeDatabase()
     }
 

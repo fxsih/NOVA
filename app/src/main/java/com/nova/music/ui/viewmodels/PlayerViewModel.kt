@@ -30,6 +30,9 @@ import java.io.File
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 import com.nova.music.NovaApplication
+import android.content.Intent
+import android.os.Build
+import com.nova.music.service.MusicPlayerService
 
 /**
  * Repeat modes for music playback.
@@ -71,9 +74,6 @@ class PlayerViewModel @Inject constructor(
     val repeatMode = musicPlayerService.repeatMode
     val duration = musicPlayerService.duration
     val serviceQueue = musicPlayerService.currentQueue
-
-    private val _isShuffle = MutableStateFlow(false)
-    val isShuffle: StateFlow<Boolean> = _isShuffle.asStateFlow()
     
     // Track loading state to prevent duplicate loads
     private val _isLoading = MutableStateFlow(false)
@@ -217,11 +217,6 @@ class PlayerViewModel @Inject constructor(
         // Check if this is the first song played in this session
         _shouldShowFullPlayer.value = !preferenceManager.hasFullPlayerBeenShownInSession()
         
-        // Initialize shuffle mode
-        viewModelScope.launch {
-            musicPlayerService.setShuffle(_isShuffle.value)
-        }
-        
         // Listen to changes in the current song to ensure playlist context is maintained
         viewModelScope.launch {
             currentSong.collect { song ->
@@ -301,6 +296,9 @@ class PlayerViewModel @Inject constructor(
         loadingJob = viewModelScope.launch {
             _isLoading.value = true
             try {
+                // Start the service to ensure it's running
+                startMusicService(NovaApplication.instance)
+                
                 // Set the current playlist ID and songs
                 _currentPlaylistId.value = playlistId
                 
@@ -370,6 +368,9 @@ class PlayerViewModel @Inject constructor(
         loadingJob = viewModelScope.launch {
             _isLoading.value = true
             try {
+                // Start the service to ensure it's running
+                startMusicService(NovaApplication.instance)
+                
                 musicRepository.getAllSongs().collect { songs ->
                     val song = songs.find { it.id == songId }
                     if (song != null) {
@@ -440,29 +441,48 @@ class PlayerViewModel @Inject constructor(
         }
     }
 
-    fun toggleShuffleMode() {
-        val newShuffleState = !_isShuffle.value
-        setShuffleMode(newShuffleState)
-    }
-
-    fun setShuffleMode(enabled: Boolean) {
-        _isShuffle.value = enabled
+    /**
+     * Shuffles the current queue.
+     * This method doesn't toggle shuffle mode but just reorders the queue.
+     */
+    fun shuffleQueue() {
         viewModelScope.launch {
             try {
-                // Let the service handle playback state restoration
-                musicPlayerService.setShuffle(enabled)
+                // Call the service to shuffle the queue
+                musicPlayerService.shuffleQueue()
+                
+                // No need to update isShuffle state since we're not toggling shuffle mode
+                
+                Log.d("PlayerViewModel", "Queue shuffled successfully")
             } catch (e: Exception) {
-                println("ERROR: Failed to set shuffle mode: ${e.message}")
+                Log.e("PlayerViewModel", "Failed to shuffle queue: ${e.message}", e)
             }
         }
     }
 
     /**
-     * Toggle shuffle mode.
-     * This is an alias for toggleShuffleMode for better naming consistency.
+     * Legacy method for backward compatibility.
+     * Now just calls shuffleQueue() regardless of the enabled parameter.
+     */
+    fun setShuffleMode(enabled: Boolean) {
+        // Just shuffle the queue regardless of the enabled parameter
+        shuffleQueue()
+    }
+
+    /**
+     * Legacy method for backward compatibility.
+     * Now just calls shuffleQueue().
+     */
+    fun toggleShuffleMode() {
+        shuffleQueue()
+    }
+
+    /**
+     * Legacy method for backward compatibility.
+     * Now just calls shuffleQueue().
      */
     fun toggleShuffle() {
-        toggleShuffleMode()
+        shuffleQueue()
     }
 
     /**
@@ -1086,6 +1106,26 @@ class PlayerViewModel @Inject constructor(
         super.onCleared()
         viewModelScope.launch {
             musicPlayerService.stop()
+        }
+    }
+
+    // Add this method to start the MusicPlayerService
+    private fun startMusicService(context: Context) {
+        Log.d("PlayerViewModel", "Starting MusicPlayerService")
+        val serviceIntent = Intent(context, MusicPlayerService::class.java)
+        
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            context.startForegroundService(serviceIntent)
+        } else {
+            context.startService(serviceIntent)
+        }
+    }
+
+    // Update the playSong method to start the service
+    fun playSong(song: Song, context: Context) {
+        viewModelScope.launch {
+            startMusicService(context)
+            musicPlayerService.playSong(song)
         }
     }
 } 
