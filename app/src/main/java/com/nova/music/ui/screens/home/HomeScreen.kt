@@ -28,6 +28,8 @@ import coil.compose.AsyncImage
 import com.nova.music.ui.components.RecentlyPlayedItem
 import com.nova.music.ui.components.RecommendedSongCard
 import com.nova.music.ui.components.PlaylistSelectionDialog
+import com.nova.music.ui.components.RecommendedSongCardSkeleton
+import com.nova.music.ui.components.RecentlyPlayedItemSkeleton
 import com.nova.music.ui.util.rememberDynamicBottomPadding
 import kotlinx.coroutines.launch
 import com.nova.music.util.TimeUtils.formatDuration
@@ -40,15 +42,29 @@ import androidx.compose.ui.platform.LocalContext
 import com.nova.music.util.CenterCropSquareTransformation
 import com.nova.music.ui.viewmodels.PlayerViewModel
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import com.nova.music.util.PreferenceManager
+import javax.inject.Inject
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.material.ExperimentalMaterialApi
+import androidx.compose.material.pullrefresh.PullRefreshIndicator
+import androidx.compose.material.pullrefresh.pullRefresh
+import androidx.compose.material.pullrefresh.rememberPullRefreshState
+import android.util.Log
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+// CompositionLocal for PreferenceManager
+val LocalPreferenceManager = staticCompositionLocalOf<PreferenceManager> { 
+    error("No PreferenceManager provided") 
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class, ExperimentalMaterialApi::class)
 @Composable
 fun HomeScreen(
     viewModel: HomeViewModel = hiltViewModel(),
     libraryViewModel: LibraryViewModel = hiltViewModel(),
     playerViewModel: PlayerViewModel = hiltViewModel(),
     onNavigateToPlayer: (String) -> Unit,
-    onNavigateToSearch: () -> Unit
+    onNavigateToSearch: () -> Unit,
+    onNavigateToProfile: () -> Unit
 ) {
     val scope = rememberCoroutineScope()
     val songs by viewModel.songs.collectAsState()
@@ -64,25 +80,76 @@ fun HomeScreen(
     val currentPlayingSong by playerViewModel.currentSong.collectAsState()
     val isPlaying by playerViewModel.isPlaying.collectAsState()
     
+    // Get preference manager
+    val preferenceManager = LocalPreferenceManager.current
+    
     var selectedSong by remember { mutableStateOf<Song?>(null) }
     var showPlaylistDialog by remember { mutableStateOf(false) }
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
     var showDetailsDialog by remember { mutableStateOf(false) }
     var detailsSong by remember { mutableStateOf<Song?>(null) }
     val userPreferences by libraryViewModel.userPreferences.collectAsState()
-    var showOnboarding by remember { mutableStateOf(userPreferences.genres.isEmpty() && userPreferences.languages.isEmpty() && userPreferences.artists.isEmpty()) }
+    
+    // Only show onboarding if preferences are empty AND onboarding has not been shown before
+    var showOnboarding by remember { 
+        mutableStateOf(
+            !preferenceManager.hasShownOnboarding() && 
+            userPreferences.genres.isEmpty() && 
+            userPreferences.languages.isEmpty() && 
+            userPreferences.artists.isEmpty()
+        ) 
+    }
+    
     var selectedGenres by remember { mutableStateOf(listOf<String>()) }
     var selectedLanguages by remember { mutableStateOf(listOf<String>()) }
     var selectedArtists by remember { mutableStateOf(listOf<String>()) }
     
     val bottomPadding by rememberDynamicBottomPadding()
+    
+    // State for pull-to-refresh
+    var refreshing by remember { mutableStateOf(false) }
+    
+    // Function to refresh content
+    val refresh = {
+        refreshing = true
+        viewModel.refreshTrendingSongs()
+        
+        // Refresh recommended songs if user has preferences
+        if (userPreferences.genres.isNotEmpty() || 
+            userPreferences.languages.isNotEmpty() || 
+            userPreferences.artists.isNotEmpty()) {
+            viewModel.refreshRecommendedSongs(userPreferences)
+        }
+    }
+    
+    val pullRefreshState = rememberPullRefreshState(refreshing, onRefresh = { 
+        scope.launch { refresh() }
+    })
 
-    // Load recommendations only when preferences change or initially
+    // Load recommendations when preferences change
     LaunchedEffect(userPreferences) {
-        // Only load if we have preferences and no recommendations yet or explicit refresh needed
-        if ((userPreferences.genres.isNotEmpty() || userPreferences.languages.isNotEmpty() || userPreferences.artists.isNotEmpty()) && 
-            (recommendedSongsState is UiState.Loading || recommendedSongsState is UiState.Error)) {
+        // Always load recommendations when preferences change
+        if (userPreferences.genres.isNotEmpty() || userPreferences.languages.isNotEmpty() || userPreferences.artists.isNotEmpty()) {
+            viewModel.refreshRecommendedSongs(userPreferences)
+        }
+    }
+    
+    // Add a new LaunchedEffect that loads recommendations when the screen is displayed
+    LaunchedEffect(Unit) {
+        // Check if we need to load recommendations
+        if ((recommendedSongsState is UiState.Error || recommendedSongsState is UiState.Loading) && 
+            (userPreferences.genres.isNotEmpty() || userPreferences.languages.isNotEmpty() || userPreferences.artists.isNotEmpty())) {
+            Log.d("HomeScreen", "Loading recommendations on screen display")
             viewModel.loadRecommendedSongs(userPreferences)
+        }
+    }
+    
+    // Handle refresh completion
+    LaunchedEffect(trendingSongsState, recommendedSongsState) {
+        if (refreshing && 
+            trendingSongsState !is UiState.Loading && 
+            (userPreferences.genres.isEmpty() || recommendedSongsState !is UiState.Loading)) {
+            refreshing = false
         }
     }
 
@@ -103,297 +170,264 @@ fun HomeScreen(
             },
             colors = TopAppBarDefaults.topAppBarColors(
                 containerColor = Color.Transparent
-            )
-        )
-
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = bottomPadding.dp)
-        ) {
-            // Error Message
-            if (errorMessage != null) {
-                item {
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.errorContainer
-                        )
-                    ) {
-                        Text(
-                            text = errorMessage ?: "Unknown error occurred",
-                            color = MaterialTheme.colorScheme.onErrorContainer,
-                            modifier = Modifier.padding(16.dp)
-                        )
-                    }
+            ),
+            actions = {
+                // Profile button
+                IconButton(onClick = onNavigateToProfile) {
+                    Icon(
+                        imageVector = Icons.Default.Person,
+                        contentDescription = "Profile",
+                        tint = Color.White
+                    )
                 }
             }
-            
-            // Trending Songs Section
-            item {
-                Text(
-                    text = "Trending Now",
-                    style = MaterialTheme.typography.titleLarge,
-                    color = Color.White,
-                    modifier = Modifier.padding(16.dp)
-                )
+        )
 
-                when (val state = trendingSongsState) {
-                    is UiState.Loading -> {
-                        Box(
+        // Pull-to-refresh content
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .pullRefresh(pullRefreshState)
+        ) {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(bottom = bottomPadding.dp)
+            ) {
+                // Error Message
+                if (errorMessage != null) {
+                    item {
+                        Card(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(200.dp),
-                            contentAlignment = Alignment.Center
+                                .padding(16.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.errorContainer
+                            )
                         ) {
-                            CircularProgressIndicator()
+                            Text(
+                                text = errorMessage ?: "Unknown error occurred",
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                modifier = Modifier.padding(16.dp)
+                            )
                         }
                     }
-                    is UiState.Success -> {
-                        LazyRow(
-                            contentPadding = PaddingValues(horizontal = 16.dp),
-                            horizontalArrangement = Arrangement.spacedBy(16.dp)
-                        ) {
-                            items(state.data.take(10)) { song ->
-                                val isLiked = likedSongs.any { it.id == song.id }
-                                val isSongPlaying = currentPlayingSong?.id == song.id && isPlaying
-                                val isSelected = currentPlayingSong?.id == song.id && !isPlaying
-                                RecommendedSongCard(
-                                    song = song,
-                                    onClick = { 
-                                        viewModel.addToRecentlyPlayed(song)
-                                        // Pass the trending songs as the playlist
-                                        val trendingSongs = (trendingSongsState as? UiState.Success)?.data ?: emptyList()
-                                        playerViewModel.loadSong(song, "trending", trendingSongs)
-                                        onNavigateToPlayer(song.id)
-                                    },
-                                    onLikeClick = {
-                                        if (isLiked) {
-                                            libraryViewModel.removeSongFromLiked(song.id)
-                                        } else {
-                                            libraryViewModel.addSongToLiked(song)
-                                        }
-                                    },
-                                    onAddToPlaylist = {
-                                        selectedSong = song
-                                        showPlaylistDialog = true
-                                    },
-                                    isLiked = isLiked,
-                                    onDetailsClick = {
-                                        detailsSong = song
-                                        showDetailsDialog = true
-                                    },
-                                    onRemoveFromPlaylist = null,
-                                    isPlaying = isSongPlaying,
-                                    isSelected = isSelected,
-                                    onPlayPause = {
-                                        if (currentPlayingSong?.id == song.id) {
-                                            playerViewModel.togglePlayPause()
-                                        } else {
+                }
+                
+                // Trending Songs Section
+                item {
+                    Text(
+                        text = "Trending Now",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = Color.White,
+                        modifier = Modifier.padding(16.dp)
+                    )
+
+                    when (val state = trendingSongsState) {
+                        is UiState.Loading -> {
+                            LazyRow(
+                                contentPadding = PaddingValues(horizontal = 16.dp),
+                                horizontalArrangement = Arrangement.spacedBy(16.dp)
+                            ) {
+                                items(5) {
+                                    RecommendedSongCardSkeleton()
+                                }
+                            }
+                        }
+                        is UiState.Success -> {
+                            LazyRow(
+                                contentPadding = PaddingValues(horizontal = 16.dp),
+                                horizontalArrangement = Arrangement.spacedBy(16.dp)
+                            ) {
+                                items(state.data.take(10)) { song ->
+                                    val isLiked = likedSongs.any { it.id == song.id }
+                                    val isSongPlaying = currentPlayingSong?.id == song.id && isPlaying
+                                    val isSelected = currentPlayingSong?.id == song.id && !isPlaying
+                                    RecommendedSongCard(
+                                        song = song,
+                                        onClick = { 
                                             viewModel.addToRecentlyPlayed(song)
                                             // Pass the trending songs as the playlist
                                             val trendingSongs = (trendingSongsState as? UiState.Success)?.data ?: emptyList()
                                             playerViewModel.loadSong(song, "trending", trendingSongs)
                                             onNavigateToPlayer(song.id)
+                                        },
+                                        onLikeClick = {
+                                            if (isLiked) {
+                                                libraryViewModel.removeSongFromLiked(song.id)
+                                            } else {
+                                                libraryViewModel.addSongToLiked(song)
+                                            }
+                                        },
+                                        onAddToPlaylist = {
+                                            selectedSong = song
+                                            showPlaylistDialog = true
+                                        },
+                                        isLiked = isLiked,
+                                        onDetailsClick = {
+                                            detailsSong = song
+                                            showDetailsDialog = true
+                                        },
+                                        onRemoveFromPlaylist = null,
+                                        isPlaying = isSongPlaying,
+                                        isSelected = isSelected,
+                                        onPlayPause = {
+                                            if (currentPlayingSong?.id == song.id) {
+                                                playerViewModel.togglePlayPause()
+                                            } else {
+                                                viewModel.addToRecentlyPlayed(song)
+                                                // Pass the trending songs as the playlist
+                                                val trendingSongs = (trendingSongsState as? UiState.Success)?.data ?: emptyList()
+                                                playerViewModel.loadSong(song, "trending", trendingSongs)
+                                                onNavigateToPlayer(song.id)
+                                            }
                                         }
-                                    }
-                                )
+                                    )
+                                }
                             }
                         }
-                    }
-                    is UiState.Error -> {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(16.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text(
-                                    text = state.message,
-                                    color = MaterialTheme.colorScheme.error
-                                )
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Button(onClick = { viewModel.refreshTrendingSongs() }) {
-                                    Text("Try Again")
+                        is UiState.Error -> {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(16.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text(
+                                        text = state.message,
+                                        color = MaterialTheme.colorScheme.error
+                                    )
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Button(onClick = { viewModel.refreshTrendingSongs() }) {
+                                        Text("Try Again")
+                                    }
                                 }
                             }
                         }
                     }
                 }
-            }
 
-            item {
-                Text(
-                    text = "Recommended",
-                    style = MaterialTheme.typography.titleLarge,
-                    color = Color.White,
-                    modifier = Modifier.padding(16.dp)
-                )
-
-                // Recommended Songs
-                when (val state = recommendedSongsState) {
-                    is UiState.Loading -> {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(200.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            CircularProgressIndicator()
-                        }
+                item {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Recommended",
+                            style = MaterialTheme.typography.titleLarge,
+                            color = Color.White
+                        )
+                        
+                        // Removed the refresh button that was here
                     }
-                    is UiState.Success -> {
-                        LazyRow(
-                            contentPadding = PaddingValues(horizontal = 16.dp),
-                            horizontalArrangement = Arrangement.spacedBy(16.dp)
-                        ) {
-                            items(state.data) { song ->
-                                val isLiked = likedSongs.any { it.id == song.id }
-                                val isSongPlaying = currentPlayingSong?.id == song.id && isPlaying
-                                val isSelected = currentPlayingSong?.id == song.id && !isPlaying
-                                RecommendedSongCard(
-                                    song = song,
-                                    onClick = { 
-                                        viewModel.addToRecentlyPlayed(song)
-                                        // Pass the recommended songs as the playlist
-                                        val recommendedSongs = (recommendedSongsState as? UiState.Success)?.data ?: emptyList()
-                                        playerViewModel.loadSong(song, "recommended", recommendedSongs)
-                                        onNavigateToPlayer(song.id)
-                                    },
-                                    onLikeClick = {
-                                        if (isLiked) {
-                                            libraryViewModel.removeSongFromLiked(song.id)
-                                        } else {
-                                            libraryViewModel.addSongToLiked(song)
-                                        }
-                                    },
-                                    onAddToPlaylist = {
-                                        selectedSong = song
-                                        showPlaylistDialog = true
-                                    },
-                                    isLiked = isLiked,
-                                    onDetailsClick = {
-                                        detailsSong = song
-                                        showDetailsDialog = true
-                                    },
-                                    onRemoveFromPlaylist = null,
-                                    isPlaying = isSongPlaying,
-                                    isSelected = isSelected,
-                                    onPlayPause = {
-                                        if (currentPlayingSong?.id == song.id) {
-                                            playerViewModel.togglePlayPause()
-                                        } else {
+
+                    // Recommended Songs
+                    when (val state = recommendedSongsState) {
+                        is UiState.Loading -> {
+                            LazyRow(
+                                contentPadding = PaddingValues(horizontal = 16.dp),
+                                horizontalArrangement = Arrangement.spacedBy(16.dp)
+                            ) {
+                                items(5) {
+                                    RecommendedSongCardSkeleton()
+                                }
+                            }
+                        }
+                        is UiState.Success -> {
+                            LazyRow(
+                                contentPadding = PaddingValues(horizontal = 16.dp),
+                                horizontalArrangement = Arrangement.spacedBy(16.dp)
+                            ) {
+                                items(state.data) { song ->
+                                    val isLiked = likedSongs.any { it.id == song.id }
+                                    val isSongPlaying = currentPlayingSong?.id == song.id && isPlaying
+                                    val isSelected = currentPlayingSong?.id == song.id && !isPlaying
+                                    RecommendedSongCard(
+                                        song = song,
+                                        onClick = { 
                                             viewModel.addToRecentlyPlayed(song)
                                             // Pass the recommended songs as the playlist
                                             val recommendedSongs = (recommendedSongsState as? UiState.Success)?.data ?: emptyList()
                                             playerViewModel.loadSong(song, "recommended", recommendedSongs)
                                             onNavigateToPlayer(song.id)
+                                        },
+                                        onLikeClick = {
+                                            if (isLiked) {
+                                                libraryViewModel.removeSongFromLiked(song.id)
+                                            } else {
+                                                libraryViewModel.addSongToLiked(song)
+                                            }
+                                        },
+                                        onAddToPlaylist = {
+                                            selectedSong = song
+                                            showPlaylistDialog = true
+                                        },
+                                        isLiked = isLiked,
+                                        onDetailsClick = {
+                                            detailsSong = song
+                                            showDetailsDialog = true
+                                        },
+                                        onRemoveFromPlaylist = null,
+                                        isPlaying = isSongPlaying,
+                                        isSelected = isSelected,
+                                        onPlayPause = {
+                                            if (currentPlayingSong?.id == song.id) {
+                                                playerViewModel.togglePlayPause()
+                                            } else {
+                                                viewModel.addToRecentlyPlayed(song)
+                                                // Pass the recommended songs as the playlist
+                                                val recommendedSongs = (recommendedSongsState as? UiState.Success)?.data ?: emptyList()
+                                                playerViewModel.loadSong(song, "recommended", recommendedSongs)
+                                                onNavigateToPlayer(song.id)
+                                            }
                                         }
-                                    }
-                                )
-                            }
-                        }
-                    }
-                    is UiState.Error -> {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(16.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text(
-                                    text = state.message,
-                                    color = MaterialTheme.colorScheme.error
-                                )
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Button(onClick = { viewModel.refreshRecommendedSongs(userPreferences) }) {
-                                    Text("Try Again")
+                                    )
                                 }
                             }
                         }
+                        is UiState.Error -> {
+                            // Show skeleton loaders instead of error message to match trending section
+                            LazyRow(
+                                contentPadding = PaddingValues(horizontal = 16.dp),
+                                horizontalArrangement = Arrangement.spacedBy(16.dp)
+                            ) {
+                                items(5) {
+                                    RecommendedSongCardSkeleton()
+                                }
+                            }
+                            
+                            // Hidden button for retrying that auto-triggers after a delay
+                            LaunchedEffect(Unit) {
+                                kotlinx.coroutines.delay(5000) // 5 second delay before auto-retry
+                                viewModel.refreshRecommendedSongs(userPreferences)
+                            }
+                        }
                     }
+
+                    Text(
+                        text = "Recently Played",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = Color.White,
+                        modifier = Modifier.padding(16.dp)
+                    )
                 }
 
-                Text(
-                    text = "Recently Played",
-                    style = MaterialTheme.typography.titleLarge,
-                    color = Color.White,
-                    modifier = Modifier.padding(16.dp)
-                )
-            }
-
-            items(recentlyPlayed) { song ->
-                val isLiked = likedSongs.any { it.id == song.id }
-                val isSongPlaying = currentPlayingSong?.id == song.id && isPlaying
-                val isSelected = currentPlayingSong?.id == song.id && !isPlaying
-                RecentlyPlayedItem(
-                    song = song,
-                    onClick = { 
-                        viewModel.addToRecentlyPlayed(song)
-                        // Pass the recently played songs as the playlist
-                        playerViewModel.loadSong(song, "recently_played", recentlyPlayed)
-                        onNavigateToPlayer(song.id)
-                    },
-                    onLikeClick = {
-                        if (isLiked) {
-                            libraryViewModel.removeSongFromLiked(song.id)
-                        } else {
-                            libraryViewModel.addSongToLiked(song)
-                        }
-                    },
-                    onAddToPlaylist = {
-                        selectedSong = song
-                        showPlaylistDialog = true
-                    },
-                    isLiked = isLiked,
-                    modifier = Modifier.padding(horizontal = 16.dp),
-                    onDetailsClick = {
-                        detailsSong = song
-                        showDetailsDialog = true
-                    },
-                    onRemoveFromPlaylist = null,
-                    isPlaying = isSongPlaying,
-                    isSelected = isSelected,
-                    onPlayPause = {
-                        if (currentPlayingSong?.id == song.id) {
-                            playerViewModel.togglePlayPause()
-                        } else {
-                            viewModel.addToRecentlyPlayed(song)
-                            // Pass the recently played songs as the playlist
-                            playerViewModel.loadSong(song, "recently_played", recentlyPlayed)
-                            onNavigateToPlayer(song.id)
-                        }
-                    }
-                )
-            }
-
-            item {
-                Text(
-                    text = "Popular Tracks",
-                    style = MaterialTheme.typography.titleLarge,
-                    color = Color.White,
-                    modifier = Modifier.padding(16.dp)
-                )
-            }
-
-            when (val state = trendingSongsState) {
-                is UiState.Loading -> {
+                if (recentlyPlayed.isEmpty()) {
+                    // Show skeleton loader if no recently played songs
                     item {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(100.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            CircularProgressIndicator()
+                        Column {
+                            repeat(3) {
+                                RecentlyPlayedItemSkeleton(
+                                    modifier = Modifier.padding(horizontal = 16.dp)
+                                )
+                            }
                         }
                     }
-                }
-                is UiState.Success -> {
-                    items(state.data) { song ->
+                } else {
+                    items(recentlyPlayed) { song ->
                         val isLiked = likedSongs.any { it.id == song.id }
                         val isSongPlaying = currentPlayingSong?.id == song.id && isPlaying
                         val isSelected = currentPlayingSong?.id == song.id && !isPlaying
@@ -401,9 +435,8 @@ fun HomeScreen(
                             song = song,
                             onClick = { 
                                 viewModel.addToRecentlyPlayed(song)
-                                // Pass the popular tracks as the playlist
-                                val popularTracks = (trendingSongsState as? UiState.Success)?.data ?: emptyList()
-                                playerViewModel.loadSong(song, "popular", popularTracks)
+                                // Pass the recently played songs as the playlist
+                                playerViewModel.loadSong(song, "recently_played", recentlyPlayed)
                                 onNavigateToPlayer(song.id)
                             },
                             onLikeClick = {
@@ -431,35 +464,114 @@ fun HomeScreen(
                                     playerViewModel.togglePlayPause()
                                 } else {
                                     viewModel.addToRecentlyPlayed(song)
-                                    // Pass the popular tracks as the playlist
-                                    val popularTracks = (trendingSongsState as? UiState.Success)?.data ?: emptyList()
-                                    playerViewModel.loadSong(song, "popular", popularTracks)
+                                    // Pass the recently played songs as the playlist
+                                    playerViewModel.loadSong(song, "recently_played", recentlyPlayed)
                                     onNavigateToPlayer(song.id)
                                 }
                             }
                         )
                     }
                 }
-                is UiState.Error -> {
-                    item {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(16.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Text(
-                                text = state.message,
-                                color = Color.Red
+
+                item {
+                    Text(
+                        text = "Popular Tracks",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = Color.White,
+                        modifier = Modifier.padding(16.dp)
+                    )
+                }
+
+                when (val state = trendingSongsState) {
+                    is UiState.Loading -> {
+                        item {
+                            Column {
+                                repeat(5) {
+                                    RecentlyPlayedItemSkeleton(
+                                        modifier = Modifier.padding(horizontal = 16.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    is UiState.Success -> {
+                        items(state.data) { song ->
+                            val isLiked = likedSongs.any { it.id == song.id }
+                            val isSongPlaying = currentPlayingSong?.id == song.id && isPlaying
+                            val isSelected = currentPlayingSong?.id == song.id && !isPlaying
+                            RecentlyPlayedItem(
+                                song = song,
+                                onClick = { 
+                                    viewModel.addToRecentlyPlayed(song)
+                                    // Pass the popular tracks as the playlist
+                                    val popularTracks = (trendingSongsState as? UiState.Success)?.data ?: emptyList()
+                                    playerViewModel.loadSong(song, "popular", popularTracks)
+                                    onNavigateToPlayer(song.id)
+                                },
+                                onLikeClick = {
+                                    if (isLiked) {
+                                        libraryViewModel.removeSongFromLiked(song.id)
+                                    } else {
+                                        libraryViewModel.addSongToLiked(song)
+                                    }
+                                },
+                                onAddToPlaylist = {
+                                    selectedSong = song
+                                    showPlaylistDialog = true
+                                },
+                                isLiked = isLiked,
+                                modifier = Modifier.padding(horizontal = 16.dp),
+                                onDetailsClick = {
+                                    detailsSong = song
+                                    showDetailsDialog = true
+                                },
+                                onRemoveFromPlaylist = null,
+                                isPlaying = isSongPlaying,
+                                isSelected = isSelected,
+                                onPlayPause = {
+                                    if (currentPlayingSong?.id == song.id) {
+                                        playerViewModel.togglePlayPause()
+                                    } else {
+                                        viewModel.addToRecentlyPlayed(song)
+                                        // Pass the popular tracks as the playlist
+                                        val popularTracks = (trendingSongsState as? UiState.Success)?.data ?: emptyList()
+                                        playerViewModel.loadSong(song, "popular", popularTracks)
+                                        onNavigateToPlayer(song.id)
+                                    }
+                                }
                             )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Button(onClick = { viewModel.refreshTrendingSongs() }) {
-                                Text("Retry")
+                        }
+                    }
+                    is UiState.Error -> {
+                        item {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(16.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text(
+                                    text = state.message,
+                                    color = Color.Red
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Button(onClick = { viewModel.refreshTrendingSongs() }) {
+                                    Text("Retry")
+                                }
                             }
                         }
                     }
                 }
             }
+            
+            // Pull refresh indicator
+            PullRefreshIndicator(
+                refreshing = refreshing,
+                state = pullRefreshState,
+                modifier = Modifier.align(Alignment.TopCenter),
+                backgroundColor = MaterialTheme.colorScheme.surface,
+                contentColor = MaterialTheme.colorScheme.primary
+            )
         }
     }
 
@@ -761,7 +873,10 @@ fun HomeScreen(
                                 artists = selectedArtists
                             )
                             libraryViewModel.setUserPreferences(preferences)
-                            viewModel.loadRecommendedSongs(preferences)
+                            viewModel.refreshRecommendedSongs(preferences)
+                            
+                            // Mark onboarding as shown
+                            preferenceManager.setOnboardingShown()
                             showOnboarding = false
                         }
                     },

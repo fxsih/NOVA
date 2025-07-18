@@ -27,8 +27,12 @@ import com.nova.music.ui.screens.library.LibraryScreen
 import com.nova.music.ui.screens.library.PlaylistDetailScreen
 import com.nova.music.ui.screens.search.SearchScreen
 import com.nova.music.ui.screens.player.PlayerScreen
+import com.nova.music.ui.screens.auth.LoginScreen
+import com.nova.music.ui.screens.auth.SignupScreen
+import com.nova.music.ui.screens.profile.ProfileScreen
 import com.nova.music.ui.components.MiniPlayerBar
 import com.nova.music.ui.viewmodels.PlayerViewModel
+import com.nova.music.ui.viewmodels.AuthViewModel
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.compose.runtime.collectAsState
 import androidx.compose.animation.AnimatedVisibility
@@ -36,6 +40,9 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
 sealed class Screen(val route: String) {
+    object Login : Screen("login")
+    object Signup : Screen("signup")
+    object Profile : Screen("profile")
     object Home : Screen("home")
     object Search : Screen("search")
     object Library : Screen("library")
@@ -50,14 +57,68 @@ sealed class Screen(val route: String) {
 @Composable
 fun NovaNavigation(
     navController: NavHostController,
-    startDestination: String = Screen.Home.route
+    startDestination: String,
+    isAuthenticated: Boolean
 ) {
     val playerViewModel: PlayerViewModel = hiltViewModel()
+    val authViewModel: AuthViewModel = hiltViewModel()
 
     NavHost(
         navController = navController,
         startDestination = startDestination
     ) {
+        // Authentication screens
+        composable(Screen.Login.route) {
+            LoginScreen(
+                onLoginSuccess = {
+                    android.util.Log.d("NovaNavigation", "Login successful, navigating to Home screen")
+                    navController.navigate(Screen.Home.route) {
+                        popUpTo(Screen.Login.route) { inclusive = true }
+                    }
+                },
+                onNavigateToSignUp = {
+                    android.util.Log.d("NovaNavigation", "Navigating to Sign Up screen")
+                    navController.navigate(Screen.Signup.route)
+                },
+                onTestPlayer = {
+                    // Only for development
+                    android.util.Log.d("NovaNavigation", "Using test player mode")
+                    navController.navigate(Screen.Home.route) {
+                        popUpTo(Screen.Login.route) { inclusive = true }
+                    }
+                }
+            )
+        }
+        
+        composable(Screen.Signup.route) {
+            SignupScreen(
+                onNavigateBack = {
+                    android.util.Log.d("NovaNavigation", "Navigating back from Sign Up screen")
+                    navController.popBackStack()
+                },
+                onSignUpSuccess = {
+                    android.util.Log.d("NovaNavigation", "Sign Up successful, navigating to Login screen")
+                    navController.navigate(Screen.Login.route) {
+                        popUpTo(Screen.Signup.route) { inclusive = true }
+                    }
+                }
+            )
+        }
+        
+        composable(Screen.Profile.route) {
+            ProfileScreen(
+                onNavigateBack = {
+                    navController.popBackStack()
+                },
+                onSignOut = {
+                    navController.navigate(Screen.Login.route) {
+                        popUpTo(0) { inclusive = true }
+                    }
+                }
+            )
+        }
+        
+        // Main app screens
         composable(Screen.Home.route) {
             HomeScreen(
                 onNavigateToPlayer = { songId ->
@@ -65,6 +126,9 @@ fun NovaNavigation(
                 },
                 onNavigateToSearch = {
                     navController.navigate(Screen.Search.route)
+                },
+                onNavigateToProfile = {
+                    navController.navigate(Screen.Profile.route)
                 }
             )
         }
@@ -165,9 +229,15 @@ fun NovaNavigation() {
     )
     
     val playerViewModel: PlayerViewModel = hiltViewModel()
+    val authViewModel: AuthViewModel = hiltViewModel()
+    
     val shouldShowFullPlayer by playerViewModel.shouldShowFullPlayer.collectAsState()
     val currentSong by playerViewModel.currentSong.collectAsState()
     val isInPlayerScreen by playerViewModel.isInPlayerScreen.collectAsState()
+    val currentUser by authViewModel.currentUser.collectAsState()
+    val isAuthenticated = currentUser != null
+    
+    val startDestination = if (isAuthenticated) Screen.Home.route else Screen.Login.route
     val coroutineScope = rememberCoroutineScope()
     
     // Handle automatic navigation to full player based on shouldShowFullPlayer flag
@@ -183,13 +253,18 @@ fun NovaNavigation() {
     }
     
     Box(modifier = Modifier.fillMaxSize()) {
-        NovaNavigation(navController)
+        NovaNavigation(
+            navController = navController,
+            startDestination = startDestination,
+            isAuthenticated = isAuthenticated
+        )
 
         val navBackStackEntry by navController.currentBackStackEntryAsState()
         val currentRoute = navBackStackEntry?.destination?.route
 
-        // Only show mini player and bottom nav if not on PlayerScreen
+        // Only show mini player and bottom nav if not on PlayerScreen and authenticated
         val isPlayerScreen = currentRoute?.startsWith("player") == true
+        val isAuthScreen = currentRoute == Screen.Login.route || currentRoute == Screen.Signup.route
         
         // Update the isInPlayerScreen flag in the ViewModel
         LaunchedEffect(isPlayerScreen) {
@@ -199,8 +274,8 @@ fun NovaNavigation() {
         val navBarHeight = 72.dp
         val miniPlayerGap = 8.dp
 
-        // Mini player hovers above nav bar
-        if (currentSong != null && !isPlayerScreen) {
+        // Mini player hovers above nav bar (only when authenticated and not on auth screens)
+        if (currentSong != null && !isPlayerScreen && isAuthenticated && !isAuthScreen) {
             MiniPlayerBar(
                 onTap = {
                     // Navigate to player without song ID to prevent reloading
@@ -215,8 +290,8 @@ fun NovaNavigation() {
             )
         }
 
-        // Navigation bar at the very bottom
-        if (!isPlayerScreen) {
+        // Navigation bar at the very bottom (only when authenticated and not on auth screens)
+        if (!isPlayerScreen && isAuthenticated && !isAuthScreen) {
             Row(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -231,6 +306,7 @@ fun NovaNavigation() {
                     val selected = when (currentRoute) {
                         "player/${navBackStackEntry?.arguments?.getString("songId")}", "player" -> item.route == Screen.Home.route
                         "playlist/${navBackStackEntry?.arguments?.getString("playlistId")}" -> item.route == Screen.Library.route
+                        Screen.Profile.route -> false
                         else -> currentRoute == item.route
                     }
                     

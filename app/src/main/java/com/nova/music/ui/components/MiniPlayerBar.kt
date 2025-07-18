@@ -28,7 +28,9 @@ import com.nova.music.ui.viewmodels.PlayerViewModel
 import com.nova.music.ui.viewmodels.LibraryViewModel
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.compose.runtime.collectAsState
+import android.content.Intent
 import android.os.Build
+import android.util.Log
 import android.view.WindowManager
 import androidx.compose.animation.core.*
 import androidx.compose.ui.layout.ContentScale
@@ -40,6 +42,8 @@ import kotlinx.coroutines.launch
 import androidx.compose.ui.res.painterResource
 import com.nova.music.R
 import coil.request.ImageRequest
+import com.nova.music.service.MediaNotificationManager
+import com.nova.music.service.MusicPlayerService
 import com.nova.music.util.CenterCropSquareTransformation
 
 @Composable
@@ -58,9 +62,9 @@ fun MiniPlayerBar(
     val dismissThreshold = with(LocalDensity.current) { 100.dp.toPx() }
     val coroutineScope = rememberCoroutineScope()
     val animatedOffset = remember { Animatable(0f) }
+    val context = LocalContext.current
     
     // Get actual screen width using WindowManager
-    val context = LocalContext.current
     val windowManager = remember { context.getSystemService(WindowManager::class.java) }
     val screenWidth = remember {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -86,12 +90,27 @@ fun MiniPlayerBar(
         }
     }
 
-    LaunchedEffect(offsetX) {
-        if (offsetX.absoluteValue >= dismissThreshold) {
-            // Stop playback and clear current song
+    // Function to stop playback and remove notification
+    val stopPlaybackAndRemoveNotification = {
+        Log.d("MiniPlayerBar", "Stopping playback and removing notification")
+        
+        // First stop the playback through the ViewModel
             viewModel.stopPlayback()
+        
+        // Then clear the current song to remove from UI
             viewModel.clearCurrentSong()
+        
+        // Also send a direct STOP action to the service to ensure notification is removed
+        val stopIntent = Intent(context, MusicPlayerService::class.java).apply {
+            action = MediaNotificationManager.ACTION_STOP
         }
+        context.startService(stopIntent)
+        
+        // Finally, stop the service completely
+        val serviceIntent = Intent(context, MusicPlayerService::class.java)
+        context.stopService(serviceIntent)
+        
+        Log.d("MiniPlayerBar", "Playback stopped and notification removed")
     }
 
     Surface(
@@ -134,8 +153,8 @@ fun MiniPlayerBar(
                                     easing = FastOutSlowInEasing
                                 )
                             )
-                            viewModel.stopPlayback()
-                            viewModel.clearCurrentSong()
+                            // Stop playback and remove notification
+                            stopPlaybackAndRemoveNotification()
                         }
                     }
                 }

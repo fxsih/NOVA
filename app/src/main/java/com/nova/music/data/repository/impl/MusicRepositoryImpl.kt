@@ -41,14 +41,157 @@ class MusicRepositoryImpl @Inject constructor(
 
     override fun getRecommendedSongs(genres: String, languages: String, artists: String): Flow<List<Song>> = flow {
         try {
+            // First try to emit cached recommendations if they exist
+            val cachedRecommendations = musicDao.getRecommendedSongs().first()
+            if (cachedRecommendations.isNotEmpty()) {
+                Log.d(TAG, "Using ${cachedRecommendations.size} cached recommendations initially")
+                emit(cachedRecommendations)
+            }
+            
+            // Log the parameters to help with debugging
+            Log.d(TAG, "Fetching recommendations with genres: $genres, languages: $languages, artists: $artists")
+            
             val recommendedResults = ytMusicService.getRecommendations(
                 genres = genres.takeIf { it.isNotBlank() },
                 languages = languages.takeIf { it.isNotBlank() },
                 artists = artists.takeIf { it.isNotBlank() }
             )
-            val songs = recommendedResults.map { it.toSong() }
+            
+            // Log the number of results received
+            Log.d(TAG, "Received ${recommendedResults.size} recommended songs")
+            
+            val songs = recommendedResults.map { it.toSong().copy(isRecommended = true) }
+            
+            // Cache the recommended songs in the database
+            try {
+                // First, clear previous recommended songs
+                musicDao.clearRecommendedSongs()
+                
+                // Then insert new recommendations
+                if (songs.isNotEmpty()) {
+                    musicDao.insertSongs(songs)
+                    Log.d(TAG, "Cached ${songs.size} recommended songs in database")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error caching recommended songs", e)
+                // Continue even if caching fails
+            }
+            
+            // Only emit new songs if we got some
+            if (songs.isNotEmpty()) {
                 emit(songs)
+            } else if (cachedRecommendations.isEmpty()) {
+                // Only emit empty list if we don't have cache and didn't get new songs
+                emit(emptyList())
+            }
+        } catch (e: HttpException) {
+            Log.e(TAG, "HTTP error when fetching recommendations: ${e.code()}", e)
+            // Try to get cached recommendations from the database
+            val cachedRecommendations = musicDao.getRecommendedSongs().first()
+            if (cachedRecommendations.isNotEmpty()) {
+                Log.d(TAG, "Using ${cachedRecommendations.size} cached recommendations after HTTP error")
+                emit(cachedRecommendations)
+            } else {
+                emit(emptyList())
+            }
+        } catch (e: IOException) {
+            Log.e(TAG, "Network error when fetching recommendations", e)
+            // Try to get cached recommendations from the database
+            val cachedRecommendations = musicDao.getRecommendedSongs().first()
+            if (cachedRecommendations.isNotEmpty()) {
+                Log.d(TAG, "Using ${cachedRecommendations.size} cached recommendations after network error")
+                emit(cachedRecommendations)
+            } else {
+                emit(emptyList())
+            }
         } catch (e: Exception) {
+            Log.e(TAG, "Unknown error when fetching recommendations", e)
+            // Try to get cached recommendations from the database
+            val cachedRecommendations = musicDao.getRecommendedSongs().first()
+            if (cachedRecommendations.isNotEmpty()) {
+                Log.d(TAG, "Using ${cachedRecommendations.size} cached recommendations after unknown error")
+                emit(cachedRecommendations)
+            } else {
+                emit(emptyList())
+            }
+        }
+    }
+
+    override fun getRecommendedSongs(genres: String, languages: String, artists: String, forceRefresh: Boolean): Flow<List<Song>> = flow {
+        try {
+            // Log the parameters to help with debugging
+            Log.d(TAG, "Fetching recommendations with genres: $genres, languages: $languages, artists: $artists, forceRefresh: $forceRefresh")
+            
+            // If forceRefresh is true, clear the cache first
+            if (forceRefresh) {
+                Log.d(TAG, "Force refresh requested, clearing cached recommendations")
+                musicDao.clearRecommendedSongs()
+                
+                // Emit an empty list first to clear the UI immediately
+                emit(emptyList())
+            }
+            
+            val cacheBustValue = if (forceRefresh) System.currentTimeMillis() else 0
+            Log.d(TAG, "Using cache bust value: $cacheBustValue")
+            
+            val recommendedResults = ytMusicService.getRecommendations(
+                genres = genres.takeIf { it.isNotBlank() },
+                languages = languages.takeIf { it.isNotBlank() },
+                artists = artists.takeIf { it.isNotBlank() },
+                cacheBust = cacheBustValue
+            )
+            
+            // Log the number of results received
+            Log.d(TAG, "Received ${recommendedResults.size} recommended songs")
+            
+            val songs = recommendedResults.map { it.toSong().copy(isRecommended = true) }
+            
+            // Cache the recommended songs in the database
+            try {
+                // First, clear previous recommended songs
+                musicDao.clearRecommendedSongs()
+                
+                // Then insert new recommendations
+                if (songs.isNotEmpty()) {
+                    musicDao.insertSongs(songs)
+                    Log.d(TAG, "Cached ${songs.size} recommended songs in database")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error caching recommended songs", e)
+                // Continue even if caching fails
+            }
+            
+            emit(songs)
+        } catch (e: HttpException) {
+            Log.e(TAG, "HTTP error when fetching recommendations: ${e.code()}", e)
+            // Only try to get cached recommendations if not forcing refresh
+            if (!forceRefresh) {
+                val cachedRecommendations = musicDao.getRecommendedSongs().first()
+                if (cachedRecommendations.isNotEmpty()) {
+                    Log.d(TAG, "Using ${cachedRecommendations.size} cached recommendations")
+                    emit(cachedRecommendations)
+                } else {
+                    emit(emptyList())
+                }
+            } else {
+                emit(emptyList())
+            }
+        } catch (e: IOException) {
+            Log.e(TAG, "Network error when fetching recommendations", e)
+            // Only try to get cached recommendations if not forcing refresh
+            if (!forceRefresh) {
+                val cachedRecommendations = musicDao.getRecommendedSongs().first()
+                if (cachedRecommendations.isNotEmpty()) {
+                    Log.d(TAG, "Using ${cachedRecommendations.size} cached recommendations")
+                    emit(cachedRecommendations)
+                } else {
+                    emit(emptyList())
+                }
+            } else {
+                emit(emptyList())
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Unknown error when fetching recommendations", e)
             emit(emptyList())
         }
     }

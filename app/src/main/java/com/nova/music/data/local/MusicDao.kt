@@ -14,6 +14,9 @@ interface MusicDao {
 
     @Query("SELECT * FROM songs WHERE isRecommended = 1")
     fun getRecommendedSongs(): Flow<List<Song>>
+    
+    @Query("UPDATE songs SET isRecommended = 0 WHERE isRecommended = 1")
+    suspend fun clearRecommendedSongs()
 
     @Query("SELECT * FROM songs WHERE title LIKE '%' || :query || '%' OR artist LIKE '%' || :query || '%' OR album LIKE '%' || :query || '%'")
     fun searchSongs(query: String): Flow<List<Song>>
