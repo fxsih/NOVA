@@ -23,6 +23,7 @@ import android.os.Build
 import com.nova.music.R
 import android.support.v4.media.session.PlaybackStateCompat
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 
 @AndroidEntryPoint
 class MusicPlayerService : Service() {
@@ -178,15 +179,29 @@ class MusicPlayerService : Service() {
     }
     
     private fun updateMediaSession(song: Song) {
-        val metadata = MediaMetadataCompat.Builder()
+        val metadataBuilder = MediaMetadataCompat.Builder()
             .putString(MediaMetadataCompat.METADATA_KEY_TITLE, song.title)
             .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, song.artist)
             .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, song.album)
             // Include duration for seekbar display
             .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, musicPlayerServiceImpl.duration.value)
-            .build()
         
-        mediaSession.setMetadata(metadata)
+        // Add album art URI to metadata
+        when {
+            !song.albumArtUrl.isNullOrBlank() -> {
+                metadataBuilder.putString(MediaMetadataCompat.METADATA_KEY_ALBUM_ART_URI, song.albumArtUrl)
+                // We'll load the actual bitmap asynchronously
+                loadAlbumArtForMediaSession(song.albumArtUrl, metadataBuilder)
+            }
+            !song.albumArt.isBlank() -> {
+                metadataBuilder.putString(MediaMetadataCompat.METADATA_KEY_ALBUM_ART_URI, song.albumArt)
+                // We'll load the actual bitmap asynchronously
+                loadAlbumArtForMediaSession(song.albumArt, metadataBuilder)
+            }
+        }
+        
+        // Set the metadata initially without bitmap (will be updated when bitmap is loaded)
+        mediaSession.setMetadata(metadataBuilder.build())
         
         // Get current position for progress tracking
         val currentPosition = (musicPlayerServiceImpl.progress.value * musicPlayerServiceImpl.duration.value).toLong()
@@ -213,6 +228,54 @@ class MusicPlayerService : Service() {
             .setBufferedPosition(musicPlayerServiceImpl.duration.value)
         
         mediaSession.setPlaybackState(stateBuilder.build())
+    }
+    
+    /**
+     * Loads album art bitmap and updates the media session metadata
+     */
+    private fun loadAlbumArtForMediaSession(artUrl: String, metadataBuilder: MediaMetadataCompat.Builder) {
+        serviceScope.launch {
+            try {
+                Log.d(TAG, "Loading album art for media session: $artUrl")
+                
+                // Use Glide to load the bitmap directly (more reliable for media session)
+                val futureTarget = com.bumptech.glide.Glide.with(this@MusicPlayerService)
+                    .asBitmap()
+                    .load(artUrl)
+                    .submit(512, 512)  // Reasonable size for media session
+                
+                try {
+                    // Get the bitmap on a background thread
+                    val bitmap = withContext(Dispatchers.IO) {
+                        try {
+                            futureTarget.get()
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Error getting bitmap from Glide for media session", e)
+                            null
+                        }
+                    }
+                    
+                    // Clean up the future target
+                    com.bumptech.glide.Glide.with(this@MusicPlayerService).clear(futureTarget)
+                    
+                    if (bitmap != null) {
+                        // Update metadata with bitmap
+                        metadataBuilder.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, bitmap)
+                        metadataBuilder.putBitmap(MediaMetadataCompat.METADATA_KEY_DISPLAY_ICON, bitmap)
+                        
+                        // Update media session with new metadata
+                        mediaSession.setMetadata(metadataBuilder.build())
+                        Log.d(TAG, "Album art loaded successfully for media session")
+                    } else {
+                        Log.e(TAG, "Failed to load album art for media session, bitmap is null")
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error in Glide bitmap processing for media session", e)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error loading album art for media session", e)
+            }
+        }
     }
     
     private fun updateNotification(song: Song, isPlaying: Boolean) {

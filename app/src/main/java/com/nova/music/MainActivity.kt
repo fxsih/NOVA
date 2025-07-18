@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
@@ -24,6 +25,7 @@ import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 import androidx.core.app.ActivityCompat
 import android.Manifest.permission.POST_NOTIFICATIONS
+import com.nova.music.ui.screens.home.LocalPreferenceManager
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
@@ -71,7 +73,7 @@ class MainActivity : ComponentActivity() {
         }
         
         setContent {
-            AppContent()
+            AppContent(preferenceManager)
         }
     }
     
@@ -132,13 +134,15 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun AppContent() {
+private fun AppContent(preferenceManager: PreferenceManager) {
     NovaTheme {
-        Surface(
-            modifier = Modifier.fillMaxSize(),
-            color = MaterialTheme.colorScheme.background
-        ) {
-            NovaNavigation()
+        CompositionLocalProvider(LocalPreferenceManager provides preferenceManager) {
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color = MaterialTheme.colorScheme.background
+            ) {
+                NovaNavigation()
+            }
         }
     }
 }

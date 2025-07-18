@@ -1,3 +1,5 @@
 <resources>
     <string name="app_name">NOVA</string>
+    <!-- This is a placeholder that will be replaced by the actual value from google-services.json -->
+    <string name="default_web_client_id" translatable="false">YOUR_WEB_CLIENT_ID</string>
 </resources>

@@ -591,15 +591,25 @@ class MusicPlayerServiceImpl @Inject constructor(
         withContext(Dispatchers.IO) {
             try {
                 withContext(Dispatchers.Main) {
+                    // Stop playback
                     exoPlayer?.stop()
-                    Log.d(TAG, "ExoPlayer stopped in clearCurrentSong()")
+                    // Clear the playlist
+                    exoPlayer?.clearMediaItems()
+                    Log.d(TAG, "ExoPlayer stopped and cleared in clearCurrentSong()")
                 }
+                
+                // Reset all state
                 _isPlaying.value = false
                 _currentSong.value = null
                 _progress.value = 0f
                 _duration.value = 0L
                 _currentQueue.value = emptyList()
+                currentQueueInternal = emptyList()
+                
+                // Cancel progress tracking
                 progressJob?.cancel()
+                
+                Log.d(TAG, "All player state cleared successfully")
             } catch (e: Exception) {
                 Log.e(TAG, "Error in clearCurrentSong", e)
                 _error.value = "Error clearing current song: ${e.message}"

@@ -8,6 +8,7 @@ interface MusicRepository {
     // Songs
     fun getAllSongs(): Flow<List<Song>>
     fun getRecommendedSongs(genres: String = "", languages: String = "", artists: String = ""): Flow<List<Song>>
+    fun getRecommendedSongs(genres: String = "", languages: String = "", artists: String = "", forceRefresh: Boolean = false): Flow<List<Song>>
     fun searchSongs(query: String): Flow<List<Song>>
     fun getTrendingSongs(): Flow<List<Song>>
     suspend fun getSongById(songId: String): Song?

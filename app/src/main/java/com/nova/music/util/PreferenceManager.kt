@@ -28,6 +28,21 @@ class PreferenceManager @Inject constructor(
     }
     
     /**
+     * Checks if onboarding has been shown to the user before
+     * @return true if onboarding has been shown, false otherwise
+     */
+    fun hasShownOnboarding(): Boolean {
+        return getBoolean(KEY_ONBOARDING_SHOWN, false)
+    }
+    
+    /**
+     * Sets the flag indicating that onboarding has been shown to the user
+     */
+    fun setOnboardingShown() {
+        setBoolean(KEY_ONBOARDING_SHOWN, true)
+    }
+    
+    /**
      * Gets the base URL for the API server.
      * @return The API base URL, defaulting to localhost if not set
      */
@@ -125,6 +140,7 @@ class PreferenceManager @Inject constructor(
         const val KEY_LAST_PLAYED_SONG_ID = "last_played_song_id"
         const val KEY_API_BASE_URL = "api_base_url"
         const val KEY_DOWNLOADED_SONGS = "downloaded_songs"
+        const val KEY_ONBOARDING_SHOWN = "onboarding_shown"
         
         // Default values
         const val DEFAULT_API_BASE_URL = "http://192.168.29.154:8000"

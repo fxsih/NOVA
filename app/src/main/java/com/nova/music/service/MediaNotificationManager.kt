@@ -88,6 +88,8 @@ class MediaNotificationManager(
      */
     fun updateNotification(song: Song, isPlaying: Boolean): Notification {
         Log.d("MediaNotificationMgr", "Updating notification for song: ${song.title}, isPlaying: $isPlaying")
+        Log.d("MediaNotificationMgr", "Album art sources - albumArtUrl: ${song.albumArtUrl}, albumArt: ${song.albumArt}")
+        
         this.currentSong = song
         this.isPlaying = isPlaying
         
@@ -133,6 +135,16 @@ class MediaNotificationManager(
             .setShowWhen(false)
             .setPriority(NotificationCompat.PRIORITY_MAX) // Use MAX for better visibility
             .setOnlyAlertOnce(true)
+            
+        // Set default album art initially
+        try {
+            val defaultArtDrawable = ContextCompat.getDrawable(context, R.drawable.default_album_art)
+            defaultArtDrawable?.let {
+                builder.setLargeIcon(it.toBitmap())
+            }
+        } catch (e: Exception) {
+            Log.e("MediaNotificationMgr", "Error setting default album art", e)
+        }
             
         // Add actions based on current state - only show prev, play/pause, next
         // These will be centered in the notification
@@ -197,39 +209,91 @@ class MediaNotificationManager(
      * Loads album art asynchronously and updates the notification
      */
     private fun loadAlbumArt(song: Song, builder: NotificationCompat.Builder) {
-        val albumArtUrl = song.albumArtUrl
+        // Use albumArtUrl if available, otherwise use albumArt, similar to how it's done in UI components
+        val albumArtSource = when {
+            !song.albumArtUrl.isNullOrBlank() -> song.albumArtUrl
+            !song.albumArt.isBlank() -> song.albumArt
+            else -> null
+        }
         
-        if (albumArtUrl.isNullOrEmpty()) {
+        if (albumArtSource == null) {
             // Use default album art
+            Log.d("MediaNotificationMgr", "No album art source available for ${song.title}")
+            try {
+                val defaultArtDrawable = ContextCompat.getDrawable(context, R.drawable.default_album_art)
+                defaultArtDrawable?.let {
+                    builder.setLargeIcon(it.toBitmap())
+                    notificationManager.notify(NOTIFICATION_ID, builder.build())
+                }
+            } catch (e: Exception) {
+                Log.e("MediaNotificationMgr", "Error setting default album art", e)
+            }
             return
         }
         
+        // Try to load the album art directly using Glide for better compatibility with notifications
+        try {
+            Log.d("MediaNotificationMgr", "Loading album art from: $albumArtSource")
+            
+            // Use Glide to load the bitmap directly (more reliable for notifications)
+            val futureTarget = com.bumptech.glide.Glide.with(context)
+                .asBitmap()
+                .load(albumArtSource)
+                .submit(512, 512)  // Reasonable size for notification
+        
         serviceScope.launch {
             try {
-                val request = ImageRequest.Builder(context)
-                    .data(albumArtUrl)
-                    .target(object : Target {
-                        override fun onSuccess(result: Drawable) {
-                            val bitmap = result.toBitmap()
+                    // Get the bitmap on a background thread
+                    val bitmap = withContext(Dispatchers.IO) {
+                        try {
+                            futureTarget.get()
+                        } catch (e: Exception) {
+                            Log.e("MediaNotificationMgr", "Error getting bitmap from Glide", e)
+                            null
+                        }
+                    }
+                    
+                    // Clean up the future target
+                    com.bumptech.glide.Glide.with(context).clear(futureTarget)
+                    
+                    if (bitmap != null) {
+                        // Update the notification with the loaded bitmap
                             builder.setLargeIcon(bitmap)
+                        notificationManager.notify(NOTIFICATION_ID, builder.build())
+                        Log.d("MediaNotificationMgr", "Album art loaded successfully with Glide")
+                    } else {
+                        // Use default album art if Glide fails
+                        val defaultArtDrawable = ContextCompat.getDrawable(context, R.drawable.default_album_art)
+                        defaultArtDrawable?.let {
+                            builder.setLargeIcon(it.toBitmap())
                             notificationManager.notify(NOTIFICATION_ID, builder.build())
                         }
-                        
-                        override fun onError(error: Drawable?) {
+                    }
+                } catch (e: Exception) {
+                    Log.e("MediaNotificationMgr", "Error in Glide bitmap processing", e)
                             // Use default album art on error
+                    try {
+                        val defaultArtDrawable = ContextCompat.getDrawable(context, R.drawable.default_album_art)
+                        defaultArtDrawable?.let {
+                            builder.setLargeIcon(it.toBitmap())
+                            notificationManager.notify(NOTIFICATION_ID, builder.build())
                         }
-                        
-                        override fun onStart(placeholder: Drawable?) {
-                            // Optional: Show placeholder
-                        }
-                    })
-                    .build()
-                
-                withContext(Dispatchers.IO) {
-                    imageLoader.enqueue(request)
+                    } catch (e2: Exception) {
+                        Log.e("MediaNotificationMgr", "Error setting default album art", e2)
+                    }
+                }
                 }
             } catch (e: Exception) {
-                Log.e("MediaNotificationManager", "Error loading album art", e)
+            Log.e("MediaNotificationManager", "Error initializing Glide load", e)
+            // Use default album art on error
+            try {
+                val defaultArtDrawable = ContextCompat.getDrawable(context, R.drawable.default_album_art)
+                defaultArtDrawable?.let {
+                    builder.setLargeIcon(it.toBitmap())
+                    notificationManager.notify(NOTIFICATION_ID, builder.build())
+                }
+            } catch (e2: Exception) {
+                Log.e("MediaNotificationMgr", "Error setting default album art", e2)
             }
         }
     }

@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "643353241365",
+    "project_id": "nova-89446",
+    "storage_bucket": "nova-89446.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:643353241365:android:596e8404b411d705a5eb1c",
+        "android_client_info": {
+          "package_name": "com.nova.music"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "643353241365-7dclkua2sngdtt3113vec40c3j066bd1.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.nova.music",
+            "certificate_hash": "3841f75891b5625bf2fb40c7b4c84be68036a2e1"
+          }
+        },
+        {
+          "client_id": "643353241365-oeochqnn650tlqsr6u1gjkd1biitcnau.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAa_MPLbjsEgwjKRh7zNhEoOYyELLwRer0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "643353241365-oeochqnn650tlqsr6u1gjkd1biitcnau.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

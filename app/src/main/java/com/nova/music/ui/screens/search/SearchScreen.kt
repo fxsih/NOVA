@@ -28,6 +28,7 @@ import com.nova.music.ui.viewmodels.LibraryViewModel
 import com.nova.music.ui.components.RecentlyPlayedItem
 import com.nova.music.ui.components.PlaylistSelectionDialog
 import com.nova.music.ui.components.SearchBar
+import com.nova.music.ui.components.RecentlyPlayedItemSkeleton
 import com.nova.music.ui.viewmodels.SearchViewModel
 import com.nova.music.ui.viewmodels.PlayerViewModel
 import com.nova.music.ui.util.rememberDynamicBottomPadding
@@ -38,6 +39,7 @@ import com.nova.music.util.TimeUtils.formatDuration
 import androidx.compose.foundation.BorderStroke
 import kotlinx.coroutines.delay
 import android.util.Log
+import com.nova.music.ui.components.ShimmerBrush
 
 @OptIn(ExperimentalMaterial3Api::class, FlowPreview::class)
 @Composable
@@ -166,11 +168,77 @@ fun SearchScreen(
                 searchQuery.isNotEmpty() && hasSearched -> {
                     // Show search results or loading/error states
                     if (isLoading) {
-                        Box(
+                        LazyColumn(
                             modifier = Modifier.fillMaxSize(),
-                            contentAlignment = Alignment.Center
+                            contentPadding = PaddingValues(top = 16.dp, bottom = bottomPadding.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            CircularProgressIndicator()
+                            item {
+                                Text(
+                                    text = "Searching for \"$searchQuery\"...",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = Color.White,
+                                    modifier = Modifier.padding(bottom = 8.dp)
+                                )
+                            }
+                            
+                            // Skeleton loading for artists
+                            if (selectedFilter == "All" || selectedFilter == "Artists") {
+                                item {
+                                    Text(
+                                        text = "Artists",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        color = Color.White,
+                                        modifier = Modifier.padding(top = 16.dp, bottom = 8.dp)
+                                    )
+                                }
+                                
+                                item {
+                                    LazyRow(
+                                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                        contentPadding = PaddingValues(vertical = 8.dp)
+                                    ) {
+                                        items(4) {
+                                            // Artist skeleton
+                                            Column(
+                                                horizontalAlignment = Alignment.CenterHorizontally,
+                                                modifier = Modifier.width(100.dp)
+                                            ) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(80.dp)
+                                                        .clip(CircleShape)
+                                                        .background(ShimmerBrush())
+                                                )
+                                                
+                                                Spacer(modifier = Modifier.height(8.dp))
+                                                
+                                                Box(
+                                                    modifier = Modifier
+                                                        .width(60.dp)
+                                                        .height(16.dp)
+                                                        .clip(RoundedCornerShape(4.dp))
+                                                        .background(ShimmerBrush())
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            // Skeleton loading for songs
+                            item {
+                                Text(
+                                    text = "Songs",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = Color.White,
+                                    modifier = Modifier.padding(top = 16.dp, bottom = 8.dp)
+                                )
+                            }
+                            
+                            items(8) {
+                                RecentlyPlayedItemSkeleton()
+                            }
                         }
                     } else if (errorMessage != null) {
                         Box(

@@ -72,26 +72,44 @@ class HomeViewModel @Inject constructor(
     
     fun loadRecommendedSongs(preferences: UserMusicPreferences) {
         viewModelScope.launch {
-            _recommendedSongsState.value = UiState.Loading
+            // Only set to loading if we don't already have data
+            if (_recommendedSongsState.value !is UiState.Success) {
+                _recommendedSongsState.value = UiState.Loading
+            }
+            
             try {
                 val genres = preferences.genres.joinToString(",")
                 val languages = preferences.languages.joinToString(",")
                 val artists = preferences.artists.joinToString(",")
+                
+                Log.d("HomeViewModel", "Loading recommended songs with genres=$genres, languages=$languages, artists=$artists")
+                
                 musicRepository.getRecommendedSongs(genres, languages, artists)
                     .catch { e ->
                         Log.e("HomeViewModel", "Error loading recommendations", e)
-                        _recommendedSongsState.value = UiState.Error("Failed to load recommendations: ${e.message}")
+                        // Only update state if we don't already have data
+                        if (_recommendedSongsState.value !is UiState.Success) {
+                            _recommendedSongsState.value = UiState.Error("Failed to load recommendations: ${e.message}")
+                        }
                     }
                     .collect { songs ->
-                    if (songs.isEmpty()) {
-                        _recommendedSongsState.value = UiState.Error("No recommended songs found")
-                    } else {
-                        _recommendedSongsState.value = UiState.Success(songs)
+                        if (songs.isEmpty()) {
+                            // Only update to error if we don't already have data
+                            if (_recommendedSongsState.value !is UiState.Success) {
+                                Log.d("HomeViewModel", "No recommended songs found")
+                                _recommendedSongsState.value = UiState.Error("No recommended songs found")
+                            }
+                        } else {
+                            Log.d("HomeViewModel", "Loaded ${songs.size} recommended songs")
+                            _recommendedSongsState.value = UiState.Success(songs)
+                        }
                     }
-                }
             } catch (e: Exception) {
                 Log.e("HomeViewModel", "Error in loadRecommendedSongs", e)
-                _recommendedSongsState.value = UiState.Error("Failed to load recommendations: ${e.message}")
+                // Only update state if we don't already have data
+                if (_recommendedSongsState.value !is UiState.Success) {
+                    _recommendedSongsState.value = UiState.Error("Failed to load recommendations: ${e.message}")
+                }
             }
         }
     }
@@ -101,7 +119,36 @@ class HomeViewModel @Inject constructor(
     }
     
     fun refreshRecommendedSongs(preferences: UserMusicPreferences) {
-        loadRecommendedSongs(preferences)
+        Log.d("HomeViewModel", "Forcing refresh of recommended songs with preferences: genres=${preferences.genres}, languages=${preferences.languages}, artists=${preferences.artists}")
+        
+        // First set to loading state to clear the UI
+        _recommendedSongsState.value = UiState.Loading
+        
+        viewModelScope.launch {
+            try {
+                val genres = preferences.genres.joinToString(",")
+                val languages = preferences.languages.joinToString(",")
+                val artists = preferences.artists.joinToString(",")
+                Log.d("HomeViewModel", "Calling repository with forceRefresh=true")
+                musicRepository.getRecommendedSongs(genres, languages, artists, forceRefresh = true)
+                    .catch { e ->
+                        Log.e("HomeViewModel", "Error refreshing recommendations", e)
+                        _recommendedSongsState.value = UiState.Error("Failed to refresh recommendations: ${e.message}")
+                    }
+                    .collect { songs ->
+                        if (songs.isEmpty()) {
+                            Log.d("HomeViewModel", "Received empty list of recommended songs")
+                            _recommendedSongsState.value = UiState.Error("No recommended songs found")
+                        } else {
+                            Log.d("HomeViewModel", "Received ${songs.size} recommended songs after refresh")
+                            _recommendedSongsState.value = UiState.Success(songs)
+                        }
+                    }
+            } catch (e: Exception) {
+                Log.e("HomeViewModel", "Error in refreshRecommendedSongs", e)
+                _recommendedSongsState.value = UiState.Error("Failed to refresh recommendations: ${e.message}")
+            }
+        }
     }
 
     fun search(query: String) {

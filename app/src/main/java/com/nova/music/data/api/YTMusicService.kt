@@ -23,7 +23,8 @@ interface YTMusicService {
         @Query("genres") genres: String? = null,
         @Query("languages") languages: String? = null,
         @Query("artists") artists: String? = null,
-        @Query("limit") limit: Int = 20
+        @Query("limit") limit: Int = 20,
+        @Query("cache_bust") cacheBust: Long = System.currentTimeMillis()
     ): List<YTMusicSearchResult>
     
     @Streaming
