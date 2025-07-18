@@ -21,8 +21,13 @@ NOVA is a modern Android music player app built with Jetpack Compose, following 
 ## Current Development State
 - **Database Version**: 7
 - **Active Branch**: main
-- **Current Focus**: Bug fixes for download feature and Downloads playlist
+- **Current Focus**: Stability improvements and UI enhancements
 - **Last Implemented Features**: 
+  - Fixed file verification for downloaded songs with improved error handling
+  - Enhanced download completion tracking with better state management
+  - Improved queue management for Downloads playlist with proper ordering
+  - Added visual indicators for download status in library and player screens
+  - Fixed edge cases in offline playback with better file path handling
   - Enhanced search functionality with improved album and artist filtering
   - Added album and artist sections in search results with visual cards
   - Implemented artist image support using album art as fallback
@@ -461,18 +466,21 @@ val colors = listOf(
    - Better visual appearance for YouTube Music album art
 
 ## Next Steps
-1. Implement user authentication
-2. Add cloud sync functionality
-3. Enhance offline support with playlist download functionality
-4. Implement music visualization
-5. Add social sharing features
-6. Implement comprehensive testing
-7. Add more animation effects
-8. Enhance accessibility features
-9. Further improve performance optimization
-10. Add more gesture support
-11. Expand language and genre support
-12. Implement smart playlists based on user preferences
+1. Implement user authentication with Firebase
+2. Add cloud sync functionality for playlists and user preferences
+3. Enhance offline support with complete playlist download functionality
+4. Add audio equalizer with preset and custom configurations
+5. Implement music visualization for player screen
+6. Add social sharing features for songs and playlists
+7. Implement comprehensive testing suite (unit, integration, UI tests)
+8. Add more animation effects for smoother transitions
+9. Enhance accessibility features including TalkBack support
+10. Further improve performance optimization for large libraries
+11. Add more gesture support for intuitive navigation
+12. Expand language and genre support for global audience
+13. Implement smart playlists based on user listening habits
+14. Add lyrics support with time-synced highlighting
+15. Implement cross-fade between tracks for seamless playback
 
 ## Backend Implementation
 The backend service is built with FastAPI and provides the following endpoints:
@@ -540,7 +548,7 @@ Backend optimizations:
    - Clear app data and rebuild
    - Check migration scripts
    - Verify Flow connections
-   - Ensure database version is updated (currently v5)
+   - Ensure database version is updated (currently v7)
 
 4. If dynamic padding isn't working:
    - Verify PlayerViewModel state
@@ -559,37 +567,44 @@ Backend optimizations:
    - Ensure updateCurrentSongDownloadState() is called when needed
    - Check that both stored paths and generated filenames are verified
    - Ensure database entries are cleaned up if files don't exist
+   - Verify file permissions are properly set for the download directory
 
 7. If downloads don't complete when navigating away:
    - Use applicationScope in NovaApplication instead of viewModelScope
    - Ensure download coroutines are launched in the applicationScope
    - Add proper monitoring in PlayerScreen to track download status
    - Handle suspend function calls properly in coroutines
+   - Verify that download progress is properly tracked in the UI
 
 8. If duplicate "Downloads" entries appear in library:
    - Filter out any regular playlist with ID "downloads" from custom playlists section
    - Ensure consistent naming between screens
+   - Check database for duplicate entries with similar IDs
 
 9. If queue and shuffle don't work properly for Downloads playlist:
    - Add detailed logging to diagnose queue issues
    - Enhance downloaded song handling in MusicPlayerServiceImpl
    - Fix MediaItem creation for downloaded songs
    - Add proper file existence checks before using local paths
+   - Ensure shuffle mode is properly applied to the Downloads playlist
 
 10. If play button in song cards isn't working:
     - Add missing onPlayPause and onDetailsClick parameters to components
     - Implement proper play/pause logic for song items
+    - Verify that the click area is properly defined
 
 11. If recommended songs aren't loading:
    - Check user preferences in DataStore
    - Verify backend API connection
    - Ensure proper Flow collection in HomeViewModel
    - Check LaunchedEffect triggers
+   - Verify network connectivity and API response format
 
 12. If artist suggestions aren't showing:
    - Verify language selection
    - Check ArtistSuggestions composable
    - Ensure proper recomposition on language change 
+   - Verify that the artist data is properly formatted
 
 13. If queue display shows incorrect number of songs:
    - Check that MusicPlayerService exposes currentQueue StateFlow
@@ -607,6 +622,7 @@ Backend optimizations:
    - Check worker configuration in uvicorn settings
    - Verify thread pool is not overloaded
    - Check for lock cleanup execution
+   - Monitor memory usage and implement proper garbage collection
 
 15. If audio playback fails:
     - Verify the client is using the /yt_audio endpoint directly
@@ -614,6 +630,7 @@ Backend optimizations:
     - Ensure proper error handling in MusicPlayerServiceImpl
     - Verify network connectivity between app and backend
     - Check logs for any extraction errors in backend
+    - Verify that the audio format is supported by ExoPlayer
 
 16. If downloads are failing:
     - Verify the API base URL is correctly set (not using localhost)
@@ -622,12 +639,14 @@ Backend optimizations:
     - Check that the download directory exists and is writable
     - Verify proper error handling in download function
     - Ensure download status is properly tracked in database and preferences
+    - Check for timeout settings in the download client
 
 17. If songs don't play from search screen:
     - Ensure the song is loaded directly in PlayerViewModel, not just navigated to
     - Check that explicit play() calls are made after loading the song
     - Verify that both onClick and onPlayPause handlers properly load the song
     - Check that the search screen is properly collecting state from PlayerViewModel
+    - Verify that the search results contain valid song data
 
 18. If downloaded songs aren't playing offline:
     - Check if the song's isDownloaded flag is true in the database
@@ -635,3 +654,18 @@ Backend optimizations:
     - Ensure MusicPlayerServiceImpl is checking for local files before streaming
     - Verify the file exists in the Downloads directory
     - Check that the song was properly added to the Downloads playlist
+    - Verify file permissions allow reading the downloaded file
+
+19. If sleep timer isn't working properly:
+    - Check that the timer coroutine is properly launched and cancelled
+    - Verify that the countdown is properly updated in the UI
+    - Ensure that the timer properly stops playback when it reaches zero
+    - Check that the timer is cancelled when the user disables it
+    - Verify that the timer persists across configuration changes
+
+20. If album art isn't displaying correctly:
+    - Check that the Coil image loading is properly configured
+    - Verify that the album art URL is valid
+    - Ensure that the default album art is provided as fallback
+    - Check that the image transformation is properly applied
+    - Verify that the album art cache is working correctly
