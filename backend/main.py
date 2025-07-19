@@ -11,8 +11,8 @@ from urllib.parse import parse_qs, urlparse
 import os
 import time
 import random
+import threading
 from cachetools import TTLCache
-from threading import Lock, Thread
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -73,7 +73,7 @@ def get_or_cache_audio_url(video_id):
     if random.random() < 0.01:
         cleanup_locks()
     
-    lock = audio_url_locks.setdefault(video_id, Lock())
+    lock = audio_url_locks.setdefault(video_id, threading.Lock())
     # Add timeout to lock acquisition to prevent deadlocks
     acquired = lock.acquire(timeout=10)
     if not acquired:
