@@ -9,14 +9,15 @@ import androidx.room.ColumnInfo
 import kotlinx.serialization.Serializable
 
 @Entity(tableName = "songs")
+@Serializable
 data class Song(
-    @PrimaryKey val id: String,
-    val title: String,
-    val artist: String,
-    val album: String,
-    val albumArt: String,
+    @PrimaryKey val id: String = "",
+    val title: String = "",
+    val artist: String = "",
+    val album: String = "",
+    val albumArt: String = "",
     val albumArtUrl: String? = null,
-    val duration: Long,
+    val duration: Long = 0L,
     val audioUrl: String? = null,
     val isRecommended: Boolean = false,
     val isLiked: Boolean = false,
@@ -45,6 +46,7 @@ data class Song(
 }
 
 @Entity(tableName = "playlists")
+@Serializable
 data class Playlist(
     @PrimaryKey val id: String,
     val name: String,

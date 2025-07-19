@@ -32,6 +32,7 @@ import com.nova.music.ui.viewmodels.HomeViewModel
 import android.util.Log
 import android.app.Activity
 import android.content.Intent
+import com.nova.music.data.repository.MusicRepository
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -42,6 +43,8 @@ fun ProfileScreen(
     libraryViewModel: LibraryViewModel = hiltViewModel(),
     homeViewModel: HomeViewModel = hiltViewModel()
 ) {
+    // Get MusicRepository through HomeViewModel's public method
+    val musicRepository: MusicRepository = homeViewModel.getMusicRepository()
     val currentUser by viewModel.currentUser.collectAsState()
     val authState by viewModel.authState.collectAsState()
     val scope = rememberCoroutineScope()
@@ -54,6 +57,8 @@ fun ProfileScreen(
     
     // Preferences state
     val userPreferences by libraryViewModel.userPreferences.collectAsState()
+    
+
     var selectedGenres by remember { mutableStateOf(userPreferences.genres) }
     var selectedLanguages by remember { mutableStateOf(userPreferences.languages) }
     var selectedArtists by remember { mutableStateOf(userPreferences.artists) }
@@ -74,8 +79,13 @@ fun ProfileScreen(
     
     // Handle auth state changes
     LaunchedEffect(authState) {
-        if (authState is AuthViewModel.AuthState.SignedOut) {
+        when (authState) {
+            is AuthViewModel.AuthState.SignedOut -> {
             onSignOut()
+            }
+            else -> {
+                // Handle other auth states if needed
+            }
         }
     }
     
@@ -216,6 +226,30 @@ fun ProfileScreen(
                         },
                         modifier = Modifier.clickable {
                             showPreferencesDialog = true
+                        }
+                    )
+                    
+
+                    
+                    // Manual Sync Button (for debugging)
+                    ListItem(
+                        headlineContent = { Text("Manual Sync from Firebase") },
+                        leadingContent = {
+                            Icon(
+                                imageVector = Icons.Default.Sync,
+                                contentDescription = "Manual Sync"
+                            )
+                        },
+                        modifier = Modifier.clickable {
+                            scope.launch {
+                                try {
+                                    Log.d("ProfileScreen", "Manual sync triggered")
+                                    musicRepository.syncFromFirebase()
+                                    Log.d("ProfileScreen", "Manual sync completed")
+                                } catch (e: Exception) {
+                                    Log.e("ProfileScreen", "Manual sync failed", e)
+                                }
+                            }
                         }
                     )
                     

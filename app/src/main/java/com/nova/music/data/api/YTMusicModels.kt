@@ -85,3 +85,14 @@ data class YTMusicPlaylist(
     val thumbnail: List<YTMusicThumbnail>? = null,
     val songCount: Int? = null
 ) 
+
+data class CriticalPrefetchResponse(
+    val message: String,
+    val video_ids: List<String>
+)
+
+data class TaskStatsResponse(
+    val task_statistics: Map<String, Int>,
+    val total_tasks: Int,
+    val priority_distribution: Map<String, String>
+) 

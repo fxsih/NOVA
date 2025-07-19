@@ -27,6 +27,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.bumptech.glide.load.engine.DiskCacheStrategy
+import com.bumptech.glide.load.resource.bitmap.CenterCrop
 
 /**
  * Manages media notifications for the music player service
@@ -110,11 +112,17 @@ class MediaNotificationManager(
         val song = currentSong ?: return createEmptyNotification()
         Log.d("MediaNotificationMgr", "Building notification for: ${song.title}")
         
-        // Create content intent (opens app when notification is clicked)
+        // Create content intent that navigates to the full player
         val contentIntent = PendingIntent.getActivity(
             context,
             0,
-            Intent(context, MainActivity::class.java),
+            Intent(context, MainActivity::class.java).apply {
+                // Add flags to navigate to player screen
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                // Add data to indicate we want to open the player
+                data = Uri.parse("nova://player")
+                putExtra("openPlayer", true)
+            },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         
@@ -239,6 +247,9 @@ class MediaNotificationManager(
             val futureTarget = com.bumptech.glide.Glide.with(context)
                 .asBitmap()
                 .load(albumArtSource)
+                .transform(CenterCrop()) // Center crop for consistency
+                .diskCacheStrategy(DiskCacheStrategy.NONE)
+                .skipMemoryCache(true)
                 .submit(512, 512)  // Reasonable size for notification
         
         serviceScope.launch {
@@ -257,10 +268,11 @@ class MediaNotificationManager(
                     com.bumptech.glide.Glide.with(context).clear(futureTarget)
                     
                     if (bitmap != null) {
-                        // Update the notification with the loaded bitmap
-                            builder.setLargeIcon(bitmap)
+                        Log.d("MediaNotificationMgr", "Loaded bitmap for notification: ${bitmap.width}x${bitmap.height}")
+                        val croppedBitmap = centerCropBitmap(bitmap)
+                        builder.setLargeIcon(croppedBitmap)
                         notificationManager.notify(NOTIFICATION_ID, builder.build())
-                        Log.d("MediaNotificationMgr", "Album art loaded successfully with Glide")
+                        Log.d("MediaNotificationMgr", "Album art loaded successfully with Glide and manual crop")
                     } else {
                         // Use default album art if Glide fails
                         val defaultArtDrawable = ContextCompat.getDrawable(context, R.drawable.default_album_art)
@@ -338,5 +350,12 @@ class MediaNotificationManager(
         setBounds(0, 0, canvas.width, canvas.height)
         draw(canvas)
         return bitmap
+    }
+
+    private fun centerCropBitmap(bitmap: Bitmap): Bitmap {
+        val size = minOf(bitmap.width, bitmap.height)
+        val x = (bitmap.width - size) / 2
+        val y = (bitmap.height - size) / 2
+        return Bitmap.createBitmap(bitmap, x, y, size, size)
     }
 } 

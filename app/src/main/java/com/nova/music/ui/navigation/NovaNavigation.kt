@@ -30,18 +30,19 @@ import com.nova.music.ui.screens.player.PlayerScreen
 import com.nova.music.ui.screens.auth.LoginScreen
 import com.nova.music.ui.screens.auth.SignupScreen
 import com.nova.music.ui.screens.profile.ProfileScreen
+import com.nova.music.ui.screens.splash.PostLoginSplashScreen
 import com.nova.music.ui.components.MiniPlayerBar
 import com.nova.music.ui.viewmodels.PlayerViewModel
 import com.nova.music.ui.viewmodels.AuthViewModel
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.compose.runtime.collectAsState
 import androidx.compose.animation.AnimatedVisibility
-import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
 sealed class Screen(val route: String) {
     object Login : Screen("login")
     object Signup : Screen("signup")
+    object PostLoginSplash : Screen("post_login_splash")
     object Profile : Screen("profile")
     object Home : Screen("home")
     object Search : Screen("search")
@@ -71,20 +72,25 @@ fun NovaNavigation(
         composable(Screen.Login.route) {
             LoginScreen(
                 onLoginSuccess = {
-                    android.util.Log.d("NovaNavigation", "Login successful, navigating to Home screen")
-                    navController.navigate(Screen.Home.route) {
+                    android.util.Log.d("NovaNavigation", "Login successful, navigating to PostLoginSplash screen")
+                    navController.navigate(Screen.PostLoginSplash.route) {
                         popUpTo(Screen.Login.route) { inclusive = true }
                     }
                 },
                 onNavigateToSignUp = {
                     android.util.Log.d("NovaNavigation", "Navigating to Sign Up screen")
                     navController.navigate(Screen.Signup.route)
-                },
-                onTestPlayer = {
-                    // Only for development
-                    android.util.Log.d("NovaNavigation", "Using test player mode")
+                }
+            )
+        }
+        
+        // Post-login splash screen
+        composable(Screen.PostLoginSplash.route) {
+            PostLoginSplashScreen(
+                onSetupComplete = {
+                    android.util.Log.d("NovaNavigation", "Setup complete, navigating to Home screen")
                     navController.navigate(Screen.Home.route) {
-                        popUpTo(Screen.Login.route) { inclusive = true }
+                        popUpTo(Screen.PostLoginSplash.route) { inclusive = true }
                     }
                 }
             )
@@ -97,8 +103,8 @@ fun NovaNavigation(
                     navController.popBackStack()
                 },
                 onSignUpSuccess = {
-                    android.util.Log.d("NovaNavigation", "Sign Up successful, navigating to Login screen")
-                    navController.navigate(Screen.Login.route) {
+                    android.util.Log.d("NovaNavigation", "Sign Up successful, navigating to PostLoginSplash screen")
+                    navController.navigate(Screen.PostLoginSplash.route) {
                         popUpTo(Screen.Signup.route) { inclusive = true }
                     }
                 }
@@ -220,7 +226,7 @@ fun NovaNavigation(
 }
 
 @Composable
-fun NovaNavigation() {
+fun NovaNavigation(shouldOpenPlayer: Boolean = false) {
     val navController = rememberNavController()
     val items = listOf(
         BottomNavItem.Home,
@@ -239,6 +245,13 @@ fun NovaNavigation() {
     
     val startDestination = if (isAuthenticated) Screen.Home.route else Screen.Login.route
     val coroutineScope = rememberCoroutineScope()
+    
+    // Handle navigation to player from notification click
+    LaunchedEffect(shouldOpenPlayer, currentSong) {
+        if (shouldOpenPlayer && currentSong != null && !isInPlayerScreen) {
+            navController.navigate(Screen.Player.createRoute())
+        }
+    }
     
     // Handle automatic navigation to full player based on shouldShowFullPlayer flag
     LaunchedEffect(shouldShowFullPlayer, currentSong) {

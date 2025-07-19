@@ -1,6 +1,6 @@
 package com.nova.music.ui.screens.player
 
-import androidx.compose.animation.*
+import android.util.Log
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -9,8 +9,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyListItemInfo
-import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -24,14 +22,12 @@ import androidx.compose.material.icons.outlined.QueueMusic
 import androidx.compose.material.icons.outlined.Repeat
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
@@ -49,23 +45,14 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.nova.music.R
 import com.nova.music.data.model.Song
-import com.nova.music.ui.components.SongItem
 import com.nova.music.ui.viewmodels.PlayerViewModel
 import com.nova.music.ui.viewmodels.LibraryViewModel
 import com.nova.music.ui.viewmodels.RepeatMode
 import com.nova.music.ui.viewmodels.SleepTimerOption
 import com.nova.music.util.CenterCropSquareTransformation
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.concurrent.TimeUnit
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.material.icons.filled.Timer
-import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.FileDownload
-import androidx.compose.material.icons.filled.CheckCircle
-import kotlinx.coroutines.delay
-import androidx.compose.runtime.DisposableEffect
-import android.util.Log
 
 // Data class to track dragging state
 data class DragInfo(
@@ -132,7 +119,7 @@ fun PlayerScreen(
     val likedSongs by libraryViewModel.likedSongs.collectAsState()
     val currentPlaylistId by viewModel.currentPlaylistId.collectAsState()
     val currentPlaylistSongs by viewModel.currentPlaylistSongs.collectAsState()
-    val queueSongs = viewModel.getCurrentPlaylistSongs()
+    val queueSongs by viewModel.serviceQueue.collectAsState()
     
     // State for the queue bottom sheet
     val sheetState = rememberModalBottomSheetState()
@@ -147,6 +134,13 @@ fun PlayerScreen(
     }
     
     val isLiked = currentSong?.let { song -> likedSongs.any { it.id == song.id } } ?: false
+    
+    // Debug logging for like state
+    LaunchedEffect(currentSong?.id, likedSongs.size) {
+        currentSong?.let { song ->
+            Log.d("PlayerScreen", "Like state updated - Song: ${song.title}, isLiked: $isLiked, likedSongs count: ${likedSongs.size}")
+        }
+    }
 
     // Get screen height to calculate better spacing
     val screenHeight = LocalConfiguration.current.screenHeightDp.dp
@@ -190,12 +184,12 @@ fun PlayerScreen(
             // Add top spacing to prevent feeling constrained
             Spacer(modifier = Modifier.height(topSpacing))
             
-            // Top bar with minimize button and queue button
+            // Top bar with centered minimize button
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 16.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 IconButton(onClick = onNavigateBack) {
@@ -266,8 +260,14 @@ fun PlayerScreen(
                     onClick = {
                         val songToLike = currentSong
                         if (songToLike != null) {
-                            if (isLiked) libraryViewModel.removeSongFromLiked(songToLike.id)
-                            else libraryViewModel.addSongToLiked(songToLike)
+                            Log.d("PlayerScreen", "Like button clicked for song: ${songToLike.title}, current isLiked: $isLiked")
+                            if (isLiked) {
+                                Log.d("PlayerScreen", "Removing song from liked: ${songToLike.id}")
+                                libraryViewModel.removeSongFromLiked(songToLike.id)
+                            } else {
+                                Log.d("PlayerScreen", "Adding song to liked: ${songToLike.id}")
+                                libraryViewModel.addSongToLiked(songToLike)
+                            }
                         }
                     },
                     modifier = Modifier.size(48.dp)
@@ -290,10 +290,19 @@ fun PlayerScreen(
                     .padding(horizontal = 8.dp)
             ) {
                 Slider(
-                    value = progress.coerceIn(0f, 1f),
-                    onValueChange = { value -> viewModel.seekTo(value) },
+                    value = if (progress >= 0f && progress <= 1f) {
+                        progress.coerceIn(0f, 1f)
+                    } else {
+                        0f
+                    },
+                    onValueChange = { value -> 
+                        if (value >= 0f && value <= 1f) {
+                            viewModel.seekTo(value)
+                        }
+                    },
                     valueRange = 0f..1f,
                     modifier = Modifier.fillMaxWidth(),
+                    enabled = true, // Always enable the seekbar
                     colors = SliderDefaults.colors(
                         thumbColor = sliderThumbColor,
                         activeTrackColor = progressColor,
@@ -305,12 +314,23 @@ fun PlayerScreen(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text(
-                        text = formatDuration((progress * duration).toLong()),
+                        text = if (duration > 0 && progress >= 0f && progress <= 1f) {
+                            val currentTime = (progress * duration).toLong().coerceIn(0L, duration)
+                            formatDuration(currentTime)
+                        } else {
+                            "0:00"
+                        },
                         style = MaterialTheme.typography.bodyMedium,
                         color = secondaryTextColor
                     )
                     Text(
-                        text = "-${formatDuration((duration - (progress * duration).toLong()).toLong())}",
+                        text = if (duration > 0 && progress >= 0f && progress <= 1f) {
+                            val currentTime = (progress * duration).toLong().coerceIn(0L, duration)
+                            val remainingTime = (duration - currentTime).coerceIn(0L, duration)
+                            "-${formatDuration(remainingTime)}"
+                        } else {
+                            "-0:00"
+                        },
                         style = MaterialTheme.typography.bodyMedium,
                         color = secondaryTextColor
                     )
@@ -1076,6 +1096,11 @@ fun QueueSongItem(
 }
 
 private fun formatDuration(durationMs: Long): String {
+    // Handle negative or invalid duration values
+    if (durationMs <= 0) {
+        return "0:00"
+    }
+    
     val minutes = TimeUnit.MILLISECONDS.toMinutes(durationMs)
     val seconds = TimeUnit.MILLISECONDS.toSeconds(durationMs) % 60
     return "%d:%02d".format(minutes, seconds)

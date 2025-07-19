@@ -25,6 +25,8 @@ class HomeViewModel @Inject constructor(
     private val _recommendedSongsState = MutableStateFlow<UiState<List<Song>>>(UiState.Loading)
     val recommendedSongsState = _recommendedSongsState.asStateFlow()
 
+    private var hasLoadedRecommendations = false
+
     private val _trendingSongsState = MutableStateFlow<UiState<List<Song>>>(UiState.Loading)
     val trendingSongsState = _trendingSongsState.asStateFlow()
 
@@ -53,7 +55,7 @@ class HomeViewModel @Inject constructor(
         loadTrendingSongs()
     }
     
-    private fun loadTrendingSongs() {
+    fun loadTrendingSongs() {
         viewModelScope.launch {
             _trendingSongsState.value = UiState.Loading
             try {
@@ -71,6 +73,12 @@ class HomeViewModel @Inject constructor(
     }
     
     fun loadRecommendedSongs(preferences: UserMusicPreferences) {
+        // Don't load if we already have recommendations loaded
+        if (hasLoadedRecommendations && _recommendedSongsState.value is UiState.Success) {
+            Log.d("HomeViewModel", "Recommendations already loaded, skipping")
+            return
+        }
+        
         viewModelScope.launch {
             // Only set to loading if we don't already have data
             if (_recommendedSongsState.value !is UiState.Success) {
@@ -102,6 +110,7 @@ class HomeViewModel @Inject constructor(
                         } else {
                             Log.d("HomeViewModel", "Loaded ${songs.size} recommended songs")
                             _recommendedSongsState.value = UiState.Success(songs)
+                            hasLoadedRecommendations = true
                         }
                     }
             } catch (e: Exception) {
@@ -120,6 +129,9 @@ class HomeViewModel @Inject constructor(
     
     fun refreshRecommendedSongs(preferences: UserMusicPreferences) {
         Log.d("HomeViewModel", "Forcing refresh of recommended songs with preferences: genres=${preferences.genres}, languages=${preferences.languages}, artists=${preferences.artists}")
+        
+        // Reset the flag since we're forcing a refresh
+        hasLoadedRecommendations = false
         
         // First set to loading state to clear the UI
         _recommendedSongsState.value = UiState.Loading
@@ -211,5 +223,8 @@ class HomeViewModel @Inject constructor(
             _recentSearches.value = musicRepository.getRecentSearches()
         }
     }
+    
+    // Expose MusicRepository for other components that need it
+    fun getMusicRepository(): MusicRepository = musicRepository
 } 
  

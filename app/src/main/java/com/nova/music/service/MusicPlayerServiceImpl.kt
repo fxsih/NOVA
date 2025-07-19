@@ -22,6 +22,11 @@ import java.io.File
 import java.io.IOException
 import javax.inject.Inject
 import javax.inject.Singleton
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.MutablePreferences
 
 private const val TAG = "MusicPlayerServiceImpl"
 
@@ -222,6 +227,10 @@ class MusicPlayerServiceImpl @Inject constructor(
                 
                 withContext(Dispatchers.Main) { ensurePlayerCreated() }
                 
+                // Reset progress and duration immediately when loading new song
+                _progress.value = 0f
+                _duration.value = 0L
+                
                 // Update the current song immediately
                 _currentSong.value = song
                 
@@ -259,6 +268,9 @@ class MusicPlayerServiceImpl @Inject constructor(
                         player.addMediaItem(mediaItem)
                         player.prepare()
                         
+                        // Reset progress to 0 when new song is prepared
+                        _progress.value = 0f
+                        
                         // Set playWhenReady to ensure playback starts
                         player.playWhenReady = wasPlaying
                         
@@ -266,6 +278,9 @@ class MusicPlayerServiceImpl @Inject constructor(
                         if (wasPlaying) {
                             player.play()
                         }
+                        
+                        // Start progress updates
+                        startProgressUpdates()
                         
                         Log.d(TAG, "ExoPlayer prepared with single song, playWhenReady=$wasPlaying")
                     }
@@ -287,6 +302,7 @@ class MusicPlayerServiceImpl @Inject constructor(
                                 }
     
     override suspend fun setPlaylistQueue(songs: List<Song>, startSongId: String?) {
+        Log.d(TAG, "setPlaylistQueue called with ${songs.size} songs, ids: ${songs.map { it.id }}")
         withContext(Dispatchers.IO) {
             try {
             
@@ -300,7 +316,6 @@ class MusicPlayerServiceImpl @Inject constructor(
                 
                 // Update the queue
                 currentQueueInternal = songs
-                _currentQueue.value = currentQueueInternal
                 
                 // Find the start song index
                 val startIndex = if (startSongId != null) {
@@ -356,6 +371,9 @@ class MusicPlayerServiceImpl @Inject constructor(
                         // Prepare the player
                         player.prepare()
                         
+                        // Reset progress to 0 when new playlist is prepared
+                        _progress.value = 0f
+                        
                         // Re-enable shuffle if it was enabled before
                         if (isShuffleEnabled) {
                             // We need to make sure the start song is played first, then enable shuffle
@@ -393,6 +411,9 @@ class MusicPlayerServiceImpl @Inject constructor(
                         if (wasPlaying) {
                             player.play()
                         }
+                        
+                        // Start progress updates
+                        startProgressUpdates()
                 
                         // Update the current song
                         _currentSong.value = songs[startIndex]
@@ -411,6 +432,8 @@ class MusicPlayerServiceImpl @Inject constructor(
                         }
                     }
                 }
+                // At the end, always set the StateFlow to the full queue
+                _currentQueue.value = currentQueueInternal
             } catch (e: Exception) {
                 Log.e(TAG, "Error in setPlaylistQueue", e)
                 _error.value = "Error setting playlist queue: ${e.message}"
@@ -455,7 +478,7 @@ class MusicPlayerServiceImpl @Inject constructor(
     private fun startProgressUpdates() {
         progressJob?.cancel()
         progressJob = coroutineScope.launch {
-            while (isActive && _isPlaying.value) {
+            while (isActive) {
                 val player = exoPlayer ?: break
                 val currentPosition = withContext(Dispatchers.Main) {
                     player.currentPosition
@@ -464,16 +487,27 @@ class MusicPlayerServiceImpl @Inject constructor(
                     player.duration
                 }
                 
-                _progress.value = if (totalDuration > 0) {
-                    currentPosition.toFloat() / totalDuration
+                // Ensure values are valid
+                val validDuration = if (totalDuration > 0) totalDuration else 0L
+                val validPosition = if (currentPosition >= 0) currentPosition else 0L
+                
+                // Calculate progress with validation
+                val newProgress = if (validDuration > 0) {
+                    (validPosition.toFloat() / validDuration).coerceIn(0f, 1f)
                 } else {
                     0f
                 }
                 
-                // Update duration in case it changed
-                _duration.value = totalDuration
+                // Update progress and duration
+                _progress.value = newProgress
+                _duration.value = validDuration
                 
-                delay(1000)
+                // Log progress for debugging (only every 5 seconds to avoid spam)
+                if (validPosition % 5000 < 1000) {
+                    Log.d(TAG, "Progress update: ${(newProgress * 100).toInt()}% ($validPosition/$validDuration ms)")
+                }
+                
+                delay(500) // Update more frequently for smoother seekbar
             }
         }
     }
@@ -618,6 +652,167 @@ class MusicPlayerServiceImpl @Inject constructor(
     }
     
     /**
+     * Resets the player state when a new song is selected.
+     * This ensures the seekbar starts from 0:00 and all state is clean.
+     */
+    override suspend fun resetPlayerForNewSong() {
+        withContext(Dispatchers.IO) {
+            try {
+                Log.d(TAG, "Resetting player state for new song")
+                
+                // Reset progress and duration immediately
+                _progress.value = 0f
+                _duration.value = 0L
+                
+                withContext(Dispatchers.Main) {
+                    // Ensure player is at position 0
+                    exoPlayer?.seekTo(0)
+                }
+                
+                Log.d(TAG, "Player state reset successfully")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error resetting player state", e)
+            }
+        }
+    }
+    
+    /**
+     * Restores the player state from the actual ExoPlayer instance.
+     * This is called when the app restarts to sync with the running service.
+     */
+    override suspend fun restorePlayerState() {
+        withContext(Dispatchers.IO) {
+            try {
+                Log.d(TAG, "=== RESTORE PLAYER STATE SERVICE STARTED ===")
+                Log.d(TAG, "Current state flows before restore: progress=${_progress.value}, duration=${_duration.value}, playing=${_isPlaying.value}")
+                
+                // Check if we have a current song but the ExoPlayer is empty
+                val currentSongValue = currentSong.value
+                if (currentSongValue != null) {
+                    Log.d(TAG, "We have a current song: ${currentSongValue.title}, but ExoPlayer might be empty")
+                    
+                    withContext(Dispatchers.Main) {
+                        ensurePlayerCreated()
+                        
+                        exoPlayer?.let { player ->
+                            val currentPosition = player.currentPosition
+                            val totalDuration = player.duration
+                            val isCurrentlyPlaying = player.isPlaying
+                            val hasMediaItems = player.mediaItemCount > 0
+                            val playbackState = player.playbackState
+                            
+                            Log.d(TAG, "ExoPlayer state: position=$currentPosition, duration=$totalDuration, playing=$isCurrentlyPlaying, hasMediaItems=$hasMediaItems, playbackState=$playbackState")
+                            
+                            // If ExoPlayer is empty but we have a current song, we need to reload the media
+                            if (!hasMediaItems && currentSongValue != null) {
+                                Log.d(TAG, "ExoPlayer is empty but we have a current song. Reloading media...")
+                                
+                                // Remember the original progress before reloading
+                                val originalProgress = _progress.value
+                                val originalDuration = _duration.value
+                                val originalPosition = if (originalDuration > 0) {
+                                    (originalProgress * originalDuration).toLong()
+                                } else {
+                                    0L
+                                }
+                                
+                                Log.d(TAG, "Original state before reload: progress=$originalProgress, duration=$originalDuration, position=$originalPosition")
+                                
+                                // Reload the current song into the ExoPlayer
+                                try {
+                                    Log.d(TAG, "Reloading song: ${currentSongValue.title}")
+                                    
+                                    // Create media item for the current song
+                                    val mediaItem = createMediaItem(currentSongValue)
+                                    player.setMediaItem(mediaItem)
+                                    player.prepare()
+                                    
+                                    // Wait a moment for the player to load
+                                    delay(1000) // Increased delay to ensure proper loading
+                                    
+                                    // Now get the updated state
+                                    val newPosition = player.currentPosition
+                                    val newDuration = player.duration
+                                    val newIsPlaying = player.isPlaying
+                                    val newHasMediaItems = player.mediaItemCount > 0
+                                    val newPlaybackState = player.playbackState
+                                    
+                                    Log.d(TAG, "After reload: position=$newPosition, duration=$newDuration, playing=$newIsPlaying, hasMediaItems=$newHasMediaItems, playbackState=$newPlaybackState")
+                                    
+                                    // Update state flows with the reloaded media
+                                    if (newHasMediaItems && newDuration > 0) {
+                                        _duration.value = newDuration
+                                        _isPlaying.value = newIsPlaying
+                                        
+                                        // Seek to the original position if we had one
+                                        if (originalPosition > 0 && originalPosition < newDuration) {
+                                            Log.d(TAG, "Seeking to original position: $originalPosition ms")
+                                            player.seekTo(originalPosition)
+                                            
+                                            // Wait a moment for seek to complete
+                                            delay(200)
+                                            
+                                            // Get the position after seeking
+                                            val finalPosition = player.currentPosition
+                                            val finalProgress = if (newDuration > 0) {
+                                                (finalPosition.toFloat() / newDuration).coerceIn(0f, 1f)
+                                            } else 0f
+                                            
+                                            _progress.value = finalProgress
+                                            Log.d(TAG, "After seeking: position=$finalPosition, progress=${(finalProgress * 100).toInt()}%")
+                                        } else {
+                                            // No original position or invalid, use current position
+                                            if (newPosition >= 0) {
+                                                val progress = (newPosition.toFloat() / newDuration).coerceIn(0f, 1f)
+                                                _progress.value = progress
+                                                Log.d(TAG, "Using current position: ${(progress * 100).toInt()}% ($newPosition/$newDuration ms)")
+                                            }
+                                        }
+                                        
+                                        // Restart progress updates
+                                        startProgressUpdates()
+                                        Log.d(TAG, "Restarted progress updates after reload")
+                                    } else {
+                                        Log.d(TAG, "Reload failed - no media items or invalid duration")
+                                    }
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "Error reloading media", e)
+                                    e.printStackTrace()
+                                }
+                            } else if (hasMediaItems && totalDuration > 0) {
+                                // ExoPlayer has media, update state normally
+                                _duration.value = totalDuration
+                                _isPlaying.value = isCurrentlyPlaying
+                                
+                                if (currentPosition >= 0) {
+                                    val progress = (currentPosition.toFloat() / totalDuration).coerceIn(0f, 1f)
+                                    _progress.value = progress
+                                    Log.d(TAG, "Restored progress: ${(progress * 100).toInt()}% ($currentPosition/$totalDuration ms)")
+                                }
+                                
+                                startProgressUpdates()
+                                Log.d(TAG, "Restarted progress updates")
+                            } else {
+                                Log.d(TAG, "ExoPlayer state is invalid, keeping current state flows")
+                            }
+                        } ?: run {
+                            Log.d(TAG, "ExoPlayer is null, cannot restore state")
+                        }
+                    }
+                } else {
+                    Log.d(TAG, "No current song, nothing to restore")
+                }
+                
+                Log.d(TAG, "Final state flows after restore: progress=${_progress.value}, duration=${_duration.value}, playing=${_isPlaying.value}")
+                Log.d(TAG, "=== RESTORE PLAYER STATE SERVICE COMPLETED ===")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error restoring player state", e)
+                e.printStackTrace()
+            }
+        }
+    }
+    
+    /**
      * Shuffles the current queue while keeping the current song at the top.
      * This method doesn't toggle the shuffle mode state but just reorders the queue.
      */
@@ -711,6 +906,9 @@ class MusicPlayerServiceImpl @Inject constructor(
                 withContext(Dispatchers.Main) {
                     ensurePlayerCreated()
                     if (exoPlayer?.hasNextMediaItem() == true) {
+                        // Reset progress to 0 when skipping to next song
+                        _progress.value = 0f
+                        
                         exoPlayer?.seekToNextMediaItem()
                         Log.d(TAG, "ExoPlayer skipToNext() called")
                         
@@ -733,6 +931,9 @@ class MusicPlayerServiceImpl @Inject constructor(
                 withContext(Dispatchers.Main) {
                     ensurePlayerCreated()
                     if (exoPlayer?.hasPreviousMediaItem() == true) {
+                        // Reset progress to 0 when skipping to previous song
+                        _progress.value = 0f
+                        
                         exoPlayer?.seekToPreviousMediaItem()
                         Log.d(TAG, "ExoPlayer skipToPrevious() called")
                         
@@ -760,6 +961,9 @@ class MusicPlayerServiceImpl @Inject constructor(
         if (currentMediaItem != null) {
             val mediaId = currentMediaItem.mediaId
             Log.d(TAG, "After navigation: currentIndex=$currentIndex, mediaId=$mediaId")
+            
+            // Reset progress to 0 when navigating to a new song
+            _progress.value = 0f
             
             // Find the song in the current queue with this media ID
             val song = currentQueueInternal.find { it.id == mediaId }
@@ -1169,12 +1373,18 @@ class MusicPlayerServiceImpl @Inject constructor(
                     if (exoPlayerIndex >= 0) {
                         Log.d(TAG, "Found song ID $songId at ExoPlayer index $exoPlayerIndex")
                         
+                        // Reset progress to 0 when playing a new queue item
+                        _progress.value = 0f
+                        
                         // Seek to the correct index in ExoPlayer
                         exoPlayer?.seekTo(exoPlayerIndex, 0)
                         
                         // Ensure playback starts immediately
                         exoPlayer?.playWhenReady = true
                         exoPlayer?.play()
+                        
+                        // Start progress updates
+                        startProgressUpdates()
                         
                         // Update the current song
                         _currentSong.value = songToPlay
@@ -1184,9 +1394,16 @@ class MusicPlayerServiceImpl @Inject constructor(
                         // Fallback to using the provided index directly if we can't find the song ID
                         if (index < mediaItemCount) {
                             Log.d(TAG, "Falling back to direct index $index")
+                            
+                            // Reset progress to 0 when playing a new queue item
+                            _progress.value = 0f
+                            
                             exoPlayer?.seekTo(index, 0)
                             exoPlayer?.playWhenReady = true
                             exoPlayer?.play()
+                            
+                            // Start progress updates
+                            startProgressUpdates()
                             
                             // Update the current song
                             _currentSong.value = songToPlay
@@ -1270,7 +1487,33 @@ class MusicPlayerServiceImpl @Inject constructor(
     // This method should be called when the service is destroyed
     fun onDestroy() {
         Log.d(TAG, "onDestroy called, releasing resources")
+        
+        // Reset all state flows to ensure clean state
+        resetStateFlows()
+        
         releasePlayer()
         coroutineScope.cancel()
+    }
+    
+    /**
+     * Resets all state flows to ensure clean state when service is destroyed
+     */
+    private fun resetStateFlows() {
+        Log.d(TAG, "Resetting all state flows")
+        
+        // Cancel progress updates
+        progressJob?.cancel()
+        
+        // Reset all state flows to initial values
+        _currentSong.value = null
+        _isPlaying.value = false
+        _progress.value = 0f
+        _error.value = null
+        _repeatMode.value = RepeatMode.NONE
+        _duration.value = 0L
+        _currentQueue.value = emptyList()
+        currentQueueInternal = emptyList()
+        
+        Log.d(TAG, "All state flows reset to initial values")
     }
 } 

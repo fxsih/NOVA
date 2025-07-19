@@ -114,4 +114,17 @@ interface MusicDao {
     
     @Query("SELECT COUNT(*) FROM song_playlist_cross_ref WHERE playlistId = :playlistId")
     fun getPlaylistSongCountV2(playlistId: String): Flow<Int>
+    
+    // Clear methods for account switching
+    @Query("UPDATE songs SET isLiked = 0")
+    suspend fun clearAllLikedSongs()
+    
+    @Query("UPDATE songs SET isDownloaded = 0, localFilePath = NULL")
+    suspend fun clearAllDownloadedSongs()
+    
+    @Query("DELETE FROM playlists")
+    suspend fun clearAllPlaylists()
+    
+    @Query("DELETE FROM song_playlist_cross_ref")
+    suspend fun clearAllPlaylistSongs()
 } 

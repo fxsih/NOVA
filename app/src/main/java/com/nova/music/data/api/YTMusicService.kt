@@ -49,4 +49,12 @@ interface YTMusicService {
     suspend fun streamAudioFallback(
         @Query("video_id") videoId: String
     ): ResponseBody
+    
+    @GET("critical_prefetch")
+    suspend fun criticalPrefetch(
+        @Query("video_ids") videoIds: String
+    ): CriticalPrefetchResponse
+    
+    @GET("task_stats")
+    suspend fun getTaskStats(): TaskStatsResponse
 } 

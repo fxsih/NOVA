@@ -1,0 +1,43 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Allow users to read and write their own data
+    match /users/{userId} {
+      // Allow users to read and write their own user document
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+      
+      // Allow users to create their own user document if it doesn't exist
+      allow create: if request.auth != null && request.auth.uid == userId;
+      
+      // Allow users to manage their liked songs sub-collection
+      match /liked_songs/{songId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
+      
+      // Allow users to manage their downloaded songs sub-collection
+      match /downloaded_songs/{songId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
+      
+      // Allow users to manage their playlists sub-collection
+      match /playlists/{playlistId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+        
+        // Allow users to manage songs within their playlists
+        match /songs/{songId} {
+          allow read, write: if request.auth != null && request.auth.uid == userId;
+        }
+      }
+    }
+    
+    // Allow authenticated users to read and write song details
+    match /songs/{songId} {
+      allow read, write: if request.auth != null;
+    }
+    
+    // Additional security: Prevent access to other users' data
+    match /{document=**} {
+      allow read, write: if false; // Deny all other access by default
+    }
+  }
+} 
