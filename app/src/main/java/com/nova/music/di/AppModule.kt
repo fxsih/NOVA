@@ -16,11 +16,8 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 import com.nova.music.data.local.AppDatabase
 import com.nova.music.data.local.DatabaseInitializer
 import com.nova.music.data.local.MusicDao
-import com.nova.music.data.repository.MusicRepository
-import com.nova.music.data.repository.impl.MusicRepositoryImpl
 import com.nova.music.data.api.YTMusicService
 import com.nova.music.util.PreferenceManager
-import dagger.Binds
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -37,10 +34,6 @@ import java.io.File
 @Module
 @InstallIn(SingletonComponent::class)
 abstract class AppModule {
-
-    @Binds
-    @Singleton
-    abstract fun bindMusicRepository(impl: MusicRepositoryImpl): MusicRepository
 
     companion object {
         private const val BASE_URL = "http://192.168.29.154:8000/"

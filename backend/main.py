@@ -137,28 +137,117 @@ def get_or_cache_audio_url(video_id):
         # Always release the lock, even if an exception occurs
         lock.release()
 
-# Thread pool for background prefetching
-from concurrent.futures import ThreadPoolExecutor
-# Create a thread pool with max 3 workers to limit concurrency
-prefetch_thread_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="prefetch")
+# Priority-based task management system
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from queue import PriorityQueue
+from enum import IntEnum
 
-# Add after the prefetch_thread_pool declaration
+# Priority levels (lower number = higher priority)
+class TaskPriority(IntEnum):
+    CRITICAL = 1      # Music playback and seeking
+    HIGH = 2          # Search requests
+    MEDIUM = 3        # Trending songs, recommendations
+    LOW = 4           # Background prefetching
+    BACKGROUND = 5    # Non-essential tasks
+
+# Task wrapper for priority queue
+class PriorityTask:
+    def __init__(self, priority: TaskPriority, task_id: str, func, *args, **kwargs):
+        self.priority = priority
+        self.task_id = task_id
+        self.func = func
+        self.args = args
+        self.kwargs = kwargs
+        self.created_at = time.time()
+    
+    def __lt__(self, other):
+        # Lower priority number = higher priority
+        if self.priority != other.priority:
+            return self.priority < other.priority
+        # If same priority, older tasks get priority
+        return self.created_at < other.created_at
+
+# Priority-based thread pool manager
+class PriorityThreadPool:
+    def __init__(self, max_workers=10):
+        self.max_workers = max_workers
+        self.task_queue = PriorityQueue()
+        self.thread_pool = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="priority")
+        self.running_tasks = {}
+        self.task_lock = threading.Lock()
+        self.stats = {
+            'critical': 0,
+            'high': 0,
+            'medium': 0,
+            'low': 0,
+            'background': 0
+        }
+    
+    def submit(self, priority: TaskPriority, task_id: str, func, *args, **kwargs):
+        """Submit a task with priority"""
+        task = PriorityTask(priority, task_id, func, *args, **kwargs)
+        
+        with self.task_lock:
+            self.stats[priority.name.lower()] += 1
+        
+        # Submit to thread pool
+        future = self.thread_pool.submit(self._execute_task, task)
+        
+        with self.task_lock:
+            self.running_tasks[task_id] = future
+        
+        return future
+    
+    def _execute_task(self, task: PriorityTask):
+        """Execute a priority task"""
+        try:
+            logger.info(f"Executing {task.priority.name} priority task: {task.task_id}")
+            result = task.func(*task.args, **task.kwargs)
+            return result
+        except Exception as e:
+            logger.error(f"Error executing task {task.task_id}: {str(e)}")
+            raise
+        finally:
+            with self.task_lock:
+                if task.task_id in self.running_tasks:
+                    del self.running_tasks[task.task_id]
+    
+    def get_stats(self):
+        """Get current task statistics"""
+        with self.task_lock:
+            return self.stats.copy()
+    
+    def shutdown(self):
+        """Shutdown the thread pool"""
+        self.thread_pool.shutdown(wait=True)
+
+# Create priority thread pool
+priority_pool = PriorityThreadPool(max_workers=15)
+
+# Legacy thread pools for backward compatibility
+prefetch_thread_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="prefetch")
 download_thread_pool = ThreadPoolExecutor(max_workers=5, thread_name_prefix="download")
 
-# Background pre-fetch for audio URLs
-def background_prefetch_audio_urls(video_ids):
+# Background pre-fetch for audio URLs with priority
+def background_prefetch_audio_urls(video_ids, priority=TaskPriority.LOW):
     def fetch_single(vid):
         try:
-            logger.info(f"Background prefetching audio URL for {vid}")
+            logger.info(f"Background prefetching audio URL for {vid} (priority: {priority.name})")
             get_or_cache_audio_url(vid)
             return True
         except Exception as e:
             logger.error(f"Error in background prefetch for {vid}: {str(e)}")
             return False
     
-    # Submit each video_id to the thread pool
+    # Submit each video_id to the priority thread pool
     for vid in video_ids:
-        prefetch_thread_pool.submit(fetch_single, vid)
+        task_id = f"prefetch_{vid}"
+        priority_pool.submit(priority, task_id, fetch_single, vid)
+
+# High-priority prefetch for immediate playback
+def critical_prefetch_audio_urls(video_ids):
+    """Prefetch audio URLs with critical priority for immediate playback"""
+    background_prefetch_audio_urls(video_ids, TaskPriority.CRITICAL)
 
 @app.get("/", response_class=HTMLResponse)
 def read_root():
@@ -187,10 +276,10 @@ def search_songs(query: str = Query(..., description="Search query"), limit: int
             logger.info(f"No results for '{query}' with filter=None, trying fallback query 'top hits'")
             search_results = ytmusic.search("top hits", filter="songs", limit=limit)
         
-        # Prefetch the top few results in the background (never block the response)
+        # Prefetch the top few results in the background with HIGH priority
         video_ids = [song.get('videoId') for song in search_results[:3] if song.get('videoId')]
         if video_ids:
-            background_prefetch_audio_urls(video_ids)
+            background_prefetch_audio_urls(video_ids, TaskPriority.HIGH)
             
         elapsed = time.time() - start_time
         if elapsed > 2.0:
@@ -218,10 +307,10 @@ def get_recommended(
                 recommendations = ytmusic.get_watch_playlist(video_id, limit=limit)
                 tracks = recommendations.get('tracks', [])
                 if tracks:
-                    # Prefetch top results in the background (never block the response)
+                    # Prefetch top results in the background with MEDIUM priority
                     video_ids = [song.get('videoId') for song in tracks[:3] if song.get('videoId')]
                     if video_ids:
-                        background_prefetch_audio_urls(video_ids)
+                        background_prefetch_audio_urls(video_ids, TaskPriority.MEDIUM)
                 return tracks
             except Exception as watch_error:
                 logger.error(f"Error getting watch playlist: {str(watch_error)}")
@@ -240,11 +329,11 @@ def get_recommended(
             logger.info(f"No results for '{query}', falling back to 'top hits'")
             search_results = ytmusic.search("top hits", filter="songs", limit=limit)
         
-        # Prefetch top results in the background (never block the response)
+        # Prefetch top results in the background with MEDIUM priority
         if search_results:
             video_ids = [song.get('videoId') for song in search_results[:3] if song.get('videoId')]
             if video_ids:
-                background_prefetch_audio_urls(video_ids)
+                background_prefetch_audio_urls(video_ids, TaskPriority.MEDIUM)
                 
         return search_results
     except Exception as e:
@@ -282,22 +371,22 @@ def get_trending(limit: int = Query(20, description="Number of trending songs to
                     logger.error(f"Error getting songs from playlist {playlist_info.get('title')}: {str(e)}")
                     continue
             
-            # Prefetch top results in the background (never block the response)
+            # Prefetch top results in the background with MEDIUM priority
             if all_songs:
                 video_ids = [song.get('videoId') for song in all_songs[:3] if song.get('videoId')]
                 if video_ids:
-                    background_prefetch_audio_urls(video_ids)
+                    background_prefetch_audio_urls(video_ids, TaskPriority.MEDIUM)
             
             return all_songs[:limit]
         except Exception as featured_error:
             logger.error(f"Error using featured playlists approach: {str(featured_error)}")
             search_results = ytmusic.search("top hits", filter="songs", limit=limit)
             
-            # Prefetch top results in the background (never block the response)
+            # Prefetch top results in the background with MEDIUM priority
             if search_results:
                 video_ids = [song.get('videoId') for song in search_results[:3] if song.get('videoId')]
                 if video_ids:
-                    background_prefetch_audio_urls(video_ids)
+                    background_prefetch_audio_urls(video_ids, TaskPriority.MEDIUM)
             
             return search_results
     except Exception as e:
@@ -341,6 +430,45 @@ def get_featured_playlists(limit: int = Query(10, description="Number of feature
     except Exception as e:
         logger.error(f"Error fetching featured playlists: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to get featured playlists: {str(e)}")
+
+@app.get("/task_stats")
+def get_task_statistics():
+    """Get current task priority statistics"""
+    try:
+        stats = priority_pool.get_stats()
+        return {
+            "task_statistics": stats,
+            "total_tasks": sum(stats.values()),
+            "priority_distribution": {
+                "critical": f"{(stats['critical'] / max(sum(stats.values()), 1)) * 100:.1f}%",
+                "high": f"{(stats['high'] / max(sum(stats.values()), 1)) * 100:.1f}%",
+                "medium": f"{(stats['medium'] / max(sum(stats.values()), 1)) * 100:.1f}%",
+                "low": f"{(stats['low'] / max(sum(stats.values()), 1)) * 100:.1f}%",
+                "background": f"{(stats['background'] / max(sum(stats.values()), 1)) * 100:.1f}%"
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error getting task statistics: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get task statistics: {str(e)}")
+
+@app.get("/critical_prefetch")
+def critical_prefetch_endpoint(video_ids: str = Query(..., description="Comma-separated video IDs")):
+    """Prefetch audio URLs with critical priority for immediate playback"""
+    try:
+        video_id_list = [vid.strip() for vid in video_ids.split(",") if vid.strip()]
+        if not video_id_list:
+            return {"error": "No valid video IDs provided"}
+        
+        logger.info(f"Critical prefetch requested for {len(video_id_list)} videos")
+        critical_prefetch_audio_urls(video_id_list)
+        
+        return {
+            "message": f"Critical prefetch initiated for {len(video_id_list)} videos",
+            "video_ids": video_id_list
+        }
+    except Exception as e:
+        logger.error(f"Error in critical prefetch: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Critical prefetch failed: {str(e)}")
 
 @app.get("/playlist")
 def get_playlist_tracks(playlist_id: str = Query(..., description="YouTube Music playlist ID"), 
@@ -432,9 +560,9 @@ async def get_yt_audio(request: Request, video_id: str = Query(..., description=
             audio_url = None
             content_type = None
         
-        # If not in cache or expired, extract new URL
+        # If not in cache or expired, extract new URL with CRITICAL priority
         if audio_url is None:
-            logger.info(f"Extracting new audio URL for {video_id}")
+            logger.info(f"Extracting new audio URL for {video_id} (CRITICAL priority)")
             url = f"https://www.youtube.com/watch?v={video_id}"
             
             ydl_opts = {
@@ -587,6 +715,28 @@ async def get_yt_audio(request: Request, video_id: str = Query(..., description=
     except Exception as e:
         logger.error(f"Error in yt_audio: {str(e)}", exc_info=True)
         return {"error": f"Error streaming audio: {str(e)}"}
+
+# Shutdown event handler to clean up resources
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Clean up resources on shutdown"""
+    logger.info("Shutting down NOVA Music API...")
+    try:
+        # Shutdown priority thread pool
+        priority_pool.shutdown()
+        logger.info("Priority thread pool shutdown complete")
+        
+        # Shutdown legacy thread pools
+        prefetch_thread_pool.shutdown(wait=True)
+        download_thread_pool.shutdown(wait=True)
+        logger.info("Legacy thread pools shutdown complete")
+        
+        # Clean up locks
+        cleanup_locks()
+        logger.info("Lock cleanup complete")
+        
+    except Exception as e:
+        logger.error(f"Error during shutdown: {str(e)}")
 
 @app.get("/download_audio")
 async def download_audio(video_id: str = Query(..., description="YouTube video ID")):

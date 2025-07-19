@@ -6,6 +6,7 @@ import com.google.firebase.auth.UserProfileChangeRequest
 import com.google.firebase.firestore.FirebaseFirestore
 import com.nova.music.data.model.User
 import com.nova.music.data.repository.AuthRepository
+import com.nova.music.data.repository.MusicRepository
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -18,7 +19,8 @@ import javax.inject.Singleton
 @Singleton
 class AuthRepositoryImpl @Inject constructor(
     private val firebaseAuth: FirebaseAuth,
-    private val firestore: FirebaseFirestore
+    private val firestore: FirebaseFirestore,
+    private val musicRepository: MusicRepository
 ) : AuthRepository {
 
     private val currentUserFlow = MutableStateFlow<User?>(null)
@@ -120,6 +122,17 @@ class AuthRepositoryImpl @Inject constructor(
             
             currentUserFlow.value = user
             android.util.Log.d("AuthRepository", "Sign in successful for user: ${user.email}")
+            
+            // Sync user data with Firebase after successful login
+            try {
+                android.util.Log.d("AuthRepository", "Starting data sync after login")
+                musicRepository.syncUserDataWithFirebase()
+                android.util.Log.d("AuthRepository", "Data sync completed after login")
+            } catch (e: Exception) {
+                android.util.Log.e("AuthRepository", "Error syncing data after login: ${e.message}", e)
+                // Don't fail the login if sync fails
+            }
+            
             return user
         } catch (e: Exception) {
             android.util.Log.e("AuthRepository", "Sign in failed: ${e.message}", e)
@@ -165,6 +178,17 @@ class AuthRepositoryImpl @Inject constructor(
             
             currentUserFlow.value = user
             android.util.Log.d("AuthRepository", "Google sign in successful for user: ${user.email}")
+            
+            // Sync user data with Firebase after successful Google login
+            try {
+                android.util.Log.d("AuthRepository", "Starting data sync after Google login")
+                musicRepository.syncUserDataWithFirebase()
+                android.util.Log.d("AuthRepository", "Data sync completed after Google login")
+            } catch (e: Exception) {
+                android.util.Log.e("AuthRepository", "Error syncing data after Google login: ${e.message}", e)
+                // Don't fail the login if sync fails
+            }
+            
             return user
         } catch (e: Exception) {
             android.util.Log.e("AuthRepository", "Google sign in failed: ${e.message}", e)
@@ -203,6 +227,17 @@ class AuthRepositoryImpl @Inject constructor(
             
             currentUserFlow.value = guestUser
             android.util.Log.d("AuthRepository", "Anonymous sign in successful")
+            
+            // Sync user data with Firebase after successful anonymous login
+            try {
+                android.util.Log.d("AuthRepository", "Starting data sync after anonymous login")
+                musicRepository.syncUserDataWithFirebase()
+                android.util.Log.d("AuthRepository", "Data sync completed after anonymous login")
+            } catch (e: Exception) {
+                android.util.Log.e("AuthRepository", "Error syncing data after anonymous login: ${e.message}", e)
+                // Don't fail the login if sync fails
+            }
+            
             return guestUser
         } catch (e: Exception) {
             android.util.Log.e("AuthRepository", "Anonymous sign in failed: ${e.message}", e)

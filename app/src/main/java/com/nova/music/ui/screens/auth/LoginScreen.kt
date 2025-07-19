@@ -11,7 +11,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.*
@@ -32,11 +31,9 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.nova.music.ui.viewmodels.AuthViewModel
 import androidx.compose.ui.res.painterResource
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import com.google.android.gms.auth.api.signin.GoogleSignIn
-import com.google.android.gms.auth.api.signin.GoogleSignInClient
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.auth.api.signin.GoogleSignInStatusCodes
 import com.google.android.gms.common.api.ApiException
@@ -47,12 +44,13 @@ import com.nova.music.R
 fun LoginScreen(
     onLoginSuccess: () -> Unit,
     onNavigateToSignUp: () -> Unit,
-    onTestPlayer: () -> Unit = {},
     viewModel: AuthViewModel = hiltViewModel()
 ) {
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var isLoading by remember { mutableStateOf(false) }
+    var isGoogleSigningIn by remember { mutableStateOf(false) }
+    var isAnonymousSigningIn by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var showPassword by remember { mutableStateOf(false) }
     var showResetDialog by remember { mutableStateOf(false) }
@@ -86,11 +84,16 @@ fun LoginScreen(
             } ?: run {
                 android.util.Log.e("LoginScreen", "Google Sign In failed: ID Token is null")
                 error = "Google Sign In failed. Please try again."
+                isGoogleSigningIn = false
             }
         } catch (e: ApiException) {
             // Get detailed error message based on status code
             val errorMessage = when (e.statusCode) {
-                GoogleSignInStatusCodes.SIGN_IN_CANCELLED -> "Sign in was cancelled"
+                GoogleSignInStatusCodes.SIGN_IN_CANCELLED -> {
+                    // Don't show error for cancellation, just log it
+                    android.util.Log.d("LoginScreen", "Google Sign In was cancelled by user")
+                    null // Don't set error for cancellation
+                }
                 GoogleSignInStatusCodes.SIGN_IN_FAILED -> "Sign in failed - check your internet connection"
                 GoogleSignInStatusCodes.SIGN_IN_CURRENTLY_IN_PROGRESS -> "Sign in is already in progress"
                 GoogleSignInStatusCodes.INVALID_ACCOUNT -> "Invalid account selected"
@@ -101,7 +104,30 @@ fun LoginScreen(
                 else -> "Google Sign In failed: Error code ${e.statusCode}"
             }
             android.util.Log.e("LoginScreen", "Google Sign In failed with code ${e.statusCode}: ${e.message}", e)
+            if (errorMessage != null) {
             error = errorMessage
+            }
+            isGoogleSigningIn = false
+        }
+    }
+    
+    // Function to handle Google Sign In with account switching
+    fun handleGoogleSignIn() {
+        if (isGoogleSigningIn) return // Prevent multiple clicks
+        
+        isGoogleSigningIn = true
+        error = null
+        
+        try {
+            // First, sign out from any existing Google account to force account picker
+            googleSignInClient.signOut().addOnCompleteListener {
+                // After signing out, launch the sign-in flow
+                googleSignInLauncher.launch(googleSignInClient.signInIntent)
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("LoginScreen", "Error in Google Sign In flow", e)
+            error = "Error launching Google Sign In: ${e.message}"
+            isGoogleSigningIn = false
         }
     }
 
@@ -124,12 +150,16 @@ fun LoginScreen(
             when (state) {
                 is AuthViewModel.AuthState.Success -> {
                     isLoading = false
+                    isGoogleSigningIn = false
+                    isAnonymousSigningIn = false
                     error = null
                     android.util.Log.d("LoginScreen", "Sign-in successful, navigating to home")
                     onLoginSuccess()
                 }
                 is AuthViewModel.AuthState.Error -> {
                     isLoading = false
+                    isGoogleSigningIn = false
+                    isAnonymousSigningIn = false
                     error = state.message
                     android.util.Log.e("LoginScreen", "Sign-in error: ${state.message}")
                 }
@@ -309,18 +339,11 @@ fun LoginScreen(
             
             // Google Sign In Button
             OutlinedButton(
-                onClick = {
-                    try {
-                        googleSignInLauncher.launch(googleSignInClient.signInIntent)
-                    } catch (e: Exception) {
-                        android.util.Log.e("LoginScreen", "Error launching Google Sign In", e)
-                        error = "Error launching Google Sign In: ${e.message}"
-                    }
-                },
+                onClick = { handleGoogleSignIn() },
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(56.dp),
-                enabled = !isLoading,
+                enabled = !isLoading && !isGoogleSigningIn && !isAnonymousSigningIn,
                 colors = ButtonDefaults.outlinedButtonColors(
                     contentColor = Color.Black,
                     containerColor = Color.White
@@ -334,15 +357,23 @@ fun LoginScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.Center
                     ) {
+                        if (isGoogleSigningIn) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                color = Color.Black,
+                                strokeWidth = 2.dp
+                            )
+                        } else {
                         Icon(
                             painter = painterResource(id = R.drawable.ic_google),
                             contentDescription = "Google Icon",
                             tint = Color.Unspecified,
                             modifier = Modifier.size(20.dp)
                         )
+                        }
                         Spacer(modifier = Modifier.width(12.dp))
                         Text(
-                            "Continue with Google", 
+                            if (isGoogleSigningIn) "Signing in..." else "Continue with Google", 
                             color = Color.Black,
                             style = MaterialTheme.typography.bodyMedium
                         )
@@ -354,11 +385,17 @@ fun LoginScreen(
             
             // Guest Login Button
             OutlinedButton(
-                onClick = { viewModel.signInAnonymously() },
+                onClick = { 
+                    if (!isAnonymousSigningIn) {
+                        isAnonymousSigningIn = true
+                        error = null
+                        viewModel.signInAnonymously()
+                    }
+                },
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(56.dp),
-                enabled = !isLoading,
+                enabled = !isLoading && !isGoogleSigningIn && !isAnonymousSigningIn,
                 colors = ButtonDefaults.outlinedButtonColors(
                     contentColor = Color.Black,
                     containerColor = Color.White
@@ -372,15 +409,23 @@ fun LoginScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.Center
                     ) {
+                        if (isAnonymousSigningIn) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                color = Color.Black,
+                                strokeWidth = 2.dp
+                            )
+                        } else {
                         Icon(
                             painter = painterResource(id = R.drawable.ic_person),
                             contentDescription = "Guest Icon",
                             tint = Color.Black,
                             modifier = Modifier.size(20.dp)
                         )
+                        }
                         Spacer(modifier = Modifier.width(12.dp))
                         Text(
-                            "Continue as Guest", 
+                            if (isAnonymousSigningIn) "Signing in..." else "Continue as Guest", 
                             color = Color.Black,
                             style = MaterialTheme.typography.bodyMedium
                         )
@@ -406,17 +451,7 @@ fun LoginScreen(
                 }
             }
 
-            // Test mode button - only for development
-            if (onTestPlayer != {}) {
-                Spacer(modifier = Modifier.height(48.dp))
-                
-                OutlinedButton(
-                onClick = onTestPlayer,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                    Text("Test Player (Dev Only)")
-                }
-            }
+
         }
     }
     

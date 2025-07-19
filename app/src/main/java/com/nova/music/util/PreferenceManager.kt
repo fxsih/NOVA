@@ -5,6 +5,11 @@ import android.content.SharedPreferences
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.MutablePreferences
 
 @Singleton
 class PreferenceManager @Inject constructor(
@@ -95,6 +100,30 @@ class PreferenceManager @Inject constructor(
         prefs.edit().putStringSet(KEY_DOWNLOADED_SONGS, currentIds).apply()
     }
     
+    /**
+     * Clears only playback-related preferences (not user recommendations or onboarding)
+     */
+    fun clearPlaybackPreferences() {
+        prefs.edit()
+            .remove(KEY_LAST_PLAYED_SONG_ID)
+            // .remove(KEY_LAST_PLAYBACK_POSITION) // Uncomment if you have this key
+            // .remove(KEY_LAST_QUEUE) // Uncomment if you have this key
+            .apply()
+    }
+    
+    /**
+     * Clears only playback-related preferences (not user recommendations or onboarding) from SharedPreferences and DataStore
+     */
+    suspend fun clearPlaybackPreferencesDataStore(dataStore: DataStore<Preferences>) {
+        // Clear from SharedPreferences
+        clearPlaybackPreferences()
+        // Clear from DataStore
+        dataStore.edit { prefs: MutablePreferences ->
+            prefs.remove(stringPreferencesKey(KEY_LAST_PLAYED_SONG_ID))
+            // Remove other playback keys if needed
+        }
+    }
+    
     fun getBoolean(key: String, defaultValue: Boolean): Boolean {
         return prefs.getBoolean(key, defaultValue)
     }
@@ -130,6 +159,13 @@ class PreferenceManager @Inject constructor(
     fun clear() {
         prefs.edit().clear().apply()
     }
+
+    fun setLastPlayedPlaylist(playlistId: String, songIds: List<String>) {
+        setString(KEY_LAST_PLAYED_PLAYLIST_ID, playlistId)
+        setString(KEY_LAST_PLAYED_PLAYLIST_SONG_IDS, songIds.joinToString(","))
+    }
+    fun getLastPlayedPlaylistId(): String? = getString(KEY_LAST_PLAYED_PLAYLIST_ID, "").takeIf { it.isNotEmpty() }
+    fun getLastPlayedPlaylistSongIds(): List<String> = getString(KEY_LAST_PLAYED_PLAYLIST_SONG_IDS, "").split(",").filter { it.isNotEmpty() }
     
     companion object {
         private const val PREFS_NAME = "nova_preferences"
@@ -141,6 +177,8 @@ class PreferenceManager @Inject constructor(
         const val KEY_API_BASE_URL = "api_base_url"
         const val KEY_DOWNLOADED_SONGS = "downloaded_songs"
         const val KEY_ONBOARDING_SHOWN = "onboarding_shown"
+        const val KEY_LAST_PLAYED_PLAYLIST_ID = "last_played_playlist_id"
+        const val KEY_LAST_PLAYED_PLAYLIST_SONG_IDS = "last_played_playlist_song_ids"
         
         // Default values
         const val DEFAULT_API_BASE_URL = "http://192.168.29.154:8000"

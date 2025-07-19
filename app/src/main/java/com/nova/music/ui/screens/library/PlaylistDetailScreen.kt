@@ -40,6 +40,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.platform.LocalContext
+import android.util.Log
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -89,9 +90,7 @@ fun PlaylistDetailScreen(
     // Function to play a song from this playlist
     fun playSongFromPlaylist(song: Song) {
         viewModel.addToRecentlyPlayed(song)
-        
-        // Make sure to pass the full playlist songs to the player
-        println("DEBUG: Playing song from playlist: $playlistId with ${playlistSongs.size} songs")
+        Log.d("PlaylistDetailScreen", "Passing playlistSongs of size: ${playlistSongs.size}, ids: ${playlistSongs.map { it.id }} to loadSong")
         
         // Log the playlist songs for debugging
         playlistSongs.forEachIndexed { index, s ->

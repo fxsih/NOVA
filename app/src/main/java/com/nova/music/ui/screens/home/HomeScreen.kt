@@ -114,11 +114,15 @@ fun HomeScreen(
         refreshing = true
         viewModel.refreshTrendingSongs()
         
-        // Refresh recommended songs if user has preferences
+        // Only refresh recommended songs if there's an error or loading state
+        // This prevents unnecessary refreshes on every pull-to-refresh
         if (userPreferences.genres.isNotEmpty() || 
             userPreferences.languages.isNotEmpty() || 
             userPreferences.artists.isNotEmpty()) {
-            viewModel.refreshRecommendedSongs(userPreferences)
+            // Only refresh if we don't have recommendations or if user explicitly wants to refresh
+            if (recommendedSongsState is UiState.Error || recommendedSongsState is UiState.Loading) {
+                viewModel.loadRecommendedSongs(userPreferences)
+            }
         }
     }
     
@@ -126,20 +130,12 @@ fun HomeScreen(
         scope.launch { refresh() }
     })
 
-    // Load recommendations when preferences change
-    LaunchedEffect(userPreferences) {
-        // Always load recommendations when preferences change
-        if (userPreferences.genres.isNotEmpty() || userPreferences.languages.isNotEmpty() || userPreferences.artists.isNotEmpty()) {
-            viewModel.refreshRecommendedSongs(userPreferences)
-        }
-    }
-    
-    // Add a new LaunchedEffect that loads recommendations when the screen is displayed
+    // Load recommendations only once when the screen is first displayed and we have preferences
     LaunchedEffect(Unit) {
-        // Check if we need to load recommendations
-        if ((recommendedSongsState is UiState.Error || recommendedSongsState is UiState.Loading) && 
+        // Only load recommendations if we don't have any data yet and we have preferences
+        if (recommendedSongsState is UiState.Loading && 
             (userPreferences.genres.isNotEmpty() || userPreferences.languages.isNotEmpty() || userPreferences.artists.isNotEmpty())) {
-            Log.d("HomeScreen", "Loading recommendations on screen display")
+            Log.d("HomeScreen", "Loading recommendations on first screen display")
             viewModel.loadRecommendedSongs(userPreferences)
         }
     }
@@ -248,6 +244,7 @@ fun HomeScreen(
                                             viewModel.addToRecentlyPlayed(song)
                                             // Pass the trending songs as the playlist
                                             val trendingSongs = (trendingSongsState as? UiState.Success)?.data ?: emptyList()
+                                            Log.d("HomeScreen", "Passing trendingSongs of size: ${trendingSongs.size}, ids: ${trendingSongs.map { it.id }} to loadSong")
                                             playerViewModel.loadSong(song, "trending", trendingSongs)
                                             onNavigateToPlayer(song.id)
                                         },
@@ -277,6 +274,7 @@ fun HomeScreen(
                                                 viewModel.addToRecentlyPlayed(song)
                                                 // Pass the trending songs as the playlist
                                                 val trendingSongs = (trendingSongsState as? UiState.Success)?.data ?: emptyList()
+                                                Log.d("HomeScreen", "Passing trendingSongs of size: ${trendingSongs.size}, ids: ${trendingSongs.map { it.id }} to loadSong")
                                                 playerViewModel.loadSong(song, "trending", trendingSongs)
                                                 onNavigateToPlayer(song.id)
                                             }
@@ -351,6 +349,7 @@ fun HomeScreen(
                                             viewModel.addToRecentlyPlayed(song)
                                             // Pass the recommended songs as the playlist
                                             val recommendedSongs = (recommendedSongsState as? UiState.Success)?.data ?: emptyList()
+                                            Log.d("HomeScreen", "Passing recommendedSongs of size: ${recommendedSongs.size}, ids: ${recommendedSongs.map { it.id }} to loadSong")
                                             playerViewModel.loadSong(song, "recommended", recommendedSongs)
                                             onNavigateToPlayer(song.id)
                                         },
@@ -380,6 +379,7 @@ fun HomeScreen(
                                                 viewModel.addToRecentlyPlayed(song)
                                                 // Pass the recommended songs as the playlist
                                                 val recommendedSongs = (recommendedSongsState as? UiState.Success)?.data ?: emptyList()
+                                                Log.d("HomeScreen", "Passing recommendedSongs of size: ${recommendedSongs.size}, ids: ${recommendedSongs.map { it.id }} to loadSong")
                                                 playerViewModel.loadSong(song, "recommended", recommendedSongs)
                                                 onNavigateToPlayer(song.id)
                                             }
@@ -389,44 +389,39 @@ fun HomeScreen(
                             }
                         }
                         is UiState.Error -> {
-                            // Show skeleton loaders instead of error message to match trending section
-                            LazyRow(
-                                contentPadding = PaddingValues(horizontal = 16.dp),
-                                horizontalArrangement = Arrangement.spacedBy(16.dp)
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(16.dp),
+                                contentAlignment = Alignment.Center
                             ) {
-                                items(5) {
-                                    RecommendedSongCardSkeleton()
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text(
+                                        text = state.message,
+                                        color = MaterialTheme.colorScheme.error
+                                    )
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Button(onClick = { viewModel.refreshRecommendedSongs(userPreferences) }) {
+                                        Text("Try Again")
+                                    }
                                 }
                             }
-                            
-                            // Hidden button for retrying that auto-triggers after a delay
-                            LaunchedEffect(Unit) {
-                                kotlinx.coroutines.delay(5000) // 5 second delay before auto-retry
-                                viewModel.refreshRecommendedSongs(userPreferences)
-                            }
                         }
                     }
 
-                    Text(
-                        text = "Recently Played",
-                        style = MaterialTheme.typography.titleLarge,
-                        color = Color.White,
-                        modifier = Modifier.padding(16.dp)
-                    )
                 }
 
-                if (recentlyPlayed.isEmpty()) {
-                    // Show skeleton loader if no recently played songs
+                // Only show Recently Played section if there are actually songs
+                if (recentlyPlayed.isNotEmpty()) {
                     item {
-                        Column {
-                            repeat(3) {
-                                RecentlyPlayedItemSkeleton(
-                                    modifier = Modifier.padding(horizontal = 16.dp)
-                                )
-                            }
-                        }
+                        Text(
+                            text = "Recently Played",
+                            style = MaterialTheme.typography.titleLarge,
+                            color = Color.White,
+                            modifier = Modifier.padding(16.dp)
+                        )
                     }
-                } else {
+                    
                     items(recentlyPlayed) { song ->
                         val isLiked = likedSongs.any { it.id == song.id }
                         val isSongPlaying = currentPlayingSong?.id == song.id && isPlaying
@@ -436,6 +431,7 @@ fun HomeScreen(
                             onClick = { 
                                 viewModel.addToRecentlyPlayed(song)
                                 // Pass the recently played songs as the playlist
+                                Log.d("HomeScreen", "Passing recentlyPlayed of size: ${recentlyPlayed.size}, ids: ${recentlyPlayed.map { it.id }} to loadSong")
                                 playerViewModel.loadSong(song, "recently_played", recentlyPlayed)
                                 onNavigateToPlayer(song.id)
                             },
@@ -465,6 +461,7 @@ fun HomeScreen(
                                 } else {
                                     viewModel.addToRecentlyPlayed(song)
                                     // Pass the recently played songs as the playlist
+                                    Log.d("HomeScreen", "Passing recentlyPlayed of size: ${recentlyPlayed.size}, ids: ${recentlyPlayed.map { it.id }} to loadSong")
                                     playerViewModel.loadSong(song, "recently_played", recentlyPlayed)
                                     onNavigateToPlayer(song.id)
                                 }
@@ -505,6 +502,7 @@ fun HomeScreen(
                                     viewModel.addToRecentlyPlayed(song)
                                     // Pass the popular tracks as the playlist
                                     val popularTracks = (trendingSongsState as? UiState.Success)?.data ?: emptyList()
+                                    Log.d("HomeScreen", "Passing popularTracks of size: ${popularTracks.size}, ids: ${popularTracks.map { it.id }} to loadSong")
                                     playerViewModel.loadSong(song, "popular", popularTracks)
                                     onNavigateToPlayer(song.id)
                                 },
@@ -535,6 +533,7 @@ fun HomeScreen(
                                         viewModel.addToRecentlyPlayed(song)
                                         // Pass the popular tracks as the playlist
                                         val popularTracks = (trendingSongsState as? UiState.Success)?.data ?: emptyList()
+                                        Log.d("HomeScreen", "Passing popularTracks of size: ${popularTracks.size}, ids: ${popularTracks.map { it.id }} to loadSong")
                                         playerViewModel.loadSong(song, "popular", popularTracks)
                                         onNavigateToPlayer(song.id)
                                     }

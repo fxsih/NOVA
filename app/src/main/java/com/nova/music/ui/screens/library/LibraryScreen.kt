@@ -142,6 +142,7 @@ fun LibraryScreen(
     
     // Function to play a song from a specific playlist
     fun playSongFromPlaylist(song: Song, playlistId: String, songs: List<Song>) {
+        Log.d("LibraryScreen", "Passing songs of size: ${songs.size}, ids: ${songs.map { it.id }} to loadSong")
         playerViewModel.loadSong(song = song, playlistId = playlistId, playlistSongs = songs)
         onNavigateToPlayer(song.id)
     }

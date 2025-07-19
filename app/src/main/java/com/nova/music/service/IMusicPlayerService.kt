@@ -35,4 +35,6 @@ interface IMusicPlayerService {
     suspend fun reorderQueue(songs: List<Song>)
     suspend fun removeFromQueue(songId: String): Boolean
     suspend fun playQueueItemAt(index: Int)
+    suspend fun resetPlayerForNewSong()
+    suspend fun restorePlayerState()
 } 

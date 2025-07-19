@@ -2,9 +2,6 @@ package com.nova.music.ui.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.Orientation
-import androidx.compose.foundation.gestures.draggable
-import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -20,30 +17,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.nova.music.ui.viewmodels.PlayerViewModel
 import com.nova.music.ui.viewmodels.LibraryViewModel
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.compose.runtime.collectAsState
-import android.content.Intent
-import android.os.Build
-import android.util.Log
-import android.view.WindowManager
-import androidx.compose.animation.core.*
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.remember
-import kotlin.math.absoluteValue
-import kotlin.math.roundToInt
-import kotlinx.coroutines.launch
 import androidx.compose.ui.res.painterResource
 import com.nova.music.R
 import coil.request.ImageRequest
-import com.nova.music.service.MediaNotificationManager
-import com.nova.music.service.MusicPlayerService
 import com.nova.music.util.CenterCropSquareTransformation
 
 @Composable
@@ -57,23 +42,6 @@ fun MiniPlayerBar(
     val isPlaying by viewModel.isPlaying.collectAsState()
     val likedSongs by libraryViewModel.likedSongs.collectAsState()
     val isLiked = currentSong?.let { song -> likedSongs.any { it.id == song.id } } ?: false
-    
-    var offsetX by remember { mutableStateOf(0f) }
-    val dismissThreshold = with(LocalDensity.current) { 100.dp.toPx() }
-    val coroutineScope = rememberCoroutineScope()
-    val animatedOffset = remember { Animatable(0f) }
-    val context = LocalContext.current
-    
-    // Get actual screen width using WindowManager
-    val windowManager = remember { context.getSystemService(WindowManager::class.java) }
-    val screenWidth = remember {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            windowManager.currentWindowMetrics.bounds.width()
-        } else {
-            @Suppress("DEPRECATION")
-            windowManager.defaultDisplay.width
-        }.toFloat()
-    }
 
     // Don't render anything if there's no current song
     if (currentSong == null) return
@@ -90,75 +58,10 @@ fun MiniPlayerBar(
         }
     }
 
-    // Function to stop playback and remove notification
-    val stopPlaybackAndRemoveNotification = {
-        Log.d("MiniPlayerBar", "Stopping playback and removing notification")
-        
-        // First stop the playback through the ViewModel
-            viewModel.stopPlayback()
-        
-        // Then clear the current song to remove from UI
-            viewModel.clearCurrentSong()
-        
-        // Also send a direct STOP action to the service to ensure notification is removed
-        val stopIntent = Intent(context, MusicPlayerService::class.java).apply {
-            action = MediaNotificationManager.ACTION_STOP
-        }
-        context.startService(stopIntent)
-        
-        // Finally, stop the service completely
-        val serviceIntent = Intent(context, MusicPlayerService::class.java)
-        context.stopService(serviceIntent)
-        
-        Log.d("MiniPlayerBar", "Playback stopped and notification removed")
-    }
-
     Surface(
         modifier = modifier
             .fillMaxWidth()
-            .offset { IntOffset(animatedOffset.value.roundToInt(), 0) }
-            .clickable(onClick = tapHandler)
-            .draggable(
-                orientation = Orientation.Horizontal,
-                state = rememberDraggableState { delta ->
-                    coroutineScope.launch {
-                        // Limit the drag to screen width
-                        val newValue = (animatedOffset.value + delta).coerceIn(-screenWidth, screenWidth)
-                        animatedOffset.snapTo(newValue)
-                    }
-                },
-                onDragStarted = { },
-                onDragStopped = {
-                    coroutineScope.launch {
-                        if (animatedOffset.value.absoluteValue < dismissThreshold) {
-                            // Snap back if not dragged far enough
-                            animatedOffset.animateTo(
-                                targetValue = 0f,
-                                animationSpec = spring(
-                                    dampingRatio = Spring.DampingRatioMediumBouncy,
-                                    stiffness = Spring.StiffnessLow
-                                )
-                            )
-                        } else {
-                            // Dismiss to the edge of the screen
-                            val targetValue = if (animatedOffset.value > 0) {
-                                screenWidth
-                            } else {
-                                -screenWidth
-                            }
-                            animatedOffset.animateTo(
-                                targetValue = targetValue,
-                                animationSpec = tween(
-                                    durationMillis = 300,
-                                    easing = FastOutSlowInEasing
-                                )
-                            )
-                            // Stop playback and remove notification
-                            stopPlaybackAndRemoveNotification()
-                        }
-                    }
-                }
-            ),
+            .clickable(onClick = tapHandler),
         color = Color(0xFF282828),
         shape = RoundedCornerShape(24.dp)
     ) {
@@ -232,25 +135,25 @@ fun MiniPlayerBar(
                         }
                     }
                 ) {
-                Icon(
+                    Icon(
                         imageVector = if (isLiked) Icons.Default.Favorite else Icons.Outlined.FavoriteBorder,
                         contentDescription = if (isLiked) "Remove from Liked" else "Add to Liked",
                         tint = if (isLiked) Color.Red else Color.White
-                )
-            }
-            IconButton(onClick = { viewModel.togglePlayPause() }) {
-                Icon(
-                    imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                    contentDescription = if (isPlaying) "Pause" else "Play",
-                    tint = Color.White
-                )
-            }
-            IconButton(onClick = { viewModel.skipToNext() }) {
-                Icon(
-                    imageVector = Icons.Default.SkipNext,
-                    contentDescription = "Next",
-                    tint = Color.White
-                )
+                    )
+                }
+                IconButton(onClick = { viewModel.togglePlayPause() }) {
+                    Icon(
+                        imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        contentDescription = if (isPlaying) "Pause" else "Play",
+                        tint = Color.White
+                    )
+                }
+                IconButton(onClick = { viewModel.skipToNext() }) {
+                    Icon(
+                        imageVector = Icons.Default.SkipNext,
+                        contentDescription = "Next",
+                        tint = Color.White
+                    )
                 }
             }
         }

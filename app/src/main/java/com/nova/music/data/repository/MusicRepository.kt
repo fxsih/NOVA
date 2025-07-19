@@ -12,6 +12,7 @@ interface MusicRepository {
     fun searchSongs(query: String): Flow<List<Song>>
     fun getTrendingSongs(): Flow<List<Song>>
     suspend fun getSongById(songId: String): Song?
+    suspend fun getSongsByIds(ids: List<String>): List<Song>
     
     // Recently played
     fun getRecentlyPlayed(): Flow<List<Song>>
@@ -43,4 +44,11 @@ interface MusicRepository {
     suspend fun isSongInPlaylist(songId: String, playlistId: String): Boolean
     fun getPlaylistSongCount(playlistId: String): Flow<Int>
     fun getPlaylistSongs(playlistId: String): Flow<List<Song>>
+    
+    // Firebase sync
+    suspend fun syncUserDataWithFirebase()
+    suspend fun refreshFirebaseListeners()
+    suspend fun syncFromFirebase()
+    suspend fun criticalPrefetch(videoIds: List<String>)
+    suspend fun cleanupGlobalSongsCollection()
 } 

@@ -33,6 +33,9 @@ import com.nova.music.NovaApplication
 import android.content.Intent
 import android.os.Build
 import com.nova.music.service.MusicPlayerService
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
+import com.nova.music.service.NovaSessionManager
 
 /**
  * Repeat modes for music playback.
@@ -132,7 +135,7 @@ class PlayerViewModel @Inject constructor(
     private var downloadJob: Job? = null
 
     /**
-     * Checks if a song file actually exists in the Downloads directory
+     * Checks if a song file actually exists in the user-specific downloads directory
      * Checks both the stored local file path and the generated file name
      */
     private fun isSongFileExists(context: Context, song: Song): Boolean {
@@ -144,13 +147,18 @@ class PlayerViewModel @Inject constructor(
             }
         }
         
-        // If the stored path doesn't exist, check with the generated file name
+        // If the stored path doesn't exist, check with the generated file name in user-specific folder
         val sanitizedTitle = song.title.replace(Regex("[^a-zA-Z0-9._-]"), "_")
         val sanitizedArtist = song.artist.replace(Regex("[^a-zA-Z0-9._-]"), "_")
         val fileName = "${sanitizedArtist} - ${sanitizedTitle}.mp3"
         
-        val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-        val file = File(downloadsDir, fileName)
+        // Get current user ID for user-specific folder
+        val currentUser = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser
+        val userId = currentUser?.uid ?: "anonymous"
+        
+        // Check in user-specific downloads directory
+        val appDownloadsDir = File(context.filesDir, "downloads/$userId")
+        val file = File(appDownloadsDir, fileName)
         
         return file.exists() && file.length() > 0
     }
@@ -194,6 +202,11 @@ class PlayerViewModel @Inject constructor(
                 preferenceManager.removeDownloadedSongId(songId)
             }
             
+            // Also update the database to keep everything in sync
+            for (songId in songsToRemove) {
+                musicRepository.markSongAsNotDownloaded(songId)
+            }
+            
             // Update current song download state
             currentSong.value?.id?.let { id ->
                 _isCurrentSongDownloaded.value = downloadedSongIds.contains(id) && 
@@ -214,8 +227,8 @@ class PlayerViewModel @Inject constructor(
             loadSong(songId)
         }
         
-        // Check if this is the first song played in this session
-        _shouldShowFullPlayer.value = !preferenceManager.hasFullPlayerBeenShownInSession()
+        // Don't automatically show full player on startup - only when user plays a song
+        _shouldShowFullPlayer.value = false
         
         // Listen to changes in the current song to ensure playlist context is maintained
         viewModelScope.launch {
@@ -231,29 +244,7 @@ class PlayerViewModel @Inject constructor(
                 _isCurrentSongDownloaded.value = song?.id?.let { id -> downloadedSongIds.contains(id) } ?: false
                 
                 // If sleep timer is set to END_OF_SONG and song changes, stop playback at the end
-                if (_sleepTimerOption.value == SleepTimerOption.END_OF_SONG) {
-                    // Cancel any existing timer
-                    sleepTimerJob?.cancel()
-                    
-                    // Set up a new timer for the end of this song
-                    sleepTimerJob = viewModelScope.launch {
-                        val songDuration = duration.value
-                        if (songDuration > 0) {
-                            val currentPosition = progress.value * songDuration
-                            val timeRemaining = songDuration - currentPosition
-                            
-                            if (timeRemaining > 0) {
-                                _sleepTimerActive.value = true
-                                delay(timeRemaining.toLong())
-                                if (isActive) {
-                                    stopPlayback()
-                                    _sleepTimerActive.value = false
-                                    _sleepTimerOption.value = SleepTimerOption.OFF
-                                }
-                            }
-                        }
-                    }
-                }
+                // This is handled in the service now
             }
         }
         
@@ -270,6 +261,7 @@ class PlayerViewModel @Inject constructor(
     }
 
     fun loadSong(song: Song, playlistId: String? = null, playlistSongs: List<Song>? = null) {
+        Log.d("PlayerViewModel", "loadSong called with playlistId: $playlistId, playlistSongs size: ${playlistSongs?.size}, ids: ${playlistSongs?.map { it.id }}")
         // If already loading this song, don't reload
         if (_isLoading.value && currentSong.value?.id == song.id) {
             // If the song is already loaded but not playing, just toggle play
@@ -342,6 +334,11 @@ class PlayerViewModel @Inject constructor(
                 } else {
                     _shouldShowFullPlayer.value = false
                 }
+                // When saving playlist state:
+                if (playlistId != null && playlistSongs != null && playlistSongs.isNotEmpty()) {
+                    preferenceManager.setLastPlayedPlaylist(playlistId, playlistSongs.map { it.id })
+                    Log.d("PlayerViewModel", "Saved playlist: $playlistId, songIds: ${playlistSongs.map { it.id }}")
+                }
             } catch (e: Exception) {
                 println("ERROR: Failed to load song: ${e.message}")
                 e.printStackTrace()
@@ -374,6 +371,12 @@ class PlayerViewModel @Inject constructor(
                 musicRepository.getAllSongs().collect { songs ->
                     val song = songs.find { it.id == songId }
                     if (song != null) {
+                        // Trigger critical prefetch for immediate playback
+                        if (song.id.startsWith("yt_")) {
+                            val videoId = song.id.removePrefix("yt_")
+                            musicRepository.criticalPrefetch(listOf(videoId))
+                        }
+                        
                         // Set the current playlist ID and songs
                         _currentPlaylistId.value = playlistId
                         
@@ -381,6 +384,9 @@ class PlayerViewModel @Inject constructor(
                         if (playlistSongs != null && playlistSongs.isNotEmpty()) {
                             println("DEBUG: Setting _currentPlaylistSongs with ${playlistSongs.size} songs")
                             _currentPlaylistSongs.value = playlistSongs
+                            
+                            // Reset player state for new song
+                            musicPlayerService.resetPlayerForNewSong()
                             
                             // Use the new method to set the entire playlist queue
                             try {
@@ -392,6 +398,7 @@ class PlayerViewModel @Inject constructor(
                             } catch (e: Exception) {
                                 println("ERROR: Failed to set playlist queue: ${e.message}")
                                 // Fallback to just playing the single song
+                                musicPlayerService.resetPlayerForNewSong()
                                 musicPlayerService.playSong(song)
                                 // Ensure playback starts immediately
                                 musicPlayerService.resume()
@@ -401,6 +408,9 @@ class PlayerViewModel @Inject constructor(
                         } else {
                             println("DEBUG: Setting _currentPlaylistSongs with just the current song")
                             _currentPlaylistSongs.value = listOf(song)
+                            
+                            // Reset player state for new song
+                            musicPlayerService.resetPlayerForNewSong()
                             
                             // Just play a single song
                             musicPlayerService.playSong(song)
@@ -537,12 +547,17 @@ class PlayerViewModel @Inject constructor(
 
     fun seekTo(position: Float) {
         viewModelScope.launch {
-            // Calculate position based on the duration from the service
+            // Allow seeking even if duration is not yet available
+            // The service will handle seeking properly
             val durationMs = duration.value
-            if (durationMs > 0) {
-                val positionMs = (position * durationMs).toLong()
-                musicPlayerService.seekTo(positionMs)
+            val positionMs = if (durationMs > 0) {
+                (position * durationMs).toLong()
+            } else {
+                // If duration is not available, use a reasonable default
+                // or just pass the position as a percentage (0-1)
+                (position * 1000).toLong() // 1 second as fallback
             }
+            musicPlayerService.seekTo(positionMs)
         }
     }
 
@@ -564,9 +579,123 @@ class PlayerViewModel @Inject constructor(
         }
     }
     
+    fun clearPlaybackState() {
+        viewModelScope.launch {
+            musicPlayerService.clearCurrentSong()
+            // Optionally clear any local state, queues, etc.
+        }
+    }
+    
+    /**
+     * Restores the player state from the actual service
+     */
+    fun restorePlayerState(context: Context) {
+        viewModelScope.launch {
+            try {
+                Log.d("PlayerViewModel", "=== RESTORE PLAYER STATE STARTED ===")
+                
+                // Check if service was recently killed
+                val wasServiceKilled = NovaSessionManager.wasSwipeKilled(context)
+                Log.d("PlayerViewModel", "Service was killed: $wasServiceKilled")
+                
+                if (wasServiceKilled) {
+                    Log.d("PlayerViewModel", "Service was killed, clearing state and resetting flag")
+                    // Clear all state since service was killed
+                    musicPlayerService.clearCurrentSong()
+                    _currentPlaylistId.value = null
+                    _currentPlaylistSongs.value = emptyList()
+                    
+                    // Reset the killed flag
+                    NovaSessionManager.resetSwipeKilledFlag(context)
+                    
+                    Log.d("PlayerViewModel", "=== RESTORE PLAYER STATE COMPLETED (CLEARED DUE TO KILL) ===")
+                    return@launch
+                }
+                
+                // Check if service is running
+                val serviceRunning = isServiceRunning(context)
+                Log.d("PlayerViewModel", "Service running: $serviceRunning")
+                
+                // Ensure the service is running
+                ensureServiceRunning(context)
+                
+                // Check if the service has a current song and is playing
+                val serviceCurrentSong = musicPlayerService.currentSong.value
+                val serviceIsPlaying = musicPlayerService.isPlaying.value
+                val serviceQueue = musicPlayerService.currentQueue.value
+                
+                Log.d("PlayerViewModel", "Service state - currentSong: ${serviceCurrentSong?.title}, isPlaying: $serviceIsPlaying, queueSize: ${serviceQueue.size}")
+                
+                // If the service has a current song, restore the state
+                if (serviceCurrentSong != null) {
+                    Log.d("PlayerViewModel", "Restoring current song: ${serviceCurrentSong.title}")
+                    
+                    // Update the current playlist songs if we have a queue
+                    if (serviceQueue.isNotEmpty()) {
+                        _currentPlaylistSongs.value = serviceQueue
+                        Log.d("PlayerViewModel", "Restored queue with ${serviceQueue.size} songs")
+                    }
+                    
+                    // Don't clear the current song - let the service maintain it
+                    // The service should already have the correct state
+                } else {
+                    Log.d("PlayerViewModel", "No current song in service, clearing state")
+                    // Only clear if service has no current song
+                    musicPlayerService.clearCurrentSong()
+                    _currentPlaylistId.value = null
+                    _currentPlaylistSongs.value = emptyList()
+                }
+                
+                Log.d("PlayerViewModel", "=== RESTORE PLAYER STATE COMPLETED ===")
+            } catch (e: Exception) {
+                Log.e("PlayerViewModel", "Error restoring player state", e)
+                // On error, clear state to be safe
+                musicPlayerService.clearCurrentSong()
+                _currentPlaylistId.value = null
+                _currentPlaylistSongs.value = emptyList()
+            }
+        }
+    }
+    
+    /**
+     * Ensures the music service is running
+     */
+    private fun ensureServiceRunning(context: Context) {
+        try {
+            Log.d("PlayerViewModel", "Ensuring music service is running")
+            
+            val serviceIntent = Intent(context, MusicPlayerService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(serviceIntent)
+                Log.d("PlayerViewModel", "Started foreground service")
+            } else {
+                context.startService(serviceIntent)
+                Log.d("PlayerViewModel", "Started service")
+            }
+            
+            // Give the service a moment to start
+            kotlinx.coroutines.runBlocking {
+                delay(500)
+            }
+            
+            Log.d("PlayerViewModel", "Music service should be running now")
+        } catch (e: Exception) {
+            Log.e("PlayerViewModel", "Error starting music service", e)
+        }
+    }
+    
+    /**
+     * Checks if the music service is currently running
+     */
+    private fun isServiceRunning(context: Context): Boolean {
+        val manager = context.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+        val runningServices = manager.getRunningServices(Integer.MAX_VALUE)
+        return runningServices.any { it.service.className == MusicPlayerService::class.java.name }
+    }
+    
     fun resetFullPlayerShownFlag() {
         preferenceManager.resetFullPlayerShownFlag()
-        _shouldShowFullPlayer.value = true
+        _shouldShowFullPlayer.value = false
     }
     
     // Add a method to set the isInPlayerScreen flag
@@ -653,6 +782,10 @@ class PlayerViewModel @Inject constructor(
                     
                     if (songIndex >= 0) {
                         Log.d("PlayerViewModel", "Playing queue item at index $songIndex: ${song.title}")
+                        
+                        // Reset player state for new song
+                        musicPlayerService.resetPlayerForNewSong()
+                        
                         // Tell the service to play this specific song from the current queue
                         musicPlayerService.playQueueItemAt(songIndex)
                         
@@ -661,11 +794,13 @@ class PlayerViewModel @Inject constructor(
                     } else {
                         Log.e("PlayerViewModel", "Song not found in queue, falling back to normal loading")
                         // If the song isn't in the queue (unusual case), fall back to normal loading
+                        musicPlayerService.resetPlayerForNewSong()
                         musicPlayerService.playSong(song)
                     }
                 } else {
                     Log.d("PlayerViewModel", "Queue is empty, playing song directly")
                     // If queue is empty, just play the song
+                    musicPlayerService.resetPlayerForNewSong()
                     musicPlayerService.playSong(song)
                 }
             } catch (e: Exception) {
@@ -689,7 +824,7 @@ class PlayerViewModel @Inject constructor(
         if (downloadedSongIds.contains(song.id)) {
             // If it's marked as downloaded, verify the file actually exists
             if (isSongFileExists(context, song)) {
-                Toast.makeText(context, "Song already exists in Downloads folder", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "Song already downloaded", Toast.LENGTH_SHORT).show()
                 return
             } else {
                 // Song is marked as downloaded but file doesn't exist - fix tracking
@@ -715,15 +850,19 @@ class PlayerViewModel @Inject constructor(
                 val sanitizedTitle = song.title.replace(Regex("[^a-zA-Z0-9._-]"), "_")
                 val sanitizedArtist = song.artist.replace(Regex("[^a-zA-Z0-9._-]"), "_")
                 val fileName = "${sanitizedArtist} - ${sanitizedTitle}.mp3"
-                val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-                val file = File(downloadsDir, fileName)
+                
+                // Get current user ID for user-specific folder
+                val currentUser = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser
+                val userId = currentUser?.uid ?: "anonymous"
+                val appDownloadsDir = File(context.filesDir, "downloads/$userId")
+                val file = File(appDownloadsDir, fileName)
                 
                 // Update the database using viewModelScope
                 viewModelScope.launch {
                     musicRepository.markSongAsDownloaded(song, file.absolutePath)
                 }
                 
-                Toast.makeText(context, "Song found in Downloads folder and added to library", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "Song found in user downloads and added to library", Toast.LENGTH_SHORT).show()
                 return
             }
         }
@@ -769,14 +908,20 @@ class PlayerViewModel @Inject constructor(
                     return@launch
                 }
                 
-                // Create the Downloads directory if it doesn't exist
-                val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-                if (!downloadsDir.exists()) {
-                    downloadsDir.mkdirs()
+                // Create user-specific downloads directory
+                val currentUser = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser
+                val userId = currentUser?.uid ?: "anonymous"
+                
+                // Use app's internal files directory with user-specific subfolder
+                val appDownloadsDir = File(context.filesDir, "downloads/$userId")
+                if (!appDownloadsDir.exists()) {
+                    appDownloadsDir.mkdirs()
                 }
                 
-                // Create the file in the Downloads directory
-                val file = File(downloadsDir, fileName)
+                Log.d("PlayerViewModel", "Downloading to user-specific folder: ${appDownloadsDir.absolutePath}")
+                
+                // Create the file in the user-specific downloads directory
+                val file = File(appDownloadsDir, fileName)
                 
                 // Show starting toast
                 withContext(Dispatchers.Main) {
@@ -962,18 +1107,21 @@ class PlayerViewModel @Inject constructor(
      * Starts a timer with the specified duration in milliseconds
      */
     private fun startTimerWithDuration(durationMs: Long) {
+        sleepTimerJob?.cancel() // Cancel previous job before launching new one
         _sleepTimerActive.value = true
         _sleepTimerRemaining.value = durationMs
-        
         sleepTimerJob = viewModelScope.launch {
             val endTime = System.currentTimeMillis() + durationMs
-            
+            var lastUpdateSec = -1L
             while (isActive && System.currentTimeMillis() < endTime) {
                 val remaining = endTime - System.currentTimeMillis()
+                val remainingSec = remaining / 1000L
+                if (remainingSec != lastUpdateSec) {
                 _sleepTimerRemaining.value = remaining
-                delay(1000) // Update every second
+                    lastUpdateSec = remainingSec
             }
-            
+                delay(200) // Check more frequently, but only update on the second
+            }
             if (isActive) {
                 stopPlayback()
                 _sleepTimerActive.value = false
@@ -1044,6 +1192,16 @@ class PlayerViewModel @Inject constructor(
     }
 
     /**
+     * Gets the user-specific downloads directory path for debugging
+     */
+    fun getUserDownloadsPath(context: Context): String {
+        val currentUser = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser
+        val userId = currentUser?.uid ?: "anonymous"
+        val appDownloadsDir = File(context.filesDir, "downloads/$userId")
+        return appDownloadsDir.absolutePath
+    }
+
+    /**
      * Deletes a downloaded song from storage and updates the database.
      * 
      * @param context The application context needed for file operations
@@ -1104,9 +1262,7 @@ class PlayerViewModel @Inject constructor(
 
     override fun onCleared() {
         super.onCleared()
-        viewModelScope.launch {
-            musicPlayerService.stop()
-        }
+        // Do NOT stop the music service here; let it run unless swiped away from recents
     }
 
     // Add this method to start the MusicPlayerService

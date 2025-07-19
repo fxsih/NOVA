@@ -8,6 +8,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import android.app.Application.ActivityLifecycleCallbacks
+import android.app.Activity
+import android.os.Bundle
 
 @HiltAndroidApp
 class NovaApplication : Application() {
@@ -31,6 +34,28 @@ class NovaApplication : Application() {
         super.onCreate()
         instance = this
         initializeDatabase()
+        registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
+            private var activityReferences = 0
+            private var isActivityChangingConfigurations = false
+            override fun onActivityStarted(activity: Activity) {
+                if (++activityReferences == 1 && !isActivityChangingConfigurations) {
+                    getSharedPreferences("nova_state", MODE_PRIVATE)
+                        .edit().putBoolean("wasInBackground", false).apply()
+                }
+            }
+            override fun onActivityStopped(activity: Activity) {
+                isActivityChangingConfigurations = activity.isChangingConfigurations
+                if (--activityReferences == 0 && !isActivityChangingConfigurations) {
+                    getSharedPreferences("nova_state", MODE_PRIVATE)
+                        .edit().putBoolean("wasInBackground", true).apply()
+                }
+            }
+            override fun onActivityPaused(activity: Activity) {}
+            override fun onActivityDestroyed(activity: Activity) {}
+            override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
+            override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {}
+            override fun onActivityResumed(activity: Activity) {}
+        })
     }
 
     private fun initializeDatabase() {

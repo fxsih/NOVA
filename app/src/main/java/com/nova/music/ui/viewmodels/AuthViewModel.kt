@@ -44,7 +44,13 @@ class AuthViewModel @Inject constructor(
                 android.util.Log.d("AuthViewModel", "Sign in successful for user: ${user.email}")
             } catch (e: Exception) {
                 android.util.Log.e("AuthViewModel", "Sign in failed: ${e.message}", e)
-                _authState.value = AuthState.Error(e.message ?: "Sign in failed")
+                val msg = e.message?.lowercase() ?: "Sign in failed"
+                val mapped = when {
+                    "password" in msg && ("incorrect" in msg || "invalid" in msg || "wrong" in msg) -> "password"
+                    "email" in msg && ("not found" in msg || "invalid" in msg || "no user" in msg) -> "email"
+                    else -> e.message ?: "Sign in failed"
+                }
+                _authState.value = AuthState.Error(mapped)
             }
         }
     }
@@ -89,7 +95,13 @@ class AuthViewModel @Inject constructor(
                 android.util.Log.d("AuthViewModel", "Sign up successful for user: ${user.email}")
             } catch (e: Exception) {
                 android.util.Log.e("AuthViewModel", "Sign up failed: ${e.message}", e)
-                _authState.value = AuthState.Error(e.message ?: "Sign up failed")
+                val msg = e.message?.lowercase() ?: "Sign up failed"
+                val mapped = when {
+                    "password" in msg && ("incorrect" in msg || "invalid" in msg || "wrong" in msg) -> "password"
+                    "email" in msg && ("already" in msg || "invalid" in msg || "exists" in msg) -> "email"
+                    else -> e.message ?: "Sign up failed"
+                }
+                _authState.value = AuthState.Error(mapped)
             }
         }
     }

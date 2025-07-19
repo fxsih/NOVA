@@ -451,7 +451,8 @@ fun SearchScreen(
                                         onClick = { 
                                             // Add to recently played and directly load song in player
                                             viewModel.addToRecentlyPlayed(song)
-                                            playerViewModel.loadSong(song)
+                                            Log.d("SearchScreen", "Passing searchResults of size: ${searchResults.size}, ids: ${searchResults.map { it.id }} to loadSong")
+                                            playerViewModel.loadSong(song, playlistId = "search_results", playlistSongs = searchResults)
                                         },
                                         onLikeClick = {
                                             if (isLiked) {
@@ -477,7 +478,8 @@ fun SearchScreen(
                                                 playerViewModel.togglePlayPause()
                                             } else {
                                                 viewModel.addToRecentlyPlayed(song)
-                                                playerViewModel.loadSong(song)
+                                                Log.d("SearchScreen", "Passing searchResults of size: ${searchResults.size}, ids: ${searchResults.map { it.id }} to loadSong (onPlayPause)")
+                                                playerViewModel.loadSong(song, playlistId = "search_results", playlistSongs = searchResults)
                                             }
                                         }
                                     )

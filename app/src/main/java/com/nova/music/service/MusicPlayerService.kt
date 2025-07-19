@@ -24,11 +24,16 @@ import com.nova.music.R
 import android.support.v4.media.session.PlaybackStateCompat
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
+import com.nova.music.service.NovaSessionManager
 
 @AndroidEntryPoint
 class MusicPlayerService : Service() {
     @Inject
     lateinit var musicPlayerServiceImpl: MusicPlayerServiceImpl
+    @Inject
+    lateinit var dataStore: DataStore<Preferences>
     
     private val binder = MusicPlayerBinder()
     private lateinit var mediaSession: MediaSessionCompat
@@ -38,6 +43,7 @@ class MusicPlayerService : Service() {
     private val serviceScope = CoroutineScope(Dispatchers.Main + serviceJob)
     
     private val TAG = "MusicPlayerService"
+    private var lastMediaSessionUpdate = 0L
     
     companion object {
         private const val NOTIFICATION_ID = 1
@@ -49,7 +55,7 @@ class MusicPlayerService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        Log.d(TAG, "Service onCreate")
+        Log.d(TAG, "=== SERVICE onCreate ===")
         
         // Initialize MediaSession
         initMediaSession()
@@ -117,8 +123,8 @@ class MusicPlayerService : Service() {
                 override fun onStop() {
                     Log.d(TAG, "MediaSession callback: onStop")
                     serviceScope.launch {
-                        musicPlayerServiceImpl.stop()
-            stopSelf()
+                        musicPlayerServiceImpl.pause()
+                        // Do NOT call stopSelf() here; let the service and mini player remain
                     }
                 }
                 
@@ -157,12 +163,17 @@ class MusicPlayerService : Service() {
             }
         }
         
-        // Observe progress changes
+        // Observe progress changes with throttling for MediaSession updates
         serviceScope.launch {
             musicPlayerServiceImpl.progress.collectLatest { progress ->
                 musicPlayerServiceImpl.currentSong.value?.let { song ->
-                    // Update media session with new progress
+                    // Update media session with new progress (throttled to avoid too many updates)
+                    // Only update MediaSession every 2 seconds to balance responsiveness and performance
+                    val currentTime = System.currentTimeMillis()
+                    if (currentTime - lastMediaSessionUpdate > 2000) {
                     updateMediaSession(song)
+                        lastMediaSessionUpdate = currentTime
+                    }
                 }
             }
         }
@@ -203,8 +214,14 @@ class MusicPlayerService : Service() {
         // Set the metadata initially without bitmap (will be updated when bitmap is loaded)
         mediaSession.setMetadata(metadataBuilder.build())
         
-        // Get current position for progress tracking
-        val currentPosition = (musicPlayerServiceImpl.progress.value * musicPlayerServiceImpl.duration.value).toLong()
+        // Get current position for progress tracking with validation
+        val duration = musicPlayerServiceImpl.duration.value
+        val progress = musicPlayerServiceImpl.progress.value
+        val currentPosition = if (duration > 0 && progress >= 0f && progress <= 1f) {
+            (progress * duration).toLong()
+        } else {
+            0L
+        }
         
         // Set playback state with progress information
         val stateBuilder = android.support.v4.media.session.PlaybackStateCompat.Builder()
@@ -213,7 +230,7 @@ class MusicPlayerService : Service() {
                     android.support.v4.media.session.PlaybackStateCompat.STATE_PLAYING
                 else 
                     android.support.v4.media.session.PlaybackStateCompat.STATE_PAUSED,
-                currentPosition, // Use actual position
+                currentPosition, // Use validated position
                 1.0f // Use normal playback speed
             )
             .setActions(
@@ -301,7 +318,18 @@ class MusicPlayerService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        Log.d(TAG, "Service onStartCommand, action: ${intent?.action}")
+        Log.d(TAG, "=== SERVICE onStartCommand ===")
+        Log.d(TAG, "Action: ${intent?.action}, startId: $startId")
+        Log.d(TAG, "Current song: ${musicPlayerServiceImpl.currentSong.value?.title}")
+        Log.d(TAG, "Is playing: ${musicPlayerServiceImpl.isPlaying.value}")
+        
+        // Reset media session state to ensure clean state after app kill
+        resetMediaSessionState()
+        
+        // Restore player state if service is restarted
+        serviceScope.launch {
+            musicPlayerServiceImpl.restorePlayerState()
+        }
         
         // Ensure we start as foreground service for Android O+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -356,7 +384,38 @@ class MusicPlayerService : Service() {
             }
         }
         
+        Log.d(TAG, "Returning START_STICKY")
         return START_STICKY
+    }
+    
+    /**
+     * Resets the media session state to ensure clean state after app kill
+     */
+    private fun resetMediaSessionState() {
+        try {
+            Log.d(TAG, "Resetting media session state")
+            
+            // Clear metadata
+            mediaSession.setMetadata(MediaMetadataCompat.Builder().build())
+            
+            // Set playback state to stopped
+            val stateBuilder = android.support.v4.media.session.PlaybackStateCompat.Builder()
+                .setState(
+                    android.support.v4.media.session.PlaybackStateCompat.STATE_STOPPED,
+                    0L,
+                    1.0f
+                )
+                .setActions(
+                    android.support.v4.media.session.PlaybackStateCompat.ACTION_PLAY or
+                    android.support.v4.media.session.PlaybackStateCompat.ACTION_PLAY_PAUSE
+                )
+            
+            mediaSession.setPlaybackState(stateBuilder.build())
+            
+            Log.d(TAG, "Media session state reset completed")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error resetting media session state", e)
+        }
     }
 
     override fun onBind(intent: Intent): IBinder {
@@ -364,15 +423,23 @@ class MusicPlayerService : Service() {
     }
 
     override fun onDestroy() {
-        Log.d(TAG, "Service onDestroy")
+        Log.d(TAG, "=== SERVICE onDestroy ===")
+        Log.d(TAG, "Current song: ${musicPlayerServiceImpl.currentSong.value?.title}")
+        Log.d(TAG, "Is playing: ${musicPlayerServiceImpl.isPlaying.value}")
+        Log.d(TAG, "Service being destroyed - this should only happen on swipe-kill or explicit stop")
+        
+        // Cancel the notification to prevent stale notifications
+        notificationManager.cancelNotification()
+        
+        // Stop foreground service to remove notification
+        stopForeground(true)
         
         // Release resources
         serviceJob.cancel()
-            mediaSession.release()
-        notificationManager.cancelNotification()
-            
+        mediaSession.release()
+        
         super.onDestroy()
-            musicPlayerServiceImpl.onDestroy()
+        musicPlayerServiceImpl.onDestroy()
     }
     
     /**
@@ -380,36 +447,26 @@ class MusicPlayerService : Service() {
      * This will stop music playback and clean up resources
      */
     override fun onTaskRemoved(rootIntent: Intent?) {
-        Log.d(TAG, "onTaskRemoved: App removed from recent apps, stopping playback")
+        Log.d(TAG, "=== onTaskRemoved ===")
+        Log.d(TAG, "App removed from recent apps, stopping playback and releasing player")
         
-        try {
-            // Stop playback immediately using runBlocking to call suspend function
-            runBlocking {
-                musicPlayerServiceImpl.stop()
+        NovaSessionManager.onTaskRemoved(
+            applicationContext,
+            clearPlaybackState = {
+                kotlinx.coroutines.runBlocking { 
+                    musicPlayerServiceImpl.stop()
+                    musicPlayerServiceImpl.onDestroy()
+                }
+            },
+            stopService = {
+                // Cancel notification first
+                notificationManager.cancelNotification()
+                // Stop foreground service
+                stopForeground(true)
+                // Stop the service
+                stopSelf()
             }
-            
-            // Call onDestroy directly to release player resources
-            musicPlayerServiceImpl.onDestroy()
-            
-            // Cancel notification
-            notificationManager.cancelNotification()
-            
-            // Release media session
-            mediaSession.isActive = false
-            mediaSession.release()
-            
-            // Cancel all coroutines
-            serviceJob.cancel()
-            
-            // Stop the service
-            stopForeground(true)
-            stopSelf()
-            
-            Log.d(TAG, "Successfully stopped playback and released resources on task removed")
-        } catch (e: Exception) {
-            Log.e(TAG, "Error stopping playback on task removed", e)
-        }
-        
+        )
         super.onTaskRemoved(rootIntent)
     }
 } 
