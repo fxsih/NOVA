@@ -229,30 +229,6 @@ fun ProfileScreen(
                         }
                     )
                     
-
-                    
-                    // Manual Sync Button (for debugging)
-                    ListItem(
-                        headlineContent = { Text("Manual Sync from Firebase") },
-                        leadingContent = {
-                            Icon(
-                                imageVector = Icons.Default.Sync,
-                                contentDescription = "Manual Sync"
-                            )
-                        },
-                        modifier = Modifier.clickable {
-                            scope.launch {
-                                try {
-                                    Log.d("ProfileScreen", "Manual sync triggered")
-                                    musicRepository.syncFromFirebase()
-                                    Log.d("ProfileScreen", "Manual sync completed")
-                                } catch (e: Exception) {
-                                    Log.e("ProfileScreen", "Manual sync failed", e)
-                                }
-                            }
-                        }
-                    )
-                    
                     Divider()
                     
                     // Sign out

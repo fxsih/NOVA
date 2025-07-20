@@ -6,6 +6,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import com.nova.music.data.api.YTMusicService
 import com.nova.music.data.local.MusicDao
 import com.nova.music.data.model.*
@@ -13,7 +14,12 @@ import com.nova.music.data.repository.MusicRepository
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.CoroutineScope
@@ -21,6 +27,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import retrofit2.HttpException
 import java.io.IOException
+import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -39,49 +46,131 @@ class MusicRepositoryImpl @Inject constructor(
     private val recentSearchesKey = stringPreferencesKey("recent_searches")
     private val maxRecentSearches = 10
 
+    // DataStore keys for download persistence
+    private val downloadsSetKey = stringSetPreferencesKey("downloads_set")
+    private val downloadPathsKey = stringPreferencesKey("download_paths")
+
+    // Placeholder for now - will add methods
+
+    override fun getPlaylists(): Flow<List<Playlist>> = flow {
+        val currentUser = firebaseAuth.currentUser
+        
+        Log.d(TAG, "🔄 getPlaylists() called - User: ${currentUser?.uid ?: "null"}")
+        
+        // Helper function to emit local playlists with songs
+        suspend fun emitLocal() {
+            val localPlaylists = musicDao.getPlaylists().first()
+            Log.d(TAG, "📋 Found ${localPlaylists.size} local playlists")
+            
+            val playlistsWithSongs = localPlaylists.map { playlist ->
+                val songs = musicDao.getPlaylistSongs(playlist.id).first()
+                Log.d(TAG, "🎵 Playlist '${playlist.name}' (${playlist.id}) has ${songs.size} songs")
+                playlist.apply { this.songs = songs }
+            }
+            
+            Log.d(TAG, "📊 Emitting ${playlistsWithSongs.size} playlists with songs")
+            emit(playlistsWithSongs)
+        }
+        
+        // 1️⃣ Emit immediate local state
+        emitLocal()
+        
+        // 2️⃣ If not signed in, just keep emitting local
+        if (currentUser == null) {
+            Log.d(TAG, "ℹ️ No user authenticated, using local playlists only")
+            musicDao.getPlaylists().collect { playlists ->
+                val playlistsWithSongs = playlists.map { playlist ->
+                    val songs = musicDao.getPlaylistSongs(playlist.id).first()
+                    playlist.apply { this.songs = songs }
+                }
+                Log.d(TAG, "🔄 Local update: ${playlistsWithSongs.size} playlists")
+                emit(playlistsWithSongs)
+            }
+            return@flow
+        }
+        
+        // 3️⃣ Signed-in: set up Firebase listener and local updates
+        try {
+            val playlistsCollection = firestore.collection("users")
+                .document(currentUser.uid)
+                .collection("playlists")
+            
+            // Set up real-time listener for playlist changes
+            val listener = playlistsCollection.addSnapshotListener { snapshot, error ->
+                if (error != null) {
+                    Log.e(TAG, "❌ Error in playlists listener", error)
+                    return@addSnapshotListener
+                }
+                
+                if (snapshot != null) {
+                    Log.d(TAG, "🔥 Firebase real-time update: Playlists changed")
+                    // Sync remote → local DB
+                    CoroutineScope(Dispatchers.IO).launch {
+                        updateLocalPlaylistsFromRemote(snapshot)
+                    }
+                }
+            }
+            
+            // Initial sync only once
+            val initialSnapshot = playlistsCollection.get().await()
+            updateLocalPlaylistsFromRemote(initialSnapshot)
+            
+            // After sync, emit updated local state
+            val syncedPlaylists = musicDao.getPlaylists().first()
+            val syncedPlaylistsWithSongs = syncedPlaylists.map { playlist ->
+                val songs = musicDao.getPlaylistSongs(playlist.id).first()
+                playlist.apply { this.songs = songs }
+            }
+            Log.d(TAG, "✅ After sync: ${syncedPlaylistsWithSongs.size} playlists")
+            emit(syncedPlaylistsWithSongs)
+            
+            // Continue listening to local database changes only
+            musicDao.getPlaylists().collect { playlists ->
+                val playlistsWithSongs = playlists.map { playlist ->
+                    val songs = musicDao.getPlaylistSongs(playlist.id).first()
+                    playlist.apply { this.songs = songs }
+                }
+                Log.d(TAG, "🔄 Local database update: ${playlistsWithSongs.size} playlists")
+                emit(playlistsWithSongs)
+            }
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error setting up Firebase real-time listener", e)
+            // Fallback to local playlists only
+            Log.d(TAG, "🔄 Falling back to local-only mode")
+            musicDao.getPlaylists().collect { playlists ->
+                val playlistsWithSongs = playlists.map { playlist ->
+                    val songs = musicDao.getPlaylistSongs(playlist.id).first()
+                    playlist.apply { this.songs = songs }
+                }
+                Log.d(TAG, "🔄 Local fallback update: ${playlistsWithSongs.size} playlists")
+                emit(playlistsWithSongs)
+            }
+        }
+    }.distinctUntilChanged { old, new ->
+        // Compare by id, name, and song count only
+        old.size == new.size && old.zip(new).all { (o, n) ->
+            o.id == n.id && o.name == n.name && o.songs.size == n.songs.size
+        }
+    }
+
     override fun getAllSongs(): Flow<List<Song>> = musicDao.getAllSongs()
 
     override fun getRecommendedSongs(genres: String, languages: String, artists: String): Flow<List<Song>> {
-        // Delegate to the overloaded method with forceRefresh = false
         return getRecommendedSongs(genres, languages, artists, false)
-    }
-
-    override suspend fun criticalPrefetch(videoIds: List<String>) {
-        try {
-            if (videoIds.isEmpty()) return
-            
-            Log.d(TAG, "Triggering critical prefetch for ${videoIds.size} videos")
-            
-            // Convert video IDs to comma-separated string
-            val videoIdsString = videoIds.joinToString(",")
-            
-            // Call the backend critical prefetch endpoint
-            val response = ytMusicService.criticalPrefetch(videoIdsString)
-            
-            Log.d(TAG, "Critical prefetch response: ${response.message}")
-            } catch (e: Exception) {
-            Log.e(TAG, "Error in critical prefetch", e)
-            // Don't throw - this is a background operation that shouldn't block playback
-        }
     }
 
     override fun getRecommendedSongs(genres: String, languages: String, artists: String, forceRefresh: Boolean): Flow<List<Song>> = flow {
         try {
-            // Log the parameters to help with debugging
             Log.d(TAG, "Fetching recommendations with genres: $genres, languages: $languages, artists: $artists, forceRefresh: $forceRefresh")
             
-            // If forceRefresh is true, clear the cache first
             if (forceRefresh) {
                 Log.d(TAG, "Force refresh requested, clearing cached recommendations")
                 musicDao.clearRecommendedSongs()
-                
-                // Emit an empty list first to clear the UI immediately
                 emit(emptyList())
             }
             
             val cacheBustValue = if (forceRefresh) System.currentTimeMillis() else 0
-            Log.d(TAG, "Using cache bust value: $cacheBustValue")
-            
             val recommendedResults = ytMusicService.getRecommendations(
                 genres = genres.takeIf { it.isNotBlank() },
                 languages = languages.takeIf { it.isNotBlank() },
@@ -89,24 +178,19 @@ class MusicRepositoryImpl @Inject constructor(
                 cacheBust = cacheBustValue
             )
             
-            // Log the number of results received
             Log.d(TAG, "Received ${recommendedResults.size} recommended songs")
-            
             val songs = recommendedResults.map { it.toSong().copy(isRecommended = true) }
             
-            // Cache the recommended songs in the database
+            // Apply duration filter to exclude songs longer than 15 minutes
+            val filteredSongs = filterSongsByDuration(songs)
+            
             try {
-                // First, clear previous recommended songs
                 musicDao.clearRecommendedSongs()
-                
-                // Then insert new recommendations while preserving like status
-                if (songs.isNotEmpty()) {
-                    // Get current liked songs to preserve their status
+                if (filteredSongs.isNotEmpty()) {
                     val currentLikedSongs = musicDao.getLikedSongs().first()
                     val likedSongIds = currentLikedSongs.map { it.id }.toSet()
                     
-                    // Preserve like status for songs that were already liked
-                    val songsWithPreservedLikes = songs.map { song ->
+                    val songsWithPreservedLikes = filteredSongs.map { song ->
                         if (likedSongIds.contains(song.id)) {
                             song.copy(isLiked = true)
                         } else {
@@ -115,63 +199,44 @@ class MusicRepositoryImpl @Inject constructor(
                     }
                     
                     musicDao.insertSongs(songsWithPreservedLikes)
-                    Log.d(TAG, "Cached ${songs.size} recommended songs in database with preserved like status")
+                    Log.d(TAG, "Cached ${filteredSongs.size} recommended songs in database with preserved like status")
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error caching recommended songs", e)
-                // Continue even if caching fails
             }
             
-            emit(songs)
-        } catch (e: HttpException) {
-            Log.e(TAG, "HTTP error when fetching recommendations: ${e.code()}", e)
-            // Only try to get cached recommendations if not forcing refresh
-            if (!forceRefresh) {
-                val cachedRecommendations = musicDao.getRecommendedSongs().first()
-                if (cachedRecommendations.isNotEmpty()) {
-                    Log.d(TAG, "Using ${cachedRecommendations.size} cached recommendations")
-                    emit(cachedRecommendations)
-                } else {
-                    emit(emptyList())
-                }
-            } else {
-                emit(emptyList())
-            }
-        } catch (e: IOException) {
-            Log.e(TAG, "Network error when fetching recommendations", e)
-            // Only try to get cached recommendations if not forcing refresh
-            if (!forceRefresh) {
-                val cachedRecommendations = musicDao.getRecommendedSongs().first()
-                if (cachedRecommendations.isNotEmpty()) {
-                    Log.d(TAG, "Using ${cachedRecommendations.size} cached recommendations")
-                    emit(cachedRecommendations)
-                } else {
-                    emit(emptyList())
-                }
-            } else {
-                emit(emptyList())
-            }
+            emit(filteredSongs)
         } catch (e: Exception) {
-            Log.e(TAG, "Unknown error when fetching recommendations", e)
-            emit(emptyList())
+            Log.e(TAG, "Error fetching recommendations", e)
+            if (!forceRefresh) {
+                val cachedRecommendations = musicDao.getRecommendedSongs().first()
+                if (cachedRecommendations.isNotEmpty()) {
+                    Log.d(TAG, "Using ${cachedRecommendations.size} cached recommendations")
+                    emit(cachedRecommendations)
+                } else {
+                    emit(emptyList())
+                }
+            } else {
+                emit(emptyList())
+            }
         }
     }
 
     override fun searchSongs(query: String): Flow<List<Song>> = flow {
-        // First emit local search results
         val localResults = musicDao.searchSongs(query).first()
         emit(localResults)
         
-        // Then try to fetch from backend
         try {
             val searchResults = ytMusicService.search(query)
             val songs = searchResults.map { it.toSong() }
             
-            // Preserve like status for search results
+            // Apply duration filter to exclude songs longer than 15 minutes
+            val filteredSongs = filterSongsByDuration(songs)
+            
             val currentLikedSongs = musicDao.getLikedSongs().first()
             val likedSongIds = currentLikedSongs.map { it.id }.toSet()
             
-            val songsWithPreservedLikes = songs.map { song ->
+            val songsWithPreservedLikes = filteredSongs.map { song ->
                 if (likedSongIds.contains(song.id)) {
                     song.copy(isLiked = true)
                 } else {
@@ -180,18 +245,9 @@ class MusicRepositoryImpl @Inject constructor(
             }
             
             emit(songsWithPreservedLikes)
-            
-            // Add to recent searches
             addToRecentSearches(query)
-        } catch (e: HttpException) {
-            Log.e(TAG, "HTTP error when searching songs: ${e.code()}", e)
-            // If backend call fails, we already emitted local results
-        } catch (e: IOException) {
-            Log.e(TAG, "Network error when searching songs", e)
-            // Network error (no connection)
         } catch (e: Exception) {
-            Log.e(TAG, "Unknown error when searching songs", e)
-            // Unknown error
+            Log.e(TAG, "Error searching songs", e)
         }
     }
     
@@ -200,195 +256,635 @@ class MusicRepositoryImpl @Inject constructor(
             val trendingResults = ytMusicService.getTrending()
             val songs = trendingResults.map { it.toSong() }
             
-            // Preserve like status for trending songs
-            val currentLikedSongs = musicDao.getLikedSongs().first()
-            val likedSongIds = currentLikedSongs.map { it.id }.toSet()
+            // Apply duration filter to exclude songs longer than 15 minutes
+            val filteredSongs = filterSongsByDuration(songs)
             
-            val songsWithPreservedLikes = songs.map { song ->
-                if (likedSongIds.contains(song.id)) {
-                    song.copy(isLiked = true)
-                } else {
-                    song
-                }
-            }
-            
-            emit(songsWithPreservedLikes)
-        } catch (e: HttpException) {
-            Log.e(TAG, "HTTP error when fetching trending songs: ${e.code()}", e)
-            emit(emptyList())
-        } catch (e: IOException) {
-            Log.e(TAG, "Network error when fetching trending songs", e)
-            emit(emptyList())
+            emit(filteredSongs)
         } catch (e: Exception) {
-            Log.e(TAG, "Unknown error when fetching trending songs", e)
+            Log.e(TAG, "Error fetching trending songs", e)
             emit(emptyList())
         }
+    }
+
+    override fun getLikedSongs(): Flow<List<Song>> = flow {
+        val currentUser = firebaseAuth.currentUser
+        
+        Log.d(TAG, "🔄 getLikedSongs() called - User: ${currentUser?.uid ?: "null"}")
+        
+        // Get local liked songs first
+        val localLikedSongs = musicDao.getLikedSongs().first()
+        Log.d(TAG, "📋 Found ${localLikedSongs.size} local liked songs")
+        
+        // Emit local songs immediately
+        emit(localLikedSongs)
+        
+        if (currentUser == null) {
+            Log.d(TAG, "ℹ️ No user authenticated, using local liked songs only")
+            // If not authenticated, just use local database as source of truth
+            musicDao.getLikedSongs().collect { songs ->
+                Log.d(TAG, "🔄 Local update: ${songs.size} liked songs")
+                emit(songs)
+            }
+            return@flow
+        }
+        
+        // Sync with Firebase for authenticated users
+        try {
+            Log.d(TAG, "🔄 Syncing liked songs with Firebase")
+            syncLikedSongsFromFirebase(currentUser.uid)
+            
+            // After sync, emit updated local state
+            val syncedLikedSongs = musicDao.getLikedSongs().first()
+            Log.d(TAG, "✅ After sync: ${syncedLikedSongs.size} liked songs")
+            emit(syncedLikedSongs)
+            
+            // Continue listening to local database changes
+            musicDao.getLikedSongs().collect { songs ->
+                Log.d(TAG, "🔄 Local database update: ${songs.size} liked songs")
+                emit(songs)
+            }
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error syncing liked songs with Firebase", e)
+            // Fallback to local liked songs only
+            Log.d(TAG, "🔄 Falling back to local-only mode")
+            musicDao.getLikedSongs().collect { songs ->
+                Log.d(TAG, "🔄 Local fallback update: ${songs.size} liked songs")
+                emit(songs)
+            }
+        }
+    }.distinctUntilChanged()
+
+    override fun getDownloadedSongs(): Flow<List<Song>> = flow {
+        Log.d(TAG, "🔄 getDownloadedSongs() called")
+        
+        // Get local downloaded songs first
+        val localDownloadedSongs = musicDao.getDownloadedSongs().first()
+        Log.d(TAG, "📋 Found ${localDownloadedSongs.size} local downloaded songs")
+        
+        // Emit local songs immediately
+        emit(localDownloadedSongs)
+        
+        // Verify and restore downloaded songs if needed
+        verifyAndRestoreDownloadedSongs()
+        
+        // Continue listening to local database changes
+        musicDao.getDownloadedSongs().collect { songs ->
+            Log.d(TAG, "🔄 Local database update: ${songs.size} downloaded songs")
+            emit(songs)
+        }
+    }.distinctUntilChanged()
+
+    override suspend fun addSongToLiked(song: Song) {
+        Log.d(TAG, "Adding song to liked: ${song.title}")
+            musicDao.updateSongLikedStatus(song.id, true)
+        
+        val currentUser = firebaseAuth.currentUser
+        if (currentUser != null) {
+            try {
+                firestore.collection("users").document(currentUser.uid)
+                    .collection("songs")
+                    .document(song.id)
+                    .set(song.copy(isLiked = true))
+                    .await()
+                Log.d(TAG, "Synced liked song to Firebase")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error syncing liked song to Firebase", e)
+            }
+        }
+    }
+
+    override suspend fun removeSongFromLiked(songId: String) {
+        Log.d(TAG, "Removing song from liked: $songId")
+        musicDao.updateSongLikedStatus(songId, false)
+        
+        val currentUser = firebaseAuth.currentUser
+        if (currentUser != null) {
+            try {
+                firestore.collection("users").document(currentUser.uid)
+                    .collection("songs")
+                    .document(songId)
+                    .update("isLiked", false)
+                    .await()
+                Log.d(TAG, "Synced unliked song to Firebase")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error syncing unliked song to Firebase", e)
+            }
+        }
+    }
+
+    override suspend fun createPlaylist(name: String) {
+        val currentUser = firebaseAuth.currentUser
+        
+        // Check if playlist with this name already exists
+        val existingPlaylist = musicDao.getPlaylists().first().find { it.name == name }
+        if (existingPlaylist != null) {
+            Log.d(TAG, "ℹ️ Playlist '$name' already exists with ID: ${existingPlaylist.id}")
+            return
+        }
+        
+        val playlistId = "playlist_${System.currentTimeMillis()}"
+        
+        Log.d(TAG, "Creating playlist: $name (ID: $playlistId)")
+        
+        // INSTANT: Create in local database first
+        val playlist = Playlist(playlistId, name)
+        musicDao.createPlaylist(playlist)
+        Log.d(TAG, "✅ Created playlist locally: $name")
+        
+        // BACKGROUND: Sync to Firebase if authenticated
+        if (currentUser != null) {
+            CoroutineScope(Dispatchers.IO).launch {
+                try {
+                    val playlistData = mapOf(
+                        "id" to playlistId,
+                        "name" to name,
+                        "createdAt" to System.currentTimeMillis()
+                    )
+                    
+                    firestore.collection("users").document(currentUser.uid)
+                        .collection("playlists")
+                        .document(playlistId)
+                        .set(playlistData)
+                        .await()
+                    Log.d(TAG, "✅ Synced playlist creation to Firebase: $name")
+                } catch (e: Exception) {
+                    Log.e(TAG, "❌ Error syncing playlist creation to Firebase", e)
+                }
+            }
+        } else {
+            Log.d(TAG, "ℹ️ No user authenticated, skipping Firebase sync")
+        }
+    }
+
+    override suspend fun deletePlaylist(playlistId: String) {
+        val currentUser = firebaseAuth.currentUser
+        
+        Log.d(TAG, "Deleting playlist: $playlistId")
+        
+        // Get playlist details for logging
+        val playlist = musicDao.getPlaylists().first().find { it.id == playlistId }
+        val playlistName = playlist?.name ?: "Unknown"
+        
+        // INSTANT: Delete from local database first
+        playlist?.let { musicDao.deletePlaylist(it) }
+        Log.d(TAG, "✅ Deleted playlist locally: $playlistName")
+        
+        // BACKGROUND: Delete from Firebase if authenticated
+        if (currentUser != null) {
+            CoroutineScope(Dispatchers.IO).launch {
+                try {
+                    firestore.collection("users").document(currentUser.uid)
+                        .collection("playlists")
+                        .document(playlistId)
+                        .delete()
+                        .await()
+                    Log.d(TAG, "✅ Synced playlist deletion to Firebase: $playlistName")
+                } catch (e: Exception) {
+                    Log.e(TAG, "❌ Error syncing playlist deletion to Firebase", e)
+                }
+            }
+        } else {
+            Log.d(TAG, "ℹ️ No user authenticated, skipping Firebase sync")
+        }
+    }
+
+    override suspend fun renamePlaylist(playlistId: String, newName: String) {
+        val currentUser = firebaseAuth.currentUser
+        
+        Log.d(TAG, "Renaming playlist: $playlistId to '$newName'")
+        
+        // INSTANT: Rename in local database first
+        musicDao.renamePlaylist(playlistId, newName)
+        Log.d(TAG, "✅ Renamed playlist locally: $playlistId -> '$newName'")
+        
+        // BACKGROUND: Sync to Firebase if authenticated
+        if (currentUser != null) {
+            CoroutineScope(Dispatchers.IO).launch {
+                try {
+                    firestore.collection("users").document(currentUser.uid)
+                        .collection("playlists")
+                        .document(playlistId)
+                        .update("name", newName)
+                        .await()
+                    Log.d(TAG, "✅ Synced playlist rename to Firebase: $playlistId -> '$newName'")
+                } catch (e: Exception) {
+                    Log.e(TAG, "❌ Error syncing playlist rename to Firebase", e)
+                }
+            }
+        } else {
+            Log.d(TAG, "ℹ️ No user authenticated, skipping Firebase sync")
+        }
+    }
+
+    override suspend fun addSongToPlaylist(song: Song, playlistId: String) {
+        val currentUser = firebaseAuth.currentUser
+        
+        Log.d(TAG, "=== ADD SONG TO PLAYLIST START ===")
+        Log.d(TAG, "Adding song: ${song.title} (${song.id}) to playlist: $playlistId")
+        
+        // First check if song exists in database
+        val existingSong = musicDao.getSongById(song.id)
+        if (existingSong == null) {
+            musicDao.insertSong(song)
+            Log.d(TAG, "✅ Inserted new song into database: ${song.title}")
+        } else {
+            Log.d(TAG, "✅ Song already exists in database: ${song.title}")
+        }
+        
+        // Check if song is already in playlist
+        val isAlreadyInPlaylist = musicDao.isSongInPlaylist(song.id, playlistId)
+        if (isAlreadyInPlaylist) {
+            Log.d(TAG, "ℹ️ Song ${song.title} is already in playlist $playlistId")
+            return
+        }
+        
+        // INSTANT: Add to local database first (UI updates immediately)
+        try {
+        musicDao.insertSongPlaylistCrossRef(
+            SongPlaylistCrossRef(
+                songId = song.id,
+                playlistId = playlistId
+            )
+        )
+            Log.d(TAG, "✅ Added song to playlist locally: ${song.title} -> $playlistId")
+            
+            // Force immediate emission of updated data
+            val updatedPlaylistSongs = musicDao.getPlaylistSongs(playlistId).first()
+            Log.d(TAG, "✅ Immediate update: Playlist $playlistId now has ${updatedPlaylistSongs.size} songs")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error adding song to playlist locally", e)
+            throw e
+        }
+        
+        // Verify the addition
+        val playlistSongs = musicDao.getPlaylistSongs(playlistId).first()
+        val songCount = playlistSongs.size
+        Log.d(TAG, "✅ Verification: Playlist $playlistId now has $songCount songs")
+        Log.d(TAG, "✅ Songs in playlist: ${playlistSongs.map { it.title }}")
+        
+        // Verify the song is actually in the playlist
+        val isInPlaylist = musicDao.isSongInPlaylist(song.id, playlistId)
+        if (!isInPlaylist) {
+            Log.e(TAG, "❌ CRITICAL: Song ${song.title} was not added to playlist $playlistId")
+            throw Exception("Failed to add song to playlist")
+        }
+        
+        // BACKGROUND: Sync to Firestore if authenticated (doesn't block UI)
+        if (currentUser != null) {
+            CoroutineScope(Dispatchers.IO).launch {
+                try {
+                    // Store song details in user-specific songs collection
+                    firestore.collection("users").document(currentUser.uid)
+                        .collection("songs")
+                        .document(song.id)
+                        .set(song)
+                        .await()
+                    
+                    // Add song to playlist in Firestore collection structure
+                    firestore.collection("users").document(currentUser.uid)
+                        .collection("playlists")
+                        .document(playlistId)
+                        .collection("songs")
+                        .document(song.id)
+                        .set(mapOf(
+                            "songId" to song.id,
+                            "addedAt" to System.currentTimeMillis()
+                        ))
+                        .await()
+                    Log.d(TAG, "✅ Synced song addition to Firestore: ${song.title} -> $playlistId")
+                } catch (e: Exception) {
+                    Log.e(TAG, "❌ Error syncing song addition to Firestore", e)
+                    // Note: We don't rollback local changes - user sees instant feedback
+                }
+            }
+        } else {
+            Log.d(TAG, "ℹ️ No user authenticated, skipping Firebase sync")
+        }
+        
+        Log.d(TAG, "=== ADD SONG TO PLAYLIST END ===")
+    }
+
+    override suspend fun removeSongFromPlaylist(songId: String, playlistId: String) {
+        val currentUser = firebaseAuth.currentUser
+        
+        Log.d(TAG, "=== REMOVE SONG FROM PLAYLIST START ===")
+        Log.d(TAG, "Removing song: $songId from playlist: $playlistId")
+        
+        // Check if song is actually in playlist
+        val isInPlaylist = musicDao.isSongInPlaylist(songId, playlistId)
+        if (!isInPlaylist) {
+            Log.d(TAG, "ℹ️ Song $songId is not in playlist $playlistId")
+            return
+        }
+        
+        // INSTANT: Remove from local database first (UI updates immediately)
+        try {
+        musicDao.deleteSongPlaylistCrossRef(songId, playlistId)
+            Log.d(TAG, "✅ Removed song from playlist locally: $songId -> $playlistId")
+            
+            // Force immediate emission of updated data
+            val updatedPlaylistSongs = musicDao.getPlaylistSongs(playlistId).first()
+            Log.d(TAG, "✅ Immediate update: Playlist $playlistId now has ${updatedPlaylistSongs.size} songs")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error removing song from playlist locally", e)
+            throw e
+        }
+        
+        // Verify the removal
+        val playlistSongs = musicDao.getPlaylistSongs(playlistId).first()
+        val songCount = playlistSongs.size
+        Log.d(TAG, "✅ Verification: Playlist $playlistId now has $songCount songs")
+        Log.d(TAG, "✅ Songs in playlist: ${playlistSongs.map { it.title }}")
+        
+        // Verify the song is actually removed from the playlist
+        val isStillInPlaylist = musicDao.isSongInPlaylist(songId, playlistId)
+        if (isStillInPlaylist) {
+            Log.e(TAG, "❌ CRITICAL: Song $songId was not removed from playlist $playlistId")
+            throw Exception("Failed to remove song from playlist")
+        }
+        
+        // BACKGROUND: Remove from Firestore if authenticated (doesn't block UI)
+        if (currentUser != null) {
+            CoroutineScope(Dispatchers.IO).launch {
+                try {
+                    firestore.collection("users").document(currentUser.uid)
+                        .collection("playlists")
+                        .document(playlistId)
+                        .collection("songs")
+                        .document(songId)
+                        .delete()
+                        .await()
+                    Log.d(TAG, "✅ Synced song removal to Firestore: $songId -> $playlistId")
+                } catch (e: Exception) {
+                    Log.e(TAG, "❌ Error syncing song removal to Firestore", e)
+                    // Note: We don't rollback local changes - user sees instant feedback
+                }
+            }
+        } else {
+            Log.d(TAG, "ℹ️ No user authenticated, skipping Firebase sync")
+        }
+        
+        Log.d(TAG, "=== REMOVE SONG FROM PLAYLIST END ===")
+    }
+
+    override suspend fun isSongInPlaylist(songId: String, playlistId: String): Boolean {
+        return musicDao.isSongInPlaylist(songId, playlistId)
+    }
+
+    override fun getPlaylistSongCount(playlistId: String): Flow<Int> = flow {
+        Log.d(TAG, "🔄 getPlaylistSongCount() called for playlist: $playlistId")
+        
+        // Get local count first
+        val localCount = musicDao.getPlaylistSongCount(playlistId).first()
+        Log.d(TAG, "📊 Local count for playlist $playlistId: $localCount")
+        
+        // Emit local count immediately
+        emit(localCount)
+        
+        val currentUser = firebaseAuth.currentUser
+        if (currentUser == null) {
+            Log.d(TAG, "ℹ️ No user authenticated, using local playlist count only")
+            // If not authenticated, just use local database as source of truth
+            musicDao.getPlaylistSongCount(playlistId).collect { count ->
+                Log.d(TAG, "🔄 Local update: playlist $playlistId has $count songs")
+                emit(count)
+            }
+            return@flow
+        }
+        
+        // Only sync once on first call, not on every emission
+        try {
+            Log.d(TAG, "🔄 Syncing playlist count with Firebase for playlist: $playlistId")
+            syncPlaylistSongsFromFirebase(playlistId, currentUser)
+            
+            // After sync, emit updated local count
+            val syncedCount = musicDao.getPlaylistSongCount(playlistId).first()
+            Log.d(TAG, "✅ After sync: playlist $playlistId has $syncedCount songs")
+            emit(syncedCount)
+            
+            // Continue listening to local database changes only
+            musicDao.getPlaylistSongCount(playlistId).collect { count ->
+                Log.d(TAG, "🔄 Local database update: playlist $playlistId has $count songs")
+                emit(count)
+            }
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error syncing playlist count with Firebase", e)
+            // Fallback to local playlist count only
+            Log.d(TAG, "🔄 Falling back to local-only mode")
+            musicDao.getPlaylistSongCount(playlistId).collect { count ->
+                Log.d(TAG, "🔄 Local fallback update: playlist $playlistId has $count songs")
+                emit(count)
+            }
+        }
+    }.distinctUntilChanged()
+
+    override fun getPlaylistSongs(playlistId: String): Flow<List<Song>> = flow {
+        Log.d(TAG, "🔄 getPlaylistSongs() called for playlist: $playlistId")
+        
+        // Get local songs first
+        val localSongs = musicDao.getPlaylistSongs(playlistId).first()
+        Log.d(TAG, "📋 Found ${localSongs.size} local songs in playlist $playlistId")
+        
+        // Emit local songs immediately
+        emit(localSongs)
+        
+        val currentUser = firebaseAuth.currentUser
+        if (currentUser == null) {
+            Log.d(TAG, "ℹ️ No user authenticated, using local playlist songs only")
+            // If not authenticated, just use local database as source of truth
+            musicDao.getPlaylistSongs(playlistId).collect { songs ->
+                Log.d(TAG, "🔄 Local update: ${songs.size} songs in playlist $playlistId")
+                emit(songs)
+            }
+            return@flow
+        }
+        
+        // Only sync once on first call, not on every emission
+        try {
+            Log.d(TAG, "🔄 Syncing playlist songs with Firebase for playlist: $playlistId")
+            syncPlaylistSongsFromFirebase(playlistId, currentUser)
+            
+            // After sync, emit updated local state
+            val syncedSongs = musicDao.getPlaylistSongs(playlistId).first()
+            Log.d(TAG, "✅ After sync: ${syncedSongs.size} songs in playlist $playlistId")
+            emit(syncedSongs)
+            
+            // Continue listening to local database changes only
+            musicDao.getPlaylistSongs(playlistId).collect { songs ->
+                Log.d(TAG, "🔄 Local database update: ${songs.size} songs in playlist $playlistId")
+                emit(songs)
+            }
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error syncing playlist songs with Firebase", e)
+            // Fallback to local playlist songs only
+            Log.d(TAG, "🔄 Falling back to local-only mode")
+            musicDao.getPlaylistSongs(playlistId).collect { songs ->
+                Log.d(TAG, "🔄 Local fallback update: ${songs.size} songs in playlist $playlistId")
+                emit(songs)
+            }
+        }
+    }.distinctUntilChanged()
+
+    override suspend fun getSongById(songId: String): Song? {
+        return musicDao.getSongById(songId)
+    }
+
+    override suspend fun getSongsByIds(ids: List<String>): List<Song> {
+        if (ids.isEmpty()) return emptyList()
+        val allSongs = musicDao.getAllSongs().first()
+        return ids.mapNotNull { id -> allSongs.find { it.id == id } }
     }
 
     override fun getRecentlyPlayed(): Flow<List<Song>> = musicDao.getRecentlyPlayed()
 
     override suspend fun addToRecentlyPlayed(song: Song) {
-        // First check if song exists in database and insert it if not
-        val existingSong = musicDao.getSongById(song.id)
-        if (existingSong == null) {
-            // If song doesn't exist, insert it first
-            try {
-                musicDao.insertSong(song)
-                Log.d(TAG, "Inserted new song into database: ${song.id} - ${song.title}")
-            } catch (e: Exception) {
-                Log.e(TAG, "Error inserting song into database", e)
-                // If we can't insert the song, we can't add it to recently played
-                return
-            }
-        }
-        
-        // Then add to recently played - delete any existing entry first to avoid duplicates
         try {
-            // First delete any existing recently played entry for this song
-            musicDao.deleteRecentlyPlayedBySongId(song.id)
-            // Then insert new entry
-            musicDao.insertRecentlyPlayed(RecentlyPlayed(songId = song.id))
-            Log.d(TAG, "Added to recently played: ${song.id} - ${song.title}")
+            Log.d(TAG, "🔄 Adding song to recently played: ${song.title} (${song.id})")
+            
+            // First ensure song exists in database
+            val existingSong = musicDao.getSongById(song.id)
+            if (existingSong == null) {
+                musicDao.insertSong(song)
+                Log.d(TAG, "✅ Inserted song into database before adding to recently played: ${song.title}")
+            } else {
+                Log.d(TAG, "✅ Song already exists in database: ${song.title}")
+            }
+            
+            // Now add to recently played
+            musicDao.insertRecentlyPlayed(RecentlyPlayed(songId = song.id, timestamp = System.currentTimeMillis()))
+            Log.d(TAG, "✅ Successfully added song to recently played: ${song.title}")
+            
         } catch (e: Exception) {
-            Log.e(TAG, "Error adding song to recently played", e)
+            Log.e(TAG, "❌ Error adding song to recently played: ${song.title}", e)
+            // Don't rethrow - we don't want to break playback for this
         }
     }
 
     override suspend fun getRecentSearches(): List<String> {
-        return dataStore.data.first()[recentSearchesKey]
-            ?.split(",")
-            ?.filter { it.isNotBlank() }
-            ?.distinct()
-            ?: emptyList()
+        return dataStore.data.first()[recentSearchesKey]?.split(",")?.filter { it.isNotBlank() } ?: emptyList()
     }
 
     override suspend fun addToRecentSearches(query: String) {
-        if (query.isBlank()) return
-        
-        dataStore.edit { preferences ->
-            val currentSearches = preferences[recentSearchesKey]
-                ?.split(",")
-                ?.filter { it.isNotBlank() }
-                ?.toMutableList() 
-                ?: mutableListOf()
-                
-            currentSearches.remove(query) // Remove if exists to avoid duplicates
-            currentSearches.add(0, query) // Add to the beginning
-            
-            if (currentSearches.size > maxRecentSearches) {
-                currentSearches.removeAt(currentSearches.lastIndex)
-            }
-            
-            preferences[recentSearchesKey] = currentSearches.joinToString(",")
+        val currentSearches = getRecentSearches().toMutableList()
+        currentSearches.remove(query)
+        currentSearches.add(0, query)
+        if (currentSearches.size > maxRecentSearches) {
+            currentSearches.removeAt(currentSearches.size - 1)
         }
+        dataStore.edit { it[recentSearchesKey] = currentSearches.joinToString(",") }
     }
 
     override suspend fun removeFromRecentSearches(query: String) {
-        dataStore.edit { preferences ->
-            val currentSearches = preferences[recentSearchesKey]
-                ?.split(",")
-                ?.filter { it.isNotBlank() }
-                ?.toMutableList()
-                ?: mutableListOf()
-                
-            currentSearches.remove(query)
-            preferences[recentSearchesKey] = currentSearches.joinToString(",")
+        val currentSearches = getRecentSearches().toMutableList()
+        currentSearches.remove(query)
+        dataStore.edit { it[recentSearchesKey] = currentSearches.joinToString(",") }
+    }
+
+    override suspend fun markSongAsDownloaded(song: Song, localFilePath: String) {
+        Log.d(TAG, "=== MARK SONG AS DOWNLOADED START ===")
+        Log.d(TAG, "Marking song as downloaded: ${song.title} (${song.id})")
+        
+        // First ensure song exists in database
+        val existingSong = musicDao.getSongById(song.id)
+        if (existingSong == null) {
+            musicDao.insertSong(song)
+            Log.d(TAG, "✅ Inserted new song into database: ${song.title}")
+        } else {
+            Log.d(TAG, "✅ Song already exists in database: ${song.title}")
+        }
+        
+        // INSTANT: Update local database (UI updates immediately)
+            musicDao.updateSongDownloadStatus(song.id, true, localFilePath)
+        Log.d(TAG, "✅ Marked song as downloaded locally: ${song.title}")
+        
+        // Save to DataStore for quick lookups
+        addToDownloadsDataStore(song.id, localFilePath)
+        
+        // Save to SharedPreferences as backup
+        saveDownloadStateToPreferences(song.id, true, localFilePath)
+        
+        // Verify the update immediately
+        val updatedSong = musicDao.getSongById(song.id)
+        if (updatedSong?.isDownloaded != true) {
+            Log.e(TAG, "❌ CRITICAL: Download status not persisted for: ${song.title}")
+            // Retry the update
+            musicDao.updateSongDownloadStatus(song.id, true, localFilePath)
+            Log.d(TAG, "🔄 Retried download status update for: ${song.title}")
+        } else {
+            Log.d(TAG, "✅ Verification: Song ${song.title} isDownloaded = ${updatedSong.isDownloaded}")
+        }
+        
+        // No Firebase sync needed - downloads are device-specific
+        Log.d(TAG, "ℹ️ Downloads are device-specific, no Firebase sync needed")
+        
+        Log.d(TAG, "=== MARK SONG AS DOWNLOADED END ===")
+    }
+
+    override suspend fun markSongAsNotDownloaded(songId: String) {
+        Log.d(TAG, "=== MARK SONG AS NOT DOWNLOADED START ===")
+        Log.d(TAG, "Marking song as not downloaded: $songId")
+        
+        // INSTANT: Update local database (UI updates immediately)
+        musicDao.updateSongDownloadStatus(songId, false, null)
+        Log.d(TAG, "✅ Marked song as not downloaded locally: $songId")
+        
+        // Remove from DataStore
+        removeFromDownloadsDataStore(songId)
+        
+        // Save to SharedPreferences as backup
+        saveDownloadStateToPreferences(songId, false, null)
+        
+        // No Firebase sync needed - downloads are device-specific
+        Log.d(TAG, "ℹ️ Downloads are device-specific, no Firebase sync needed")
+        
+        Log.d(TAG, "=== MARK SONG AS NOT DOWNLOADED END ===")
+    }
+
+    override suspend fun isDownloaded(songId: String): Boolean {
+        return musicDao.getSongById(songId)?.isDownloaded == true
+    }
+
+    override suspend fun syncUserDataWithFirebase() {
+        // Implementation for syncing user data
+    }
+
+    override suspend fun refreshFirebaseListeners() {
+        // Implementation for refreshing Firebase listeners
+    }
+
+    override suspend fun syncFromFirebase() {
+        // Implementation for syncing from Firebase
+    }
+
+    override suspend fun criticalPrefetch(videoIds: List<String>) {
+        try {
+            if (videoIds.isEmpty()) return
+            
+            Log.d(TAG, "Triggering critical prefetch for ${videoIds.size} videos")
+            val videoIdsString = videoIds.joinToString(",")
+            val response = ytMusicService.criticalPrefetch(videoIdsString)
+            Log.d(TAG, "Critical prefetch response: ${response.message}")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in critical prefetch", e)
         }
     }
 
+    override suspend fun cleanupGlobalSongsCollection() {
+        // Implementation for cleaning up global songs collection
+    }
 
-
-    override fun getPlaylists(): Flow<List<Playlist>> = flow {
-        val currentUser = firebaseAuth.currentUser
-        if (currentUser == null) {
-            // If not authenticated, just return local playlists
-            musicDao.getPlaylists().collect { playlists ->
-                val playlistsWithSongs = playlists.map { playlist ->
-                    playlist.apply {
-                        songs = musicDao.getPlaylistSongsV2(playlist.id).first()
-                    }
-                }
-                emit(playlistsWithSongs)
-            }
-            return@flow
-        }
-
-        // Get local playlists first
-        val localPlaylists = musicDao.getPlaylists().first()
-        val playlistsWithSongs = localPlaylists.map { playlist ->
-            playlist.apply {
-                songs = musicDao.getPlaylistSongsV2(playlist.id).first()
-            }
-        }
-        emit(playlistsWithSongs)
-        
-        // Set up real-time listener for playlists
+    /**
+     * Sync playlist songs from Firebase to the join table system
+     */
+    private suspend fun syncPlaylistSongsFromFirebase(playlistId: String, currentUser: com.google.firebase.auth.FirebaseUser) {
         try {
-            val playlistsCollection = firestore.collection("users").document(currentUser.uid)
-                .collection("playlists")
+            Log.d(TAG, "🔄 Syncing playlist songs from Firebase for playlist $playlistId")
             
-            val listener = playlistsCollection.addSnapshotListener { snapshot, error ->
-                if (error != null) {
-                    Log.e(TAG, "Error in playlists listener", error)
-                    return@addSnapshotListener
-                }
-                
-                if (snapshot != null) {
-                    Log.d(TAG, "Real-time update: Playlists changed")
-                    
-                    // Update local database based on remote changes
-                    CoroutineScope(Dispatchers.IO).launch {
-                        updateLocalPlaylistsFromRemote(snapshot)
-                    }
-                }
-            }
-            
-            // Keep the listener active and emit updates
-            try {
-                // Initial sync
-                val initialSnapshot = playlistsCollection.get().await()
-                updateLocalPlaylistsFromRemote(initialSnapshot)
-                
-                // Keep the flow alive for real-time updates
-                while (true) {
-                    delay(1000) // Check for updates every second
-                    val updatedPlaylists = musicDao.getPlaylists().first()
-                    val updatedPlaylistsWithSongs = updatedPlaylists.map { playlist ->
-                        playlist.apply {
-                            songs = musicDao.getPlaylistSongsV2(playlist.id).first()
-                        }
-                    }
-                    emit(updatedPlaylistsWithSongs)
-                }
-            } finally {
-                listener.remove()
-            }
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "Error setting up playlists real-time listener", e)
-            // Fallback to local playlists only
-            val playlistsWithSongs = localPlaylists.map { playlist ->
-                playlist.apply {
-                    songs = musicDao.getPlaylistSongsV2(playlist.id).first()
-                }
-            }
-            emit(playlistsWithSongs)
-        }
-    }.distinctUntilChanged()
-
-    override fun getPlaylistSongs(playlistId: String): Flow<List<Song>> = flow {
-        val currentUser = firebaseAuth.currentUser
-        if (currentUser == null) {
-            // If not authenticated, just return local songs
-            emitAll(musicDao.getPlaylistSongsV2(playlistId))
-            return@flow
-        }
-
-        // Get local songs first
-        val localSongs = musicDao.getPlaylistSongsV2(playlistId).first()
-        
-        // Sync with Firestore
-        try {
             val songsCollection = firestore.collection("users").document(currentUser.uid)
                 .collection("playlists")
                 .document(playlistId)
@@ -397,279 +893,33 @@ class MusicRepositoryImpl @Inject constructor(
             val remoteSongsSnapshot = songsCollection.get().await()
             val remoteSongIds: List<String> = remoteSongsSnapshot.documents.map { it.id }.filterNotNull()
             
-            // Get remote songs that don't exist locally
-            val missingSongIds = remoteSongIds.filter { songId ->
-                localSongs.none { it.id == songId }
-            }
+            Log.d(TAG, "📋 Found ${remoteSongIds.size} remote songs in playlist $playlistId")
             
-            // Add missing songs to local database
-            for (songId in missingSongIds) {
-                // Try to get song details from user-specific Firestore collection
-                try {
-                    val song = getSongFromFirebase(songId, currentUser)
-                    if (song != null) {
-                        musicDao.insertSong(song)
-                        musicDao.insertSongPlaylistCrossRef(
-                            SongPlaylistCrossRef(
-                                songId = song.id,
-                                playlistId = playlistId
-                            )
-                        )
-                        Log.d(TAG, "Added remote song to local playlist: $songId")
-                    }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error getting song details from Firestore: $songId", e)
-                }
-            }
-            
-            // Get final songs
-            val finalSongs = musicDao.getPlaylistSongsV2(playlistId).first()
-            emit(finalSongs)
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "Error syncing playlist songs with Firestore", e)
-            // Fallback to local songs only
-            emitAll(musicDao.getPlaylistSongsV2(playlistId))
-        }
-    }
-
-    override suspend fun createPlaylist(name: String) {
-        val currentUser = firebaseAuth.currentUser
-        val playlist = Playlist(
-            id = "playlist_${System.currentTimeMillis()}",
-            name = name
-        )
-        
-        // Add to local database
-        musicDao.createPlaylist(playlist)
-        
-        // Sync to Firestore if authenticated
-        if (currentUser != null) {
-            try {
-                firestore.collection("users").document(currentUser.uid)
-                    .collection("playlists")
-                    .document(playlist.id)
-                    .set(playlist)
-                    .await()
-                Log.d(TAG, "Created playlist in Firestore: ${playlist.name}")
-            } catch (e: Exception) {
-                Log.e(TAG, "Error creating playlist in Firestore", e)
-            }
-        }
-    }
-
-    override suspend fun deletePlaylist(playlistId: String) {
-        val currentUser = firebaseAuth.currentUser
-        
-        // First get the playlist, then delete it
-        musicDao.getPlaylists().first().find { it.id == playlistId }?.let { playlist ->
-            // Remove the playlist from all songs that have it
-            musicDao.getPlaylistSongsV2(playlistId).first().forEach { song ->
-                musicDao.deleteSongPlaylistCrossRef(song.id, playlistId)
-            }
-            musicDao.deletePlaylist(playlist)
-            
-            // Delete from Firestore if authenticated
-            if (currentUser != null) {
-                try {
-                    firestore.collection("users").document(currentUser.uid)
-                        .collection("playlists")
-                        .document(playlistId)
-                        .delete()
-                        .await()
-                    Log.d(TAG, "Deleted playlist from Firestore: ${playlist.name}")
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error deleting playlist from Firestore", e)
-                }
-            }
-        }
-    }
-
-    override suspend fun renamePlaylist(playlistId: String, newName: String) {
-        val currentUser = firebaseAuth.currentUser
-        
-        // Update local database
-        musicDao.renamePlaylist(playlistId, newName)
-        
-        // Update Firestore if authenticated
-        if (currentUser != null) {
-            try {
-                firestore.collection("users").document(currentUser.uid)
-                    .collection("playlists")
-                    .document(playlistId)
-                    .update("name", newName)
-                    .await()
-                Log.d(TAG, "Renamed playlist in Firestore: $newName")
-            } catch (e: Exception) {
-                Log.e(TAG, "Error renaming playlist in Firestore", e)
-            }
-        }
-    }
-
-    override suspend fun addSongToPlaylist(song: Song, playlistId: String) {
-        val currentUser = firebaseAuth.currentUser
-        
-        // First check if song exists in database
-        val existingSong = musicDao.getSongById(song.id)
-        if (existingSong == null) {
-            // If song doesn't exist, insert it first
-            musicDao.insertSong(song)
-        }
-        
-        // Use the new join table approach
-        musicDao.insertSongPlaylistCrossRef(
-            SongPlaylistCrossRef(
-                songId = song.id,
-                playlistId = playlistId
-            )
-        )
-        
-        // Also update the legacy approach for backward compatibility
-        musicDao.addSongToPlaylist(song.id, playlistId)
-        
-        // Sync to Firestore if authenticated
-        if (currentUser != null) {
-            try {
-                // Store song details in user-specific songs collection
-                firestore.collection("users").document(currentUser.uid)
-                    .collection("songs")
-                    .document(song.id)
-                    .set(song)
-                    .await()
-                
-                // Add song to playlist in Firestore
-                firestore.collection("users").document(currentUser.uid)
-                    .collection("playlists")
-                    .document(playlistId)
-                    .collection("songs")
-                    .document(song.id)
-                    .set(mapOf(
-                        "songId" to song.id,
-                        "addedAt" to System.currentTimeMillis()
-                    ))
-                    .await()
-                Log.d(TAG, "Added song to playlist in Firestore: ${song.title} -> ${playlistId}")
-            } catch (e: Exception) {
-                Log.e(TAG, "Error adding song to playlist in Firestore", e)
-            }
-        }
-    }
-
-    override suspend fun removeSongFromPlaylist(songId: String, playlistId: String) {
-        val currentUser = firebaseAuth.currentUser
-        
-        // Use the new join table approach
-        musicDao.deleteSongPlaylistCrossRef(songId, playlistId)
-        
-        // Also update the legacy approach for backward compatibility
-        musicDao.removeSongFromPlaylist(songId, playlistId)
-        
-        // Remove from Firestore if authenticated
-        if (currentUser != null) {
-            try {
-                firestore.collection("users").document(currentUser.uid)
-                    .collection("playlists")
-                    .document(playlistId)
-                    .collection("songs")
-                    .document(songId)
-                    .delete()
-                    .await()
-                Log.d(TAG, "Removed song from playlist in Firestore: $songId -> $playlistId")
-            } catch (e: Exception) {
-                Log.e(TAG, "Error removing song from playlist in Firestore", e)
-            }
-        }
-    }
-
-    override suspend fun isSongInPlaylist(songId: String, playlistId: String): Boolean {
-        // Use the new V2 method
-        return musicDao.isSongInPlaylistV2(songId, playlistId)
-    }
-
-    override fun getPlaylistSongCount(playlistId: String): Flow<Int> {
-        // Use the new V2 method with consistency verification
-        return flow {
-            val v2Count = musicDao.getPlaylistSongCountV2(playlistId).first()
-            
-            // Verify consistency with V1 system
-            val v1Count = musicDao.getPlaylistSongCount(playlistId).first()
-            
-            if (v1Count != v2Count) {
-                Log.w(TAG, "Playlist count inconsistency detected for playlist $playlistId: V1=$v1Count, V2=$v2Count")
-                // Fix the inconsistency by syncing V1 to match V2
-                fixPlaylistCountInconsistency(playlistId, v2Count)
-            }
-            
-            emit(v2Count)
-        }
-    }
-    
-    /**
-     * Fix playlist count inconsistency between V1 and V2 systems
-     */
-    private suspend fun fixPlaylistCountInconsistency(playlistId: String, correctCount: Int) {
-        try {
-            Log.d(TAG, "Fixing playlist count inconsistency for playlist $playlistId")
-            
-            // Get the actual songs from V2 system (the correct one)
-            val v2Songs = musicDao.getPlaylistSongsV2(playlistId).first()
-            
-            // Update V1 system to match V2
-            for (song in v2Songs) {
-                // Ensure song has the correct playlistId in the playlistIds field
-                val currentPlaylistIds = song.getPlaylistIdsList()
-                if (!currentPlaylistIds.contains(playlistId)) {
-                    val updatedPlaylistIds = song.addPlaylistId(playlistId)
-                    musicDao.updateSongPlaylistIds(song.id, updatedPlaylistIds)
-                    Log.d(TAG, "Fixed V1 system for song ${song.id} in playlist $playlistId")
-                }
-            }
-            
-            // Remove songs from V1 that shouldn't be there
-            val v1Songs = musicDao.getPlaylistSongs(playlistId).first()
-            for (song in v1Songs) {
-                if (!v2Songs.any { it.id == song.id }) {
-                    val updatedPlaylistIds = song.removePlaylistId(playlistId)
-                    musicDao.updateSongPlaylistIds(song.id, updatedPlaylistIds)
-                    Log.d(TAG, "Removed song ${song.id} from V1 system for playlist $playlistId")
-                }
-            }
-            
-            Log.d(TAG, "Playlist count inconsistency fixed for playlist $playlistId")
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "Error fixing playlist count inconsistency for playlist $playlistId", e)
-        }
-    }
-    
-    /**
-     * Sync playlist songs from Firebase to both V1 and V2 systems
-     */
-    private suspend fun syncPlaylistSongsFromFirebase(playlistId: String, remoteSongIds: List<String>) {
-        try {
-            Log.d(TAG, "Syncing playlist songs from Firebase for playlist $playlistId")
-            
-            val currentUser = firebaseAuth.currentUser
-            if (currentUser == null) return
-            
-            // Get current local songs in this playlist (V2 system)
-            val localV2Songs = musicDao.getPlaylistSongsV2(playlistId).first()
-            val localV2SongIds = localV2Songs.map { it.id }.toSet()
+            // Get current local songs in this playlist
+            val localSongs = musicDao.getPlaylistSongs(playlistId).first()
+            val localSongIds = localSongs.map { it.id }.toSet()
             val remoteSongIdsSet = remoteSongIds.toSet()
             
             // Songs to add (in remote but not in local)
-            val songsToAdd = remoteSongIdsSet - localV2SongIds
+            val songsToAdd = remoteSongIdsSet - localSongIds
             // Songs to remove (in local but not in remote)
-            val songsToRemove = localV2SongIds - remoteSongIdsSet
+            val songsToRemove = localSongIds - remoteSongIdsSet
             
-            Log.d(TAG, "Playlist sync - To add: $songsToAdd, To remove: $songsToRemove")
+            Log.d(TAG, "🔄 Playlist songs sync - To add: $songsToAdd, To remove: $songsToRemove")
             
-            // Add new songs to both V1 and V2 systems
+            // Add new songs to the join table system
             for (songId in songsToAdd) {
                 try {
                     val song = getSongFromFirebase(songId, currentUser)
                     if (song != null) {
-                        // Add to V2 system
+                        // Ensure song exists in database
+                        val existingSong = musicDao.getSongById(songId)
+                        if (existingSong == null) {
+                            musicDao.insertSong(song)
+                            Log.d(TAG, "✅ Inserted song from Firebase: ${song.title}")
+                        }
+                        
+                        // Add to join table system
                         musicDao.insertSongPlaylistCrossRef(
                             SongPlaylistCrossRef(
                                 songId = song.id,
@@ -677,1071 +927,635 @@ class MusicRepositoryImpl @Inject constructor(
                             )
                         )
                         
-                        // Add to V1 system
-                        val updatedPlaylistIds = song.addPlaylistId(playlistId)
-                        musicDao.updateSongPlaylistIds(song.id, updatedPlaylistIds)
-                        
-                        Log.d(TAG, "Added song ${song.title} to playlist $playlistId in both systems")
+                        Log.d(TAG, "✅ Added song ${song.title} to playlist $playlistId")
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Error adding song $songId to playlist $playlistId", e)
                 }
             }
             
-            // Remove songs from both V1 and V2 systems
+            // Remove songs from the join table system
             for (songId in songsToRemove) {
                 try {
-                    // Remove from V2 system
+                    // Remove from join table system
                     musicDao.deleteSongPlaylistCrossRef(songId, playlistId)
                     
-                    // Remove from V1 system
-                    val song = musicDao.getSongById(songId)
-                    if (song != null) {
-                        val updatedPlaylistIds = song.removePlaylistId(playlistId)
-                        musicDao.updateSongPlaylistIds(song.id, updatedPlaylistIds)
-                    }
-                    
-                    Log.d(TAG, "Removed song $songId from playlist $playlistId in both systems")
+                    Log.d(TAG, "✅ Removed song $songId from playlist $playlistId")
                 } catch (e: Exception) {
                     Log.e(TAG, "Error removing song $songId from playlist $playlistId", e)
                 }
             }
             
-            Log.d(TAG, "Playlist songs sync completed for playlist $playlistId")
+            Log.d(TAG, "✅ Playlist songs sync completed for playlist $playlistId")
             
         } catch (e: Exception) {
-            Log.e(TAG, "Error syncing playlist songs from Firebase for playlist $playlistId", e)
-        }
-    }
-
-    override suspend fun getSongById(songId: String): Song? {
-        return musicDao.getSongById(songId)
-    }
-
-    override suspend fun getSongsByIds(ids: List<String>): List<Song> {
-        if (ids.isEmpty()) return emptyList()
-        // Fetch all songs from the database and filter by IDs, preserving order
-        val allSongs = musicDao.getAllSongs().first()
-        return ids.mapNotNull { id -> allSongs.find { it.id == id } }
-    }
-
-    // Downloaded songs methods with Firebase sync and real-time listeners
-    override fun getDownloadedSongs(): Flow<List<Song>> = flow {
-        val currentUser = firebaseAuth.currentUser
-        
-        Log.d(TAG, "getDownloadedSongs called, current user: ${currentUser?.uid ?: "null"}")
-        
-        // Get local downloaded songs first
-        val localDownloadedSongs = musicDao.getDownloadedSongs().first()
-        Log.d(TAG, "Local downloaded songs count: ${localDownloadedSongs.size}")
-        emit(localDownloadedSongs)
-        
-        // Set up real-time listener if authenticated
-        if (currentUser != null) {
-            try {
-                Log.d(TAG, "Setting up real-time listener for downloaded songs")
-                
-                val downloadedSongsCollection = firestore.collection("users").document(currentUser.uid)
-                    .collection("downloaded_songs")
-                
-                // Set up real-time listener
-                val listener = downloadedSongsCollection.addSnapshotListener { snapshot, error ->
-                    if (error != null) {
-                        Log.e(TAG, "Error in downloaded songs listener", error)
-                        return@addSnapshotListener
-                    }
-                    
-                    if (snapshot != null) {
-                        val remoteSongIds: List<String> = snapshot.documents.map { it.id }.filterNotNull()
-                        Log.d(TAG, "Real-time update: Remote downloaded songs: $remoteSongIds")
-                        
-                        // Update local database based on remote changes
-                        CoroutineScope(Dispatchers.IO).launch {
-                            updateLocalDownloadedSongsFromRemote(remoteSongIds)
-                        }
-                    }
-                }
-                
-                // Keep the listener active and emit updates
-                try {
-                    // Initial sync
-                    val initialSnapshot = downloadedSongsCollection.get().await()
-                    val initialRemoteSongIds = initialSnapshot.documents.map { it.id }.filterNotNull()
-                    updateLocalDownloadedSongsFromRemote(initialRemoteSongIds)
-                    
-                    // Emit current state
-                    val currentDownloadedSongs = musicDao.getDownloadedSongs().first()
-                    emit(currentDownloadedSongs)
-                    
-                    // Keep the flow alive for real-time updates
-                    while (true) {
-                        delay(1000) // Check for updates every second
-                        val updatedDownloadedSongs = musicDao.getDownloadedSongs().first()
-                        emit(updatedDownloadedSongs)
-                    }
-                } finally {
-                    listener.remove()
-                }
-                
-            } catch (e: Exception) {
-                Log.e(TAG, "Error setting up downloaded songs real-time listener", e)
-                // Fallback to local downloaded songs only
-                emitAll(musicDao.getDownloadedSongs())
-            }
-        } else {
-            Log.d(TAG, "No user authenticated, using local downloaded songs only")
-        }
-    }.distinctUntilChanged()
-
-    override suspend fun markSongAsDownloaded(song: Song, localFilePath: String) {
-        val currentUser = firebaseAuth.currentUser
-        
-        // First check if song exists in database
-        val existingSong = musicDao.getSongById(song.id)
-        if (existingSong == null) {
-            // If song doesn't exist, insert it with downloaded flag
-            musicDao.insertSong(song.copy(isDownloaded = true, localFilePath = localFilePath))
-        } else {
-            // If song exists, update download status
-            musicDao.updateSongDownloadStatus(song.id, true, localFilePath)
-        }
-        
-        // Update SharedPreferences to keep all tracking systems in sync
-        try {
-            val preferenceManager = com.nova.music.util.PreferenceManager(context)
-            preferenceManager.addDownloadedSongId(song.id)
-            Log.d(TAG, "Updated SharedPreferences for downloaded song: ${song.title}")
-        } catch (e: Exception) {
-            Log.e(TAG, "Error updating SharedPreferences for downloaded song", e)
-        }
-        
-        // Sync to Firestore if authenticated
-        if (currentUser != null) {
-            try {
-                // Store song details in user-specific songs collection with correct downloaded status
-                val songWithDownloadedStatus = song.copy(isDownloaded = true)
-                firestore.collection("users").document(currentUser.uid)
-                    .collection("songs")
-                    .document(song.id)
-                    .set(songWithDownloadedStatus)
-                    .await()
-                
-                // Add to downloaded songs in Firestore
-                firestore.collection("users").document(currentUser.uid)
-                    .collection("downloaded_songs")
-                    .document(song.id)
-                    .set(mapOf(
-                        "songId" to song.id,
-                        "userId" to currentUser.uid,
-                        "localFilePath" to localFilePath,
-                        "downloadedAt" to System.currentTimeMillis()
-                    ))
-                    .await()
-                Log.d(TAG, "Added song to downloaded songs in Firestore: ${song.title}")
-            } catch (e: Exception) {
-                Log.e(TAG, "Error adding song to downloaded songs in Firestore", e)
-            }
-        }
-    }
-
-    override suspend fun markSongAsNotDownloaded(songId: String) {
-        val currentUser = firebaseAuth.currentUser
-        
-        // Update local database
-        musicDao.updateSongDownloadStatus(songId, false, null)
-        
-        // Update SharedPreferences to keep all tracking systems in sync
-        try {
-            val preferenceManager = com.nova.music.util.PreferenceManager(context)
-            preferenceManager.removeDownloadedSongId(songId)
-            Log.d(TAG, "Updated SharedPreferences for undownloaded song: $songId")
-        } catch (e: Exception) {
-            Log.e(TAG, "Error updating SharedPreferences for undownloaded song", e)
-        }
-        
-        // Remove from Firestore if authenticated
-        if (currentUser != null) {
-            try {
-                firestore.collection("users").document(currentUser.uid)
-                    .collection("downloaded_songs")
-                    .document(songId)
-                    .delete()
-                    .await()
-                Log.d(TAG, "Removed song from downloaded songs in Firestore: $songId")
-            } catch (e: Exception) {
-                Log.e(TAG, "Error removing song from downloaded songs in Firestore", e)
-            }
-        }
-    }
-
-    override suspend fun isDownloaded(songId: String): Boolean {
-        val song = musicDao.getSongById(songId)
-        return song?.isDownloaded == true
-    }
-
-    /**
-     * Helper method to update local liked songs based on remote Firebase data
-     */
-    private suspend fun updateLocalLikedSongsFromRemote(remoteSongIds: List<String>) {
-        try {
-            Log.d(TAG, "updateLocalLikedSongsFromRemote called with ${remoteSongIds.size} remote song IDs: $remoteSongIds")
-            
-            val currentLocalLikedSongs = musicDao.getLikedSongs().first()
-            val currentLocalLikedSongIds = currentLocalLikedSongs.map { it.id }.toSet()
-            val remoteSongIdsSet = remoteSongIds.toSet()
-            
-            Log.d(TAG, "Current local liked songs: $currentLocalLikedSongIds")
-            Log.d(TAG, "Remote song IDs set: $remoteSongIdsSet")
-            
-            // Songs to add (in remote but not in local)
-            val songsToAdd = remoteSongIdsSet - currentLocalLikedSongIds
-            // Songs to remove (in local but not in remote)
-            val songsToRemove = currentLocalLikedSongIds - remoteSongIdsSet
-            
-            Log.d(TAG, "Updating local liked songs - To add: $songsToAdd, To remove: $songsToRemove")
-            
-            // Add new liked songs
-            for (songId in songsToAdd) {
-                try {
-                    Log.d(TAG, "Processing song to add: $songId")
-                    val song = getSongFromFirebase(songId, firebaseAuth.currentUser)
-                    if (song != null) {
-                        musicDao.insertSong(song.copy(isLiked = true))
-                        Log.d(TAG, "Successfully added remote liked song to local database: $songId (${song.title})")
-                    } else {
-                        Log.w(TAG, "Song document exists but could not be converted to Song object or has empty ID: $songId")
-                    }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error getting song details for $songId", e)
-                }
-            }
-            
-            // Remove unliked songs
-            for (songId in songsToRemove) {
-                musicDao.updateSongLikedStatus(songId, false)
-                Log.d(TAG, "Removed liked status from local database: $songId")
-            }
-            
-            // Verify the final state
-            val finalLocalLikedSongs = musicDao.getLikedSongs().first()
-            val finalLocalLikedIds = finalLocalLikedSongs.map { it.id }.toSet()
-            
-            Log.d(TAG, "Final local liked songs count: ${finalLocalLikedSongs.size}")
-            Log.d(TAG, "Final local liked songs: ${finalLocalLikedSongs.map { "${it.id} (${it.title})" }}")
-            
-            // Double-check consistency
-            if (finalLocalLikedIds != remoteSongIdsSet) {
-                Log.w(TAG, "Inconsistency still detected after sync! Final local: $finalLocalLikedIds, Remote: $remoteSongIdsSet")
-                
-                // Force sync by clearing all liked songs and re-adding from remote
-                Log.d(TAG, "Force syncing by clearing all liked songs and re-adding from remote")
-                musicDao.clearAllLikedSongs()
-                
-                for (songId in remoteSongIds) {
-                    try {
-                        val song = getSongFromFirebase(songId, firebaseAuth.currentUser)
-                        if (song != null) {
-                            musicDao.insertSong(song.copy(isLiked = true))
-                            Log.d(TAG, "Force added liked song: $songId (${song.title})")
-                        }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error force adding liked song: $songId", e)
-                    }
-                }
-                
-                val finalCheck = musicDao.getLikedSongs().first()
-                Log.d(TAG, "Final check after force sync: ${finalCheck.size} songs")
-            } else {
-                Log.d(TAG, "Liked songs sync completed successfully - counts match!")
-            }
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "Error updating local liked songs from remote", e)
+            Log.e(TAG, "❌ Error syncing playlist songs from Firebase for playlist $playlistId", e)
         }
     }
 
     /**
-     * Helper method to get song details from user-specific Firebase collection
+     * Get song details from Firebase
      */
-    private suspend fun getSongFromFirebase(songId: String, currentUser: com.google.firebase.auth.FirebaseUser?): Song? {
-        if (currentUser == null) return null
-        
-        try {
-            // Get song from user-specific songs collection
-            val userSongDoc = firestore.collection("users").document(currentUser.uid)
+    private suspend fun getSongFromFirebase(songId: String, currentUser: com.google.firebase.auth.FirebaseUser): Song? {
+        return try {
+            val songDoc = firestore.collection("users").document(currentUser.uid)
                 .collection("songs")
                 .document(songId)
                 .get()
                 .await()
             
-            if (userSongDoc.exists()) {
-                val song = userSongDoc.toObject(Song::class.java)
-                if (song != null && song.id.isNotBlank()) {
-                    Log.d(TAG, "Found song in user-specific collection: $songId")
-                    return song
+            if (songDoc.exists()) {
+                val song = songDoc.toObject(Song::class.java)
+                song?.let {
+                    // Create a new song object with the correct ID
+                    val songWithId = it.copy(id = songId)
+                    Log.d(TAG, "✅ Retrieved song from Firebase: ${songWithId.title}")
+                    return songWithId
                 }
+                null
+            } else {
+                Log.w(TAG, "⚠️ Song document does not exist in Firebase: $songId")
+                null
             }
-            
-            Log.w(TAG, "Song not found in user collection: $songId")
-            return null
-            
         } catch (e: Exception) {
-            Log.e(TAG, "Error getting song from Firebase: $songId", e)
-            return null
-        }
-    }
-    
-    /**
-     * Clean up the global songs collection (use with caution!)
-     * This method will delete all documents in the global songs collection
-     * Only use this after ensuring all songs are properly migrated to user-specific collections
-     */
-    override suspend fun cleanupGlobalSongsCollection() {
-        try {
-            Log.d(TAG, "Starting cleanup of global songs collection")
-            
-            // Get all documents in the global songs collection
-            val globalSongsSnapshot = firestore.collection("songs").get().await()
-            val songIds = globalSongsSnapshot.documents.map { it.id }.filterNotNull()
-            
-            Log.d(TAG, "Found ${songIds.size} songs in global collection to delete")
-            
-            // Delete each document
-            for (songId in songIds) {
-                try {
-                    firestore.collection("songs").document(songId).delete().await()
-                    Log.d(TAG, "Deleted global song document: $songId")
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error deleting global song document: $songId", e)
-                }
-            }
-            
-            Log.d(TAG, "Global songs collection cleanup completed")
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "Error during global songs collection cleanup", e)
+            Log.e(TAG, "❌ Error getting song from Firebase: $songId", e)
+            null
         }
     }
 
     /**
-     * Helper method to update local downloaded songs based on remote Firebase data
-     */
-    private suspend fun updateLocalDownloadedSongsFromRemote(remoteSongIds: List<String>) {
-        try {
-            val currentUser = firebaseAuth.currentUser
-            val currentLocalDownloadedSongs = musicDao.getDownloadedSongs().first()
-            val currentLocalDownloadedSongIds = currentLocalDownloadedSongs.map { it.id }.toSet()
-            val remoteSongIdsSet = remoteSongIds.toSet()
-            
-            // Songs to add (in remote but not in local)
-            val songsToAdd = remoteSongIdsSet - currentLocalDownloadedSongIds
-            // Songs to remove (in local but not in remote)
-            val songsToRemove = currentLocalDownloadedSongIds - remoteSongIdsSet
-            
-            Log.d(TAG, "Updating local downloaded songs - To add: $songsToAdd, To remove: $songsToRemove")
-            
-            // Get PreferenceManager for syncing
-            val preferenceManager = com.nova.music.util.PreferenceManager(context)
-            
-            // Add new downloaded songs
-            for (songId in songsToAdd) {
-                try {
-                    val song = getSongFromFirebase(songId, currentUser)
-                    if (song != null) {
-                        musicDao.insertSong(song.copy(isDownloaded = true))
-                        // Also update SharedPreferences
-                        preferenceManager.addDownloadedSongId(songId)
-                        Log.d(TAG, "Successfully added remote downloaded song to local database and preferences: $songId (${song.title})")
-                    } else {
-                        Log.w(TAG, "Song document exists but could not be converted to Song object or has empty ID: $songId")
-                    }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error getting song details for $songId", e)
-                }
-            }
-            
-            // Remove undownloaded songs
-            for (songId in songsToRemove) {
-                musicDao.updateSongDownloadStatus(songId, false, null)
-                // Also update SharedPreferences
-                preferenceManager.removeDownloadedSongId(songId)
-                Log.d(TAG, "Removed downloaded status from local database and preferences: $songId")
-            }
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "Error updating local downloaded songs from remote", e)
-        }
-    }
-
-    /**
-     * Helper method to update local playlists based on remote Firebase data
+     * Update local playlists from Firebase snapshot
      */
     private suspend fun updateLocalPlaylistsFromRemote(snapshot: com.google.firebase.firestore.QuerySnapshot) {
         try {
-            val remotePlaylists: List<Playlist> = snapshot.documents.mapNotNull { doc ->
-                doc.toObject(Playlist::class.java)?.copy(id = doc.id)
+            Log.d(TAG, "🔄 Syncing playlists from Firebase snapshot")
+            
+            val currentUser = firebaseAuth.currentUser
+            if (currentUser == null) return
+            
+            val remotePlaylists = snapshot.documents.mapNotNull { doc ->
+                try {
+                    val id = doc.id
+                    val name = doc.getString("name") ?: return@mapNotNull null
+                    Playlist(id, name)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error parsing playlist document: ${doc.id}", e)
+                    null
+                }
             }
             
-            val currentLocalPlaylists = musicDao.getPlaylists().first()
-            val currentLocalPlaylistIds = currentLocalPlaylists.map { it.id }.toSet()
+            Log.d(TAG, "📋 Found ${remotePlaylists.size} remote playlists")
+            
+            // Get current local playlists
+            val localPlaylists = musicDao.getPlaylists().first()
+            val localPlaylistIds = localPlaylists.map { it.id }.toSet()
             val remotePlaylistIds = remotePlaylists.map { it.id }.toSet()
             
             // Playlists to add (in remote but not in local)
-            val playlistsToAdd = remotePlaylistIds - currentLocalPlaylistIds
+            val playlistsToAdd = remotePlaylists.filter { it.id !in localPlaylistIds }
             // Playlists to remove (in local but not in remote)
-            val playlistsToRemove = currentLocalPlaylistIds - remotePlaylistIds
+            val playlistsToRemove = localPlaylists.filter { it.id !in remotePlaylistIds }
             
-            Log.d(TAG, "Updating local playlists - To add: $playlistsToAdd, To remove: $playlistsToRemove")
+            Log.d(TAG, "🔄 Playlist sync - To add: ${playlistsToAdd.size}, To remove: ${playlistsToRemove.size}")
             
             // Add new playlists
-            for (playlistId in playlistsToAdd) {
-                val remotePlaylist = remotePlaylists.find { it.id == playlistId }
-                if (remotePlaylist != null) {
-                    musicDao.createPlaylist(remotePlaylist)
-                    Log.d(TAG, "Added remote playlist to local database: ${remotePlaylist.name}")
+            for (playlist in playlistsToAdd) {
+                musicDao.createPlaylist(playlist)
+                Log.d(TAG, "✅ Added playlist: ${playlist.name}")
+                
+                // Sync songs for this playlist (but don't trigger another sync)
+                try {
+                    syncPlaylistSongsFromFirebase(playlist.id, currentUser)
+                } catch (e: Exception) {
+                    Log.e(TAG, "❌ Error syncing songs for playlist ${playlist.name}", e)
                 }
             }
             
             // Remove deleted playlists
-            for (playlistId in playlistsToRemove) {
-                val localPlaylist = currentLocalPlaylists.find { it.id == playlistId }
-                if (localPlaylist != null) {
-                    musicDao.deletePlaylist(localPlaylist)
-                    Log.d(TAG, "Removed playlist from local database: ${localPlaylist.name}")
-                }
+            for (playlist in playlistsToRemove) {
+                musicDao.deletePlaylist(playlist)
+                Log.d(TAG, "✅ Removed playlist: ${playlist.name}")
             }
             
-            // Update existing playlists
+            // Update existing playlists (name changes, etc.)
             for (remotePlaylist in remotePlaylists) {
-                val localPlaylist = currentLocalPlaylists.find { it.id == remotePlaylist.id }
+                val localPlaylist = localPlaylists.find { it.id == remotePlaylist.id }
                 if (localPlaylist != null && localPlaylist.name != remotePlaylist.name) {
                     musicDao.renamePlaylist(remotePlaylist.id, remotePlaylist.name)
-                    Log.d(TAG, "Updated playlist name in local database: ${remotePlaylist.name}")
+                    Log.d(TAG, "✅ Updated playlist name: ${localPlaylist.name} -> ${remotePlaylist.name}")
                 }
             }
             
+            Log.d(TAG, "✅ Playlist sync completed")
+            
         } catch (e: Exception) {
-            Log.e(TAG, "Error updating local playlists from remote", e)
-        }
-    }
-
-    // Liked songs methods with Firebase sync and real-time listeners
-    override fun getLikedSongs(): Flow<List<Song>> = flow {
-        val currentUser = firebaseAuth.currentUser
-        
-        Log.d(TAG, "getLikedSongs called, current user: ${currentUser?.uid ?: "null"}")
-        
-        // Get local liked songs first
-        val localLikedSongs = musicDao.getLikedSongs().first()
-        Log.d(TAG, "Local liked songs count: ${localLikedSongs.size}")
-        emit(localLikedSongs)
-        
-        // Set up real-time listener if authenticated
-        if (currentUser != null) {
-            try {
-                Log.d(TAG, "Setting up real-time listener for liked songs")
-                
-                // Try new structure first (sub-collection)
-                try {
-                    val likedSongsCollection = firestore.collection("users").document(currentUser.uid)
-                        .collection("liked_songs")
-                    
-                    // Set up real-time listener
-                    val listener = likedSongsCollection.addSnapshotListener { snapshot, error ->
-                        if (error != null) {
-                            Log.e(TAG, "Error in liked songs listener", error)
-                            return@addSnapshotListener
-                        }
-                        
-                        if (snapshot != null) {
-                            val remoteSongIds: List<String> = snapshot.documents.map { it.id }.filterNotNull()
-                            Log.d(TAG, "Real-time update: Remote liked songs: $remoteSongIds")
-                            
-                            // Update local database based on remote changes
-                            CoroutineScope(Dispatchers.IO).launch {
-                                updateLocalLikedSongsFromRemote(remoteSongIds)
-                            }
-                        }
-                    }
-                    
-                    // Keep the listener active and emit updates
-                    try {
-                        // Initial sync
-                        val initialSnapshot = likedSongsCollection.get().await()
-                        val initialRemoteSongIds = initialSnapshot.documents.map { it.id }.filterNotNull()
-                        updateLocalLikedSongsFromRemote(initialRemoteSongIds)
-                        
-                        // Emit current state
-                        val currentLikedSongs = musicDao.getLikedSongs().first()
-                        emit(currentLikedSongs)
-                        
-                        // Keep the flow alive for real-time updates
-                        while (true) {
-                            delay(1000) // Check for updates every second
-                            val updatedLikedSongs = musicDao.getLikedSongs().first()
-                            emit(updatedLikedSongs)
-                        }
-                    } finally {
-                        listener.remove()
-                    }
-                    
-                } catch (e: Exception) {
-                    Log.d(TAG, "New structure failed, using legacy structure with real-time listener: ${e.message}")
-                    
-                    // Fallback to legacy structure with real-time listener
-                    val userDocRef = firestore.collection("users").document(currentUser.uid)
-                    
-                    val listener = userDocRef.addSnapshotListener { snapshot, error ->
-                        if (error != null) {
-                            Log.e(TAG, "Error in user document listener", error)
-                            return@addSnapshotListener
-                        }
-                        
-                        if (snapshot != null && snapshot.exists()) {
-                            val favoriteSongs = snapshot.get("favoriteSongs") as? List<Map<String, Any>> ?: emptyList()
-                            val remoteSongIds = favoriteSongs.mapNotNull { it["id"] as? String }
-                            Log.d(TAG, "Real-time update: Legacy favoriteSongs: $remoteSongIds")
-                            
-                            // Update local database based on remote changes
-                            CoroutineScope(Dispatchers.IO).launch {
-                                updateLocalLikedSongsFromRemote(remoteSongIds)
-                            }
-                        }
-                    }
-                    
-                    // Keep the listener active and emit updates
-                    try {
-                        // Initial sync
-                        val initialSnapshot = userDocRef.get().await()
-                        val favoriteSongs = initialSnapshot.get("favoriteSongs") as? List<Map<String, Any>> ?: emptyList()
-                        val initialRemoteSongIds = favoriteSongs.mapNotNull { it["id"] as? String }
-                        updateLocalLikedSongsFromRemote(initialRemoteSongIds)
-                        
-                        // Emit current state
-                        val currentLikedSongs = musicDao.getLikedSongs().first()
-                        emit(currentLikedSongs)
-                        
-                        // Keep the flow alive for real-time updates
-                        while (true) {
-                            delay(1000) // Check for updates every second
-                            val updatedLikedSongs = musicDao.getLikedSongs().first()
-                            emit(updatedLikedSongs)
-                        }
-                    } finally {
-                        listener.remove()
-                    }
-                }
-                
-            } catch (e: Exception) {
-                Log.e(TAG, "Error setting up real-time listener", e)
-                // Fallback to local liked songs only
-                emitAll(musicDao.getLikedSongs())
-            }
-        } else {
-            Log.d(TAG, "No user authenticated, using local liked songs only")
-        }
-    }.distinctUntilChanged()
-
-    override suspend fun addSongToLiked(song: Song) {
-        val currentUser = firebaseAuth.currentUser
-        
-        Log.d(TAG, "addSongToLiked called for song: ${song.title} (${song.id})")
-        Log.d(TAG, "Current user: ${currentUser?.uid ?: "null"}")
-        
-        // First check if song exists in database
-        val existingSong = musicDao.getSongById(song.id)
-        if (existingSong == null) {
-            // If song doesn't exist, insert it with liked status
-            musicDao.insertSong(song.copy(isLiked = true))
-            Log.d(TAG, "Inserted new song with liked status: ${song.title}")
-        } else {
-            // If song exists, update liked status
-            musicDao.updateSongLikedStatus(song.id, true)
-            Log.d(TAG, "Updated existing song liked status: ${song.title}")
-        }
-        
-        // Sync to Firestore if authenticated
-        if (currentUser != null) {
-            try {
-                Log.d(TAG, "Starting Firebase sync for song: ${song.title}")
-                
-                // Store song details in user-specific songs collection with correct liked status
-                val songWithLikedStatus = song.copy(isLiked = true)
-                firestore.collection("users").document(currentUser.uid)
-                    .collection("songs")
-                    .document(song.id)
-                    .set(songWithLikedStatus)
-                    .await()
-                Log.d(TAG, "Stored song details in user-specific songs collection with liked=true: ${song.title}")
-                
-                // Try to add to new structure first (sub-collection)
-                try {
-                    firestore.collection("users").document(currentUser.uid)
-                        .collection("liked_songs")
-                        .document(song.id)
-                        .set(mapOf(
-                            "songId" to song.id,
-                            "userId" to currentUser.uid,
-                            "addedAt" to System.currentTimeMillis()
-                        ))
-                        .await()
-                    Log.d(TAG, "Added song to liked songs in Firestore (new structure): ${song.title}")
-                } catch (e: Exception) {
-                    Log.d(TAG, "New structure failed, using legacy structure: ${e.message}")
-                    
-                    // Fallback to legacy structure (array field)
-                    val userDoc = firestore.collection("users").document(currentUser.uid).get().await()
-                    val currentFavoriteSongs = userDoc.get("favoriteSongs") as? List<Map<String, Any>> ?: emptyList()
-                    
-                    Log.d(TAG, "Current favoriteSongs in Firestore: $currentFavoriteSongs")
-                    
-                    // Check if song is already in favorites
-                    val songAlreadyExists = currentFavoriteSongs.any { it["id"] == song.id }
-                    
-                    if (!songAlreadyExists) {
-                        val newFavoriteSong = mapOf("id" to song.id)
-                        val updatedFavoriteSongs = currentFavoriteSongs + newFavoriteSong
-                        
-                        Log.d(TAG, "Updating favoriteSongs array with: $updatedFavoriteSongs")
-                        
-                        firestore.collection("users").document(currentUser.uid)
-                            .update("favoriteSongs", updatedFavoriteSongs)
-                            .await()
-                        Log.d(TAG, "Added song to favoriteSongs array in Firestore: ${song.title}")
-                    } else {
-                        Log.d(TAG, "Song already exists in favoriteSongs array: ${song.title}")
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error adding song to liked songs in Firestore", e)
-            }
-        } else {
-            Log.d(TAG, "No user authenticated, skipping Firebase sync")
-        }
-    }
-
-    override suspend fun removeSongFromLiked(songId: String) {
-        val currentUser = firebaseAuth.currentUser
-        
-        Log.d(TAG, "removeSongFromLiked called for songId: $songId")
-        Log.d(TAG, "Current user: ${currentUser?.uid ?: "null"}")
-        
-        // Update local database
-        musicDao.updateSongLikedStatus(songId, false)
-        Log.d(TAG, "Updated local database for songId: $songId")
-        
-        // Remove from Firestore if authenticated
-        if (currentUser != null) {
-            try {
-                Log.d(TAG, "Starting Firebase sync for removing song: $songId")
-                
-                // Update song's liked status to false in user-specific songs collection
-                val song = musicDao.getSongById(songId)
-                if (song != null) {
-                    val songWithUnlikedStatus = song.copy(isLiked = false)
-                    firestore.collection("users").document(currentUser.uid)
-                        .collection("songs")
-                        .document(songId)
-                        .set(songWithUnlikedStatus)
-                        .await()
-                    Log.d(TAG, "Updated song liked status to false in user-specific songs collection: $songId")
-                }
-                
-                // Try to remove from new structure first (sub-collection)
-                try {
-                    firestore.collection("users").document(currentUser.uid)
-                        .collection("liked_songs")
-                        .document(songId)
-                        .delete()
-                        .await()
-                    Log.d(TAG, "Removed song from liked songs in Firestore (new structure): $songId")
-                } catch (e: Exception) {
-                    Log.d(TAG, "New structure failed, using legacy structure: ${e.message}")
-                    
-                    // Fallback to legacy structure (array field)
-                    val userDoc = firestore.collection("users").document(currentUser.uid).get().await()
-                    val currentFavoriteSongs = userDoc.get("favoriteSongs") as? List<Map<String, Any>> ?: emptyList()
-                    
-                    Log.d(TAG, "Current favoriteSongs in Firestore: $currentFavoriteSongs")
-                    
-                    // Remove the song from favorites
-                    val updatedFavoriteSongs = currentFavoriteSongs.filter { it["id"] != songId }
-                    
-                    Log.d(TAG, "Updating favoriteSongs array with: $updatedFavoriteSongs")
-                    
-                    firestore.collection("users").document(currentUser.uid)
-                        .update("favoriteSongs", updatedFavoriteSongs)
-                        .await()
-                    Log.d(TAG, "Removed song from favoriteSongs array in Firestore: $songId")
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error removing song from liked songs in Firestore", e)
-            }
-        } else {
-            Log.d(TAG, "No user authenticated, skipping Firebase sync")
+            Log.e(TAG, "❌ Error syncing playlists from Firebase", e)
         }
     }
 
     /**
-     * Sync all user data with Firebase when user logs in or app starts
+     * Force refresh downloaded songs from Firebase
      */
-    override suspend fun syncUserDataWithFirebase() {
-        val currentUser = firebaseAuth.currentUser
-        if (currentUser == null) {
-            Log.d(TAG, "No user logged in, skipping Firebase sync")
-            return
-        }
+    suspend fun forceRefreshDownloadedSongs() {
+        Log.d(TAG, "🔄 Force refreshing downloaded songs from local database")
+        // No Firebase sync needed - downloads are device-specific
+        val localDownloadedSongs = musicDao.getDownloadedSongs().first()
+        Log.d(TAG, "✅ Local downloaded songs: ${localDownloadedSongs.size} songs")
+        Log.d(TAG, "✅ Downloaded songs: ${localDownloadedSongs.map { it.title }}")
+        
+        // Also verify persistence
+        verifyDownloadedSongsPersistence()
+    }
 
+    /**
+     * Sync downloaded songs on app startup
+     */
+    suspend fun syncDownloadedSongsOnStartup() {
+        Log.d(TAG, "🔄 Syncing downloaded songs on app startup from local database")
+        
         try {
-            Log.d(TAG, "Starting Firebase sync for user: ${currentUser.uid}")
+            // First, verify and restore any lost downloaded songs
+            verifyAndRestoreDownloadedSongs()
             
-            // Sync liked songs
-            val localLikedSongs = musicDao.getLikedSongs().first()
+            // Then scan download integrity
+            scanDownloadIntegrity()
             
-            // Try to sync to new structure first (sub-collection)
-            try {
-                for (song in localLikedSongs) {
-                    try {
-                        // Store song details in user-specific songs collection with correct liked status
-                        val songWithLikedStatus = song.copy(isLiked = true)
-                        firestore.collection("users").document(currentUser.uid)
-                            .collection("songs")
-                            .document(song.id)
-                            .set(songWithLikedStatus)
-                            .await()
-                        
-                        // Add to liked songs in Firestore
-                        firestore.collection("users").document(currentUser.uid)
-                            .collection("liked_songs")
-                            .document(song.id)
-                            .set(mapOf(
-                                "songId" to song.id,
-                                "userId" to currentUser.uid,
-                                "addedAt" to System.currentTimeMillis()
-                            ))
-                            .await()
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error syncing liked song to Firestore: ${song.id}", e)
-                    }
-                }
-            } catch (e: Exception) {
-                Log.d(TAG, "New structure failed, using legacy structure for liked songs")
-                
-                // Fallback to legacy structure (array field)
-                val favoriteSongs = localLikedSongs.map { mapOf("id" to it.id) }
-                firestore.collection("users").document(currentUser.uid)
-                    .update("favoriteSongs", favoriteSongs)
-                    .await()
-                Log.d(TAG, "Synced ${favoriteSongs.size} liked songs to legacy structure")
-            }
-            
-            // Sync downloaded songs
+            // Then get the final state
             val localDownloadedSongs = musicDao.getDownloadedSongs().first()
-                            for (song in localDownloadedSongs) {
-                    try {
-                        // Store song details in user-specific songs collection with correct downloaded status
-                        val songWithDownloadedStatus = song.copy(isDownloaded = true)
-                        firestore.collection("users").document(currentUser.uid)
-                            .collection("songs")
-                            .document(song.id)
-                            .set(songWithDownloadedStatus)
-                            .await()
-                    
-                    // Add to downloaded songs in Firestore
-                    firestore.collection("users").document(currentUser.uid)
-                        .collection("downloaded_songs")
-                        .document(song.id)
-                        .set(mapOf(
-                            "songId" to song.id,
-                            "userId" to currentUser.uid,
-                            "localFilePath" to song.localFilePath,
-                            "downloadedAt" to System.currentTimeMillis()
-                        ))
-                        .await()
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error syncing downloaded song to Firestore: ${song.id}", e)
+            Log.d(TAG, "✅ Local downloaded songs on startup: ${localDownloadedSongs.size} songs")
+            Log.d(TAG, "✅ Downloaded songs: ${localDownloadedSongs.map { it.title }}")
+            
+            // Additional verification: ensure all downloaded songs have valid file paths
+            for (song in localDownloadedSongs) {
+                if (song.localFilePath.isNullOrEmpty()) {
+                    Log.w(TAG, "⚠️ Downloaded song has no file path: ${song.title}")
+                } else {
+                    Log.d(TAG, "✅ Downloaded song verified: ${song.title} -> ${song.localFilePath}")
                 }
             }
-            
-            // Sync playlists
-            val localPlaylists = musicDao.getPlaylists().first()
-            
-            // Try to sync to new structure first (sub-collection)
-            try {
-                for (playlist in localPlaylists) {
-                    try {
-                        // Store playlist in Firestore
-                        firestore.collection("users").document(currentUser.uid)
-                            .collection("playlists")
-                            .document(playlist.id)
-                            .set(playlist)
-                            .await()
-                        
-                        // Sync playlist songs
-                        val playlistSongs = musicDao.getPlaylistSongsV2(playlist.id).first()
-                        for (song in playlistSongs) {
-                            try {
-                                // Store song details in user-specific songs collection
-                                firestore.collection("users").document(currentUser.uid)
-                                    .collection("songs")
-                                    .document(song.id)
-                                    .set(song)
-                                    .await()
-                                
-                                // Add song to playlist in Firestore
-                                firestore.collection("users").document(currentUser.uid)
-                                    .collection("playlists")
-                                    .document(playlist.id)
-                                    .collection("songs")
-                                    .document(song.id)
-                                    .set(mapOf(
-                                        "songId" to song.id,
-                                        "addedAt" to System.currentTimeMillis()
-                                    ))
-                                    .await()
-                            } catch (e: Exception) {
-                                Log.e(TAG, "Error syncing playlist song to Firestore: ${song.id} in playlist ${playlist.id}", e)
-                            }
-                        }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error syncing playlist to Firestore: ${playlist.id}", e)
-                    }
-                }
-            } catch (e: Exception) {
-                Log.d(TAG, "New structure failed, using legacy structure for playlists")
-                
-                // Fallback to legacy structure (field)
-                // For now, just store playlist names as a simple structure
-                val playlistsData = localPlaylists.map { playlist ->
-                    mapOf(
-                        "id" to playlist.id,
-                        "name" to playlist.name,
-                        "songCount" to musicDao.getPlaylistSongCountV2(playlist.id).first()
-                    )
-                }
-                firestore.collection("users").document(currentUser.uid)
-                    .update("playlists", playlistsData)
-                    .await()
-                Log.d(TAG, "Synced ${playlistsData.size} playlists to legacy structure")
-            }
-            
-            Log.d(TAG, "Firebase sync completed successfully")
             
         } catch (e: Exception) {
-            Log.e(TAG, "Error during Firebase sync", e)
-        }
-    }
-
-    /**
-     * Refresh Firebase listeners when user switches accounts
-     * This forces the listeners to re-initialize with the new user's data
-     */
-    override suspend fun refreshFirebaseListeners() {
-        val currentUser = firebaseAuth.currentUser
-        Log.d(TAG, "Refreshing Firebase listeners for user: ${currentUser?.uid ?: "null"}")
-        
-        if (currentUser == null) {
-            Log.d(TAG, "No user logged in, clearing local data")
-            // Clear local data when no user is logged in
-            musicDao.clearAllLikedSongs()
-            musicDao.clearAllDownloadedSongs()
-            musicDao.clearAllPlaylists()
-            return
-        }
-        
-        try {
-            // Force refresh by clearing local data and re-syncing from Firebase
-            Log.d(TAG, "Clearing local data to force refresh from Firebase")
-            
-            // Clear local data
-            musicDao.clearAllLikedSongs()
-            musicDao.clearAllDownloadedSongs()
-            musicDao.clearAllPlaylists()
-            musicDao.clearAllPlaylistSongs()
-            
-            // Also clear SharedPreferences to keep everything in sync
-            try {
-                val preferenceManager = com.nova.music.util.PreferenceManager(context)
-                val downloadedIds = preferenceManager.getDownloadedSongIds()
-                downloadedIds.forEach { songId ->
-                    preferenceManager.removeDownloadedSongId(songId)
-                }
-                Log.d(TAG, "Cleared SharedPreferences for downloaded songs: ${downloadedIds.size} songs")
-            } catch (e: Exception) {
-                Log.e(TAG, "Error clearing SharedPreferences", e)
-            }
-            
-            // Small delay to ensure clearing is complete
-            delay(100)
-            
-            // Sync FROM Firebase TO local data
-            Log.d(TAG, "Syncing data FROM Firebase for new user")
-            syncFromFirebase()
-            
-            Log.d(TAG, "Firebase listeners refreshed successfully")
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "Error refreshing Firebase listeners", e)
+            Log.e(TAG, "❌ Error syncing downloaded songs on startup", e)
         }
     }
     
     /**
-     * Sync data FROM Firebase TO local database
+     * Restore downloaded songs if they get lost
      */
-    override suspend fun syncFromFirebase() {
-        val currentUser = firebaseAuth.currentUser
-        if (currentUser == null) {
-            Log.d(TAG, "No user logged in, skipping Firebase sync")
-            return
-        }
-
+    suspend fun restoreDownloadedSongs() {
         try {
-            Log.d(TAG, "Starting sync FROM Firebase for user: ${currentUser.uid}")
+            Log.d(TAG, "🔄 Restoring downloaded songs...")
             
-            // Sync liked songs FROM Firebase
-            try {
-                Log.d(TAG, "Starting liked songs sync FROM Firebase")
-                
-                // Try new structure first (sub-collection)
-                val likedSongsCollection = firestore.collection("users").document(currentUser.uid)
-                    .collection("liked_songs")
-                
-                Log.d(TAG, "Fetching from collection: users/${currentUser.uid}/liked_songs")
-                val likedSongsSnapshot = likedSongsCollection.get().await()
-                val likedSongIds = likedSongsSnapshot.documents.map { it.id }.filterNotNull()
-                
-                Log.d(TAG, "Found ${likedSongIds.size} liked songs in Firebase: $likedSongIds")
-                
-                // Update local database with liked songs from Firebase
-                updateLocalLikedSongsFromRemote(likedSongIds)
-                
-                // Also verify consistency with database
-                try {
-                    val localLikedSongs = musicDao.getLikedSongs().first()
-                    val localLikedIds = localLikedSongs.map { it.id }.toSet()
-                    val remoteLikedIds = likedSongIds.toSet()
-                    
-                    Log.d(TAG, "Liked songs consistency check - Local: ${localLikedIds.size}, Remote: ${remoteLikedIds.size}")
-                    Log.d(TAG, "Local liked songs: $localLikedIds")
-                    Log.d(TAG, "Remote liked songs: $remoteLikedIds")
-                    
-                    if (localLikedIds != remoteLikedIds) {
-                        Log.w(TAG, "Liked songs inconsistency detected! Syncing to match Firebase...")
-                        // Force sync local database to match Firebase
-                        updateLocalLikedSongsFromRemote(likedSongIds)
-                    }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error verifying liked songs consistency", e)
-                }
-                
-            } catch (e: Exception) {
-                Log.d(TAG, "New structure failed, trying legacy structure for liked songs: ${e.message}")
-                
-                // Fallback to legacy structure (array field)
-                val userDoc = firestore.collection("users").document(currentUser.uid).get().await()
-                val favoriteSongs = userDoc.get("favoriteSongs") as? List<Map<String, Any>> ?: emptyList()
-                val likedSongIds = favoriteSongs.mapNotNull { it["id"] as? String }
-                
-                Log.d(TAG, "Found ${likedSongIds.size} liked songs in Firebase (legacy)")
-                
-                // Update local database with liked songs from Firebase
-                updateLocalLikedSongsFromRemote(likedSongIds)
-                
-                // Also verify consistency with database
-                try {
-                    val localLikedSongs = musicDao.getLikedSongs().first()
-                    val localLikedIds = localLikedSongs.map { it.id }.toSet()
-                    val remoteLikedIds = likedSongIds.toSet()
-                    
-                    Log.d(TAG, "Liked songs consistency check (legacy) - Local: ${localLikedIds.size}, Remote: ${remoteLikedIds.size}")
-                    
-                    if (localLikedIds != remoteLikedIds) {
-                        Log.w(TAG, "Liked songs inconsistency detected (legacy)! Syncing to match Firebase...")
-                        // Force sync local database to match Firebase
-                        updateLocalLikedSongsFromRemote(likedSongIds)
-                    }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error verifying liked songs consistency (legacy)", e)
+            // Get all songs in the database
+            val allSongs = musicDao.getAllSongs().first()
+            Log.d(TAG, "📋 Found ${allSongs.size} total songs in database")
+            
+            // Check for songs that should be downloaded but aren't marked as such
+            var restoredCount = 0
+            for (song in allSongs) {
+                if (song.localFilePath != null && !song.isDownloaded) {
+                    Log.d(TAG, "🔄 Restoring download status for: ${song.title}")
+                    musicDao.updateSongDownloadStatus(song.id, true, song.localFilePath)
+                    restoredCount++
                 }
             }
             
-            // Sync downloaded songs FROM Firebase
-            try {
-                val downloadedSongsCollection = firestore.collection("users").document(currentUser.uid)
-                    .collection("downloaded_songs")
-                
-                val downloadedSongsSnapshot = downloadedSongsCollection.get().await()
-                val downloadedSongIds = downloadedSongsSnapshot.documents.map { it.id }.filterNotNull()
-                
-                Log.d(TAG, "Found ${downloadedSongIds.size} downloaded songs in Firebase")
-                
-                // Update local database with downloaded songs from Firebase
-                updateLocalDownloadedSongsFromRemote(downloadedSongIds)
-                
-                // Also sync SharedPreferences with database to ensure consistency
-                try {
-                    val preferenceManager = com.nova.music.util.PreferenceManager(context)
-                    val localDownloadedSongs = musicDao.getDownloadedSongs().first()
-                    val localDownloadedIds = localDownloadedSongs.map { it.id }.toSet()
-                    
-                    // Clear and rebuild SharedPreferences to match database
-                    localDownloadedIds.forEach { songId ->
-                        preferenceManager.addDownloadedSongId(songId)
-                    }
-                    
-                    Log.d(TAG, "Synced SharedPreferences with database: ${localDownloadedIds.size} downloaded songs")
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error syncing SharedPreferences with database", e)
-                }
-                
-            } catch (e: Exception) {
-                Log.d(TAG, "Error syncing downloaded songs from Firebase: ${e.message}")
+            if (restoredCount > 0) {
+                Log.d(TAG, "✅ Restored download status for $restoredCount songs")
+            } else {
+                Log.d(TAG, "✅ No songs needed restoration")
             }
             
-            // Sync playlists FROM Firebase
-            try {
-                val playlistsCollection = firestore.collection("users").document(currentUser.uid)
-                    .collection("playlists")
-                
-                val playlistsSnapshot = playlistsCollection.get().await()
-                val remotePlaylists: List<Playlist> = playlistsSnapshot.documents.mapNotNull { doc ->
-                    doc.toObject(Playlist::class.java)?.copy(id = doc.id)
-                }
-                
-                Log.d(TAG, "Found ${remotePlaylists.size} playlists in Firebase")
-                
-                // Update local database with playlists from Firebase
-                updateLocalPlaylistsFromRemote(playlistsSnapshot)
-                
-                // Also sync playlist songs to ensure both V1 and V2 systems are updated
-                for (playlist in remotePlaylists) {
-                    try {
-                        val playlistSongsCollection = firestore.collection("users").document(currentUser.uid)
-                            .collection("playlists")
-                            .document(playlist.id)
-                            .collection("songs")
-                        
-                        val playlistSongsSnapshot = playlistSongsCollection.get().await()
-                        val remoteSongIds = playlistSongsSnapshot.documents.map { it.id }.filterNotNull()
-                        
-                        Log.d(TAG, "Found ${remoteSongIds.size} songs in playlist ${playlist.name}")
-                        
-                        // Sync playlist songs to both V1 and V2 systems
-                        syncPlaylistSongsFromFirebase(playlist.id, remoteSongIds)
-                        
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error syncing playlist songs from Firebase for playlist ${playlist.id}", e)
-                    }
-                }
-                
-            } catch (e: Exception) {
-                Log.d(TAG, "Error syncing playlists from Firebase: ${e.message}")
-            }
-            
-            Log.d(TAG, "Sync FROM Firebase completed successfully")
+            // Final verification
+            val finalDownloadedSongs = musicDao.getDownloadedSongs().first()
+            Log.d(TAG, "✅ Final state: ${finalDownloadedSongs.size} downloaded songs")
             
         } catch (e: Exception) {
-            Log.e(TAG, "Error during sync FROM Firebase", e)
+            Log.e(TAG, "❌ Error restoring downloaded songs", e)
         }
+    }
+    
+    /**
+     * Verify that downloaded songs are properly persisted and not lost
+     */
+    private suspend fun verifyDownloadedSongsPersistence() {
+        try {
+            Log.d(TAG, "🔍 Verifying downloaded songs persistence...")
+            
+            // Get all songs that should be downloaded
+            val downloadedSongs = musicDao.getDownloadedSongs().first()
+            Log.d(TAG, "📋 Found ${downloadedSongs.size} downloaded songs in database")
+            
+            // Check each downloaded song for proper persistence
+            for (song in downloadedSongs) {
+                val songFromDb = musicDao.getSongById(song.id)
+                if (songFromDb == null) {
+                    Log.e(TAG, "❌ CRITICAL: Downloaded song not found in database: ${song.title}")
+                } else if (!songFromDb.isDownloaded) {
+                    Log.e(TAG, "❌ CRITICAL: Song marked as downloaded but isDownloaded = false: ${song.title}")
+                    // Restore the download status
+                    musicDao.updateSongDownloadStatus(song.id, true, song.localFilePath)
+                    Log.d(TAG, "✅ Restored download status for: ${song.title}")
+                } else {
+                    Log.d(TAG, "✅ Downloaded song properly persisted: ${song.title}")
+                }
+            }
+            
+            // Final verification
+            val finalDownloadedSongs = musicDao.getDownloadedSongs().first()
+            Log.d(TAG, "✅ Final verification: ${finalDownloadedSongs.size} downloaded songs properly persisted")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error verifying downloaded songs persistence", e)
+        }
+    }
+
+    /**
+     * Sync liked songs from Firebase to the local database
+     */
+    private suspend fun syncLikedSongsFromFirebase(userId: String) {
+        try {
+            Log.d(TAG, "🔄 Syncing liked songs from Firebase for user $userId")
+            
+            val songsCollection = firestore.collection("users").document(userId).collection("songs")
+            val remoteSongsSnapshot = songsCollection.get().await()
+            val remoteSongIds: List<String> = remoteSongsSnapshot.documents.map { it.id }.filterNotNull()
+            
+            Log.d(TAG, "📋 Found ${remoteSongIds.size} remote liked songs for user $userId")
+            
+            // Get current local liked songs
+            val localLikedSongs = musicDao.getLikedSongs().first()
+            val localLikedSongIds = localLikedSongs.map { it.id }.toSet()
+            val remoteLikedSongIdsSet = remoteSongIds.toSet()
+            
+            // Songs to add (in remote but not in local)
+            val songsToAdd = remoteLikedSongIdsSet - localLikedSongIds
+            // Songs to remove (in local but not in remote)
+            val songsToRemove = localLikedSongIds - remoteLikedSongIdsSet
+            
+            Log.d(TAG, "🔄 Liked songs sync - To add: $songsToAdd, To remove: $songsToRemove")
+            
+            // Add new liked songs to the local database
+            for (songId in songsToAdd) {
+                try {
+                    val song = getSongFromFirebase(songId, firebaseAuth.currentUser!!)
+                    if (song != null) {
+                        musicDao.insertSong(song.copy(isLiked = true))
+                        Log.d(TAG, "✅ Inserted liked song from Firebase: ${song.title}")
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error adding liked song $songId to local database", e)
+                }
+            }
+            
+            // Remove deleted liked songs from the local database
+            for (songId in songsToRemove) {
+                try {
+                    musicDao.updateSongLikedStatus(songId, false)
+                    Log.d(TAG, "✅ Removed liked song $songId from local database")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error removing liked song $songId from local database", e)
+                }
+            }
+            
+            Log.d(TAG, "✅ Liked songs sync completed for user $userId")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error syncing liked songs from Firebase for user $userId", e)
+        }
+    }
+
+    /**
+     * Sync liked songs on app startup
+     */
+    suspend fun syncLikedSongsOnStartup() {
+        val currentUser = firebaseAuth.currentUser
+        if (currentUser != null) {
+            Log.d(TAG, "🔄 Syncing liked songs on app startup")
+            try {
+                syncLikedSongsFromFirebase(currentUser.uid)
+                Log.d(TAG, "✅ Liked songs synced on startup")
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Error syncing liked songs on startup", e)
+            }
+        } else {
+            Log.d(TAG, "ℹ️ No user authenticated, skipping liked songs startup sync")
+        }
+    }
+
+    /**
+     * Sync playlists on app startup
+     */
+    suspend fun syncPlaylistsOnStartup() {
+        val currentUser = firebaseAuth.currentUser
+        if (currentUser != null) {
+            Log.d(TAG, "🔄 Syncing playlists on app startup")
+            try {
+                // Sync playlists from Firebase
+                val playlistsCollection = firestore.collection("users")
+                    .document(currentUser.uid)
+                    .collection("playlists")
+                
+                val remotePlaylistsSnapshot = playlistsCollection.get().await()
+                updateLocalPlaylistsFromRemote(remotePlaylistsSnapshot)
+                
+                // Sync songs for each playlist
+                val localPlaylists = musicDao.getPlaylists().first()
+                for (playlist in localPlaylists) {
+                    syncPlaylistSongsFromFirebase(playlist.id, currentUser)
+                }
+                
+                // Verify playlist integrity
+                verifyPlaylistIntegrity()
+                
+                Log.d(TAG, "✅ Playlists synced on startup: ${localPlaylists.size} playlists")
+                
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Error syncing playlists on startup", e)
+            }
+        } else {
+            Log.d(TAG, "ℹ️ No user authenticated, skipping playlists startup sync")
+        }
+    }
+    
+    /**
+     * Verify playlist integrity and restore any lost playlist songs
+     */
+    private suspend fun verifyPlaylistIntegrity() {
+        try {
+            Log.d(TAG, "🔍 Verifying playlist integrity...")
+            
+            val allPlaylists = musicDao.getPlaylists().first()
+            Log.d(TAG, "📋 Found ${allPlaylists.size} playlists to verify")
+            
+            for (playlist in allPlaylists) {
+                val playlistSongs = musicDao.getPlaylistSongs(playlist.id).first()
+                Log.d(TAG, "🎵 Playlist '${playlist.name}' (${playlist.id}) has ${playlistSongs.size} songs")
+                
+                // Check for any songs that should be in the playlist but aren't
+                for (song in playlistSongs) {
+                    val isInPlaylist = musicDao.isSongInPlaylist(song.id, playlist.id)
+                    if (!isInPlaylist) {
+                        Log.w(TAG, "⚠️ Song ${song.title} should be in playlist ${playlist.name} but isn't")
+                        // Restore the relationship
+                        musicDao.insertSongPlaylistCrossRef(
+                            SongPlaylistCrossRef(
+                                songId = song.id,
+                                playlistId = playlist.id
+                            )
+                        )
+                        Log.d(TAG, "✅ Restored song ${song.title} to playlist ${playlist.name}")
+                    }
+                }
+            }
+            
+            Log.d(TAG, "✅ Playlist integrity verification completed")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error verifying playlist integrity", e)
+        }
+    }
+
+    /**
+     * Verify and restore downloaded songs if they get lost
+     */
+    private suspend fun verifyAndRestoreDownloadedSongs() {
+        try {
+            Log.d(TAG, "🔍 Verifying and restoring downloaded songs...")
+            
+            // Get all songs in the database
+            val allSongs = musicDao.getAllSongs().first()
+            Log.d(TAG, "📋 Found ${allSongs.size} total songs in database")
+            
+            // Get DataStore download IDs
+            val dataStoreDownloads = getDownloadedIdsFromDataStore().first()
+            Log.d(TAG, "📋 Found ${dataStoreDownloads.size} downloads in DataStore")
+            
+            // Check for songs that should be downloaded but aren't marked as such
+            var restoredCount = 0
+            for (song in allSongs) {
+                if (song.localFilePath != null && !song.isDownloaded) {
+                    Log.d(TAG, "🔄 Restoring download status for: ${song.title}")
+                    musicDao.updateSongDownloadStatus(song.id, true, song.localFilePath)
+                    addToDownloadsDataStore(song.id, song.localFilePath)
+                    restoredCount++
+                }
+            }
+            
+            // Also check SharedPreferences for any missing download states
+            val sharedPreferences = context.getSharedPreferences("download_states", Context.MODE_PRIVATE)
+            val allKeys = sharedPreferences.all.keys.filter { !it.endsWith("_path") }
+            
+            for (songId in allKeys) {
+                val (isDownloaded, localFilePath) = loadDownloadStateFromPreferences(songId)
+                if (isDownloaded) {
+        val song = musicDao.getSongById(songId)
+                    if (song != null && !song.isDownloaded) {
+                        Log.d(TAG, "🔄 Restoring download status from SharedPreferences for: ${song.title}")
+                        musicDao.updateSongDownloadStatus(songId, true, localFilePath)
+                        addToDownloadsDataStore(songId, localFilePath ?: "")
+                        restoredCount++
+                    }
+                }
+            }
+            
+            // Check DataStore downloads that aren't in database
+            for (songId in dataStoreDownloads) {
+                val song = musicDao.getSongById(songId)
+                if (song == null) {
+                    Log.w(TAG, "⚠️ Song in DataStore but not in database: $songId")
+                    removeFromDownloadsDataStore(songId)
+                } else if (!song.isDownloaded) {
+                    Log.d(TAG, "🔄 Restoring download status from DataStore for: ${song.title}")
+                    // Try to get file path from DataStore
+                    val paths = dataStore.data.first()[downloadPathsKey] ?: ""
+                    val pathEntry = paths.split(",").find { it.startsWith("$songId:") }
+                    val filePath = pathEntry?.substringAfter(":") ?: song.localFilePath
+                    
+                    musicDao.updateSongDownloadStatus(songId, true, filePath)
+                    restoredCount++
+                }
+            }
+            
+            if (restoredCount > 0) {
+                Log.d(TAG, "✅ Restored download status for $restoredCount songs")
+            } else {
+                Log.d(TAG, "✅ No songs needed restoration")
+            }
+            
+            // Also check for songs marked as downloaded but have no local file path
+            var cleanedCount = 0
+            for (song in allSongs) {
+                if (song.isDownloaded && song.localFilePath == null) {
+                    Log.d(TAG, "🔄 Cleaning invalid download status for: ${song.title}")
+                    musicDao.updateSongDownloadStatus(song.id, false, null)
+                    removeFromDownloadsDataStore(song.id)
+                    saveDownloadStateToPreferences(song.id, false, null)
+                    cleanedCount++
+                }
+            }
+            
+            if (cleanedCount > 0) {
+                Log.d(TAG, "✅ Cleaned invalid download status for $cleanedCount songs")
+            }
+            
+            // Final verification
+            val finalDownloadedSongs = musicDao.getDownloadedSongs().first()
+            val finalDataStoreDownloads = getDownloadedIdsFromDataStore().first()
+            Log.d(TAG, "✅ Final state: ${finalDownloadedSongs.size} downloaded songs in DB, ${finalDataStoreDownloads.size} in DataStore")
+            Log.d(TAG, "✅ Downloaded songs: ${finalDownloadedSongs.map { it.title }}")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error verifying and restoring downloaded songs", e)
+        }
+    }
+
+    /**
+     * Save download state to SharedPreferences
+     */
+    private suspend fun saveDownloadStateToPreferences(songId: String, isDownloaded: Boolean, localFilePath: String?) {
+        val sharedPreferences = context.getSharedPreferences("download_states", Context.MODE_PRIVATE)
+        val editor = sharedPreferences.edit()
+        editor.putBoolean(songId, isDownloaded)
+        localFilePath?.let { editor.putString(songId + "_path", it) }
+        editor.apply()
+        Log.d(TAG, "Saved download state for $songId to SharedPreferences: isDownloaded=$isDownloaded, path=$localFilePath")
+    }
+
+    /**
+     * Load download state from SharedPreferences
+     */
+    private suspend fun loadDownloadStateFromPreferences(songId: String): Pair<Boolean, String?> {
+        val sharedPreferences = context.getSharedPreferences("download_states", Context.MODE_PRIVATE)
+        val isDownloaded = sharedPreferences.getBoolean(songId, false)
+        val localFilePath = sharedPreferences.getString(songId + "_path", null)
+        Log.d(TAG, "Loaded download state for $songId from SharedPreferences: isDownloaded=$isDownloaded, path=$localFilePath")
+        return Pair(isDownloaded, localFilePath)
+    }
+    
+    /**
+     * Add song to downloads in DataStore for quick lookups
+     */
+    private suspend fun addToDownloadsDataStore(songId: String, localFilePath: String) {
+        dataStore.edit { preferences ->
+            val currentDownloads = preferences[downloadsSetKey]?.toMutableSet() ?: mutableSetOf()
+            currentDownloads.add(songId)
+            preferences[downloadsSetKey] = currentDownloads
+            
+            // Store file path mapping
+            val currentPaths = preferences[downloadPathsKey] ?: ""
+            val newPaths = if (currentPaths.isEmpty()) "$songId:$localFilePath" else "$currentPaths,$songId:$localFilePath"
+            preferences[downloadPathsKey] = newPaths
+        }
+        Log.d(TAG, "Added $songId to DataStore downloads")
+    }
+    
+    /**
+     * Remove song from downloads in DataStore
+     */
+    private suspend fun removeFromDownloadsDataStore(songId: String) {
+        dataStore.edit { preferences ->
+            val currentDownloads = preferences[downloadsSetKey]?.toMutableSet() ?: mutableSetOf()
+            currentDownloads.remove(songId)
+            preferences[downloadsSetKey] = currentDownloads
+            
+            // Remove from paths mapping
+            val currentPaths = preferences[downloadPathsKey] ?: ""
+            val newPaths = currentPaths.split(",")
+                .filter { !it.startsWith("$songId:") }
+                .joinToString(",")
+            preferences[downloadPathsKey] = newPaths
+        }
+        Log.d(TAG, "Removed $songId from DataStore downloads")
+    }
+    
+    /**
+     * Get downloaded song IDs from DataStore for quick lookups
+     */
+    fun getDownloadedIdsFromDataStore(): Flow<Set<String>> {
+        return dataStore.data.map { preferences ->
+            preferences[downloadsSetKey] ?: emptySet()
+        }
+    }
+    
+    /**
+     * Get download count from DataStore for immediate UI updates
+     */
+    fun getDownloadCountFromDataStore(): Flow<Int> {
+        return dataStore.data.map { preferences ->
+            preferences[downloadsSetKey]?.size ?: 0
+        }
+    }
+
+    /**
+     * Scan download folder and verify file integrity
+     */
+    suspend fun scanDownloadIntegrity() {
+        try {
+            Log.d(TAG, "🔍 Scanning download integrity...")
+            
+            val downloadedSongs = musicDao.getDownloadedSongs().first()
+            Log.d(TAG, "📋 Found ${downloadedSongs.size} downloaded songs to verify")
+            
+            var validCount = 0
+            var invalidCount = 0
+            
+            for (song in downloadedSongs) {
+                val filePath = song.localFilePath
+                if (filePath != null) {
+                    val file = File(filePath)
+                    if (file.exists() && file.length() > 0) {
+                        validCount++
+                        Log.d(TAG, "✅ File exists and valid: ${song.title} -> ${file.length()} bytes")
+                    } else {
+                        invalidCount++
+                        Log.w(TAG, "⚠️ File missing or empty: ${song.title} -> $filePath")
+                        
+                        // Mark as not downloaded
+                        musicDao.updateSongDownloadStatus(song.id, false, null)
+                        removeFromDownloadsDataStore(song.id)
+                        saveDownloadStateToPreferences(song.id, false, null)
+                        
+                        Log.d(TAG, "🔄 Marked as not downloaded: ${song.title}")
+                    }
+                } else {
+                    invalidCount++
+                    Log.w(TAG, "⚠️ No file path for downloaded song: ${song.title}")
+                    
+                    // Mark as not downloaded
+                    musicDao.updateSongDownloadStatus(song.id, false, null)
+                    removeFromDownloadsDataStore(song.id)
+                    saveDownloadStateToPreferences(song.id, false, null)
+                    
+                    Log.d(TAG, "🔄 Marked as not downloaded: ${song.title}")
+                }
+            }
+            
+            Log.d(TAG, "✅ Download integrity scan completed: $validCount valid, $invalidCount invalid")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error scanning download integrity", e)
+        }
+    }
+
+    companion object {
+        private const val TAG = "MusicRepositoryImpl"
+        private const val MAX_SONG_DURATION_MS = 15 * 60 * 1000L // 15 minutes in milliseconds
+    }
+
+    /**
+     * Filter songs to only include those with duration below 15 minutes
+     */
+    private fun filterSongsByDuration(songs: List<Song>): List<Song> {
+        val filteredSongs = songs.filter { song ->
+            song.duration > 0 && song.duration <= MAX_SONG_DURATION_MS
+        }
+        
+        val filteredCount = songs.size - filteredSongs.size
+        if (filteredCount > 0) {
+            Log.d(TAG, "🎵 Filtered out $filteredCount songs with duration > 15 minutes")
+        }
+        
+        return filteredSongs
     }
 } 

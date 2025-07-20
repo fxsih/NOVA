@@ -507,7 +507,7 @@ class MusicPlayerServiceImpl @Inject constructor(
                     Log.d(TAG, "Progress update: ${(newProgress * 100).toInt()}% ($validPosition/$validDuration ms)")
                 }
                 
-                delay(500) // Update more frequently for smoother seekbar
+                delay(100) // Update more frequently for smoother seekbar
             }
         }
     }

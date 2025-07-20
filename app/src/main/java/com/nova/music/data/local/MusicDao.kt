@@ -18,6 +18,7 @@ interface MusicDao {
     @Query("UPDATE songs SET isRecommended = 0 WHERE isRecommended = 1")
     suspend fun clearRecommendedSongs()
 
+
     @Query("SELECT * FROM songs WHERE title LIKE '%' || :query || '%' OR artist LIKE '%' || :query || '%' OR album LIKE '%' || :query || '%'")
     fun searchSongs(query: String): Flow<List<Song>>
 
@@ -65,41 +66,12 @@ interface MusicDao {
     @Query("SELECT * FROM songs WHERE id = :songId")
     suspend fun getSongById(songId: String): Song?
 
-    @Query("UPDATE songs SET playlistIds = :newPlaylistIds WHERE id = :songId")
-    suspend fun updateSongPlaylistIds(songId: String, newPlaylistIds: String)
-
-    @Query("SELECT * FROM songs WHERE playlistIds LIKE '%' || :playlistId || '%'")
+    @Query("SELECT * FROM songs s INNER JOIN song_playlist_cross_ref ref ON s.id = ref.songId WHERE ref.playlistId = :playlistId ORDER BY ref.addedAt DESC")
     fun getPlaylistSongs(playlistId: String): Flow<List<Song>>
 
     @Query("DELETE FROM recently_played WHERE songId = :songId")
     suspend fun deleteRecentlyPlayedBySongId(songId: String)
 
-    @Transaction
-    suspend fun addSongToPlaylist(songId: String, playlistId: String) {
-        val song = getSongById(songId) ?: return
-        val updatedPlaylistIds = song.addPlaylistId(playlistId)
-        updateSongPlaylistIds(songId, updatedPlaylistIds)
-    }
-
-    @Transaction
-    suspend fun removeSongFromPlaylist(songId: String, playlistId: String) {
-        val song = getSongById(songId) ?: return
-        val updatedPlaylistIds = song.getPlaylistIdsList().filter { it != playlistId }.joinToString(",")
-        updateSongPlaylistIds(songId, updatedPlaylistIds)
-    }
-
-    @Query("SELECT COUNT(*) FROM songs WHERE playlistIds LIKE '%' || :playlistId || '%'")
-    fun getPlaylistSongCount(playlistId: String): Flow<Int>
-
-    /**
-     * Checks if a song is in a specific playlist
-     */
-    @Query("SELECT EXISTS(SELECT 1 FROM songs WHERE id = :songId AND playlistIds LIKE '%' || :playlistId || '%')")
-    suspend fun isSongInPlaylist(songId: String, playlistId: String): Boolean
-
-    /**
-     * Methods for the new join table approach
-     */
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertSongPlaylistCrossRef(crossRef: SongPlaylistCrossRef)
     
@@ -107,13 +79,10 @@ interface MusicDao {
     suspend fun deleteSongPlaylistCrossRef(songId: String, playlistId: String)
     
     @Query("SELECT EXISTS(SELECT 1 FROM song_playlist_cross_ref WHERE songId = :songId AND playlistId = :playlistId)")
-    suspend fun isSongInPlaylistV2(songId: String, playlistId: String): Boolean
-    
-    @Query("SELECT s.* FROM songs s INNER JOIN song_playlist_cross_ref ref ON s.id = ref.songId WHERE ref.playlistId = :playlistId ORDER BY ref.addedAt DESC")
-    fun getPlaylistSongsV2(playlistId: String): Flow<List<Song>>
+    suspend fun isSongInPlaylist(songId: String, playlistId: String): Boolean
     
     @Query("SELECT COUNT(*) FROM song_playlist_cross_ref WHERE playlistId = :playlistId")
-    fun getPlaylistSongCountV2(playlistId: String): Flow<Int>
+    fun getPlaylistSongCount(playlistId: String): Flow<Int>
     
     // Clear methods for account switching
     @Query("UPDATE songs SET isLiked = 0")

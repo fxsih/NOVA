@@ -48,6 +48,7 @@ abstract class AppModule {
             )
             .addMigrations(MIGRATION_5_6)
             .addMigrations(MIGRATION_6_7)
+            .addMigrations(MIGRATION_7_8)
             .fallbackToDestructiveMigration()
             .build()
         }
@@ -166,6 +167,55 @@ abstract class AppModule {
                 // Add the new isDownloaded and localFilePath fields to the songs table
                 database.execSQL("ALTER TABLE songs ADD COLUMN isDownloaded INTEGER NOT NULL DEFAULT 0")
                 database.execSQL("ALTER TABLE songs ADD COLUMN localFilePath TEXT")
+            }
+        }
+
+        // Migration from version 7 to 8 - Remove V1 playlist system
+        private val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                // Remove the playlistIds column from the songs table
+                // SQLite doesn't support DROP COLUMN directly, so we need to recreate the table
+                
+                // Create a temporary table with the new schema
+                database.execSQL("""
+                    CREATE TABLE songs_new (
+                        id TEXT NOT NULL PRIMARY KEY,
+                        title TEXT NOT NULL,
+                        artist TEXT NOT NULL,
+                        album TEXT NOT NULL,
+                        albumArt TEXT NOT NULL,
+                        albumArtUrl TEXT,
+                        duration INTEGER NOT NULL,
+                        audioUrl TEXT,
+                        isRecommended INTEGER NOT NULL DEFAULT 0,
+                        isLiked INTEGER NOT NULL DEFAULT 0,
+                        isDownloaded INTEGER NOT NULL DEFAULT 0,
+                        localFilePath TEXT
+                    )
+                """)
+                
+                // Copy data from the old table to the new table
+                database.execSQL("""
+                    INSERT INTO songs_new (
+                        id, title, artist, album, albumArt, albumArtUrl, 
+                        duration, audioUrl, isRecommended, isLiked, isDownloaded, localFilePath
+                    )
+                    SELECT 
+                        id, title, artist, album, albumArt, albumArtUrl, 
+                        duration, audioUrl, isRecommended, isLiked, isDownloaded, localFilePath
+                    FROM songs
+                """)
+                
+                // Drop the old table
+                database.execSQL("DROP TABLE songs")
+                
+                // Rename the new table to the original name
+                database.execSQL("ALTER TABLE songs_new RENAME TO songs")
+                
+                // Recreate indices
+                database.execSQL("CREATE INDEX IF NOT EXISTS index_songs_title ON songs(title)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS index_songs_artist ON songs(artist)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS index_songs_album ON songs(album)")
             }
         }
     }
