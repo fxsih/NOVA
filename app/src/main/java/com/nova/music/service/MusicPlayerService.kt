@@ -43,7 +43,6 @@ class MusicPlayerService : Service() {
     private val serviceScope = CoroutineScope(Dispatchers.Main + serviceJob)
     
     private val TAG = "MusicPlayerService"
-    private var lastMediaSessionUpdate = 0L
     
     companion object {
         private const val NOTIFICATION_ID = 1
@@ -57,16 +56,7 @@ class MusicPlayerService : Service() {
         super.onCreate()
         Log.d(TAG, "=== SERVICE onCreate ===")
         
-        // Initialize MediaSession
-        initMediaSession()
-        
-        // Initialize notification manager
-        notificationManager = MediaNotificationManager(this, mediaSession)
-        
-        // Start collecting song and playback state changes
-        observePlaybackState()
-        
-        // Create an initial notification to start as foreground service
+        // Start foreground immediately to prevent timeout crash
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val initialNotification = NotificationCompat.Builder(this, MediaNotificationManager.CHANNEL_ID)
                 .setContentTitle("NOVA Music")
@@ -76,8 +66,17 @@ class MusicPlayerService : Service() {
                 .build()
             
             startForeground(MediaNotificationManager.NOTIFICATION_ID, initialNotification)
-            Log.d(TAG, "Started with initial notification")
+            Log.d(TAG, "Started foreground service immediately")
         }
+        
+        // Initialize MediaSession
+        initMediaSession()
+        
+        // Initialize notification manager
+        notificationManager = MediaNotificationManager(this, mediaSession)
+        
+        // Start collecting song and playback state changes
+        observePlaybackState()
     }
     
     private fun initMediaSession() {
@@ -163,17 +162,12 @@ class MusicPlayerService : Service() {
             }
         }
         
-        // Observe progress changes with throttling for MediaSession updates
+        // Observe progress changes - remove throttling for smooth seekbar
         serviceScope.launch {
             musicPlayerServiceImpl.progress.collectLatest { progress ->
                 musicPlayerServiceImpl.currentSong.value?.let { song ->
-                    // Update media session with new progress (throttled to avoid too many updates)
-                    // Only update MediaSession every 2 seconds to balance responsiveness and performance
-                    val currentTime = System.currentTimeMillis()
-                    if (currentTime - lastMediaSessionUpdate > 2000) {
-                    updateMediaSession(song)
-                        lastMediaSessionUpdate = currentTime
-                    }
+                    // Update media session with new progress for smooth seekbar
+                    updateMediaSessionProgress(song, progress)
                 }
             }
         }
@@ -331,22 +325,6 @@ class MusicPlayerService : Service() {
             musicPlayerServiceImpl.restorePlayerState()
         }
         
-        // Ensure we start as foreground service for Android O+
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            // Create a basic notification if we don't have a current song yet
-            if (musicPlayerServiceImpl.currentSong.value == null) {
-                val basicNotification = NotificationCompat.Builder(this, MediaNotificationManager.CHANNEL_ID)
-                    .setContentTitle("NOVA Music")
-                    .setContentText("Music service is running")
-                    .setSmallIcon(R.drawable.ic_music_note)
-                    .setPriority(NotificationCompat.PRIORITY_LOW)
-                    .build()
-                
-                startForeground(MediaNotificationManager.NOTIFICATION_ID, basicNotification)
-                Log.d(TAG, "Started with basic notification")
-            }
-        }
-        
         // Handle notification actions
         when (intent?.action) {
             MediaNotificationManager.ACTION_PLAY -> {
@@ -379,7 +357,7 @@ class MusicPlayerService : Service() {
                 Log.d(TAG, "Received STOP action")
                 serviceScope.launch {
                     musicPlayerServiceImpl.stop()
-            stopSelf()
+                    stopSelf()
                 }
             }
         }
@@ -468,5 +446,43 @@ class MusicPlayerService : Service() {
             }
         )
         super.onTaskRemoved(rootIntent)
+    }
+
+    /**
+     * Updates only the playback state with progress for smooth seekbar movement
+     */
+    private fun updateMediaSessionProgress(song: Song, progress: Float) {
+        try {
+            val duration = musicPlayerServiceImpl.duration.value
+            val currentPosition = if (duration > 0 && progress >= 0f && progress <= 1f) {
+                (progress * duration).toLong()
+            } else {
+                0L
+            }
+            
+            // Update only the playback state with new position
+            val stateBuilder = android.support.v4.media.session.PlaybackStateCompat.Builder()
+                .setState(
+                    if (musicPlayerServiceImpl.isPlaying.value) 
+                        android.support.v4.media.session.PlaybackStateCompat.STATE_PLAYING
+                    else 
+                        android.support.v4.media.session.PlaybackStateCompat.STATE_PAUSED,
+                    currentPosition,
+                    1.0f
+                )
+                .setActions(
+                    android.support.v4.media.session.PlaybackStateCompat.ACTION_PLAY or
+                    android.support.v4.media.session.PlaybackStateCompat.ACTION_PAUSE or
+                    android.support.v4.media.session.PlaybackStateCompat.ACTION_SKIP_TO_NEXT or
+                    android.support.v4.media.session.PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS or
+                    android.support.v4.media.session.PlaybackStateCompat.ACTION_SEEK_TO or
+                    android.support.v4.media.session.PlaybackStateCompat.ACTION_PLAY_PAUSE
+                )
+                .setBufferedPosition(duration)
+            
+            mediaSession.setPlaybackState(stateBuilder.build())
+        } catch (e: Exception) {
+            Log.e(TAG, "Error updating media session progress", e)
+        }
     }
 } 

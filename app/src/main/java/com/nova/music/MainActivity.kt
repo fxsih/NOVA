@@ -93,9 +93,6 @@ class MainActivity : ComponentActivity() {
         // Also update the current song's download state
         playerViewModel.updateCurrentSongDownloadState(this)
         
-        // Sync user data with Firebase on app start
-        libraryViewModel.forceSyncAllUserData()
-        
         // For Android 13+ (API level 33+), request notification permission
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             requestNotificationPermission()

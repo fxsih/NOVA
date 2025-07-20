@@ -32,6 +32,8 @@ import com.nova.music.ui.viewmodels.LibraryViewModel
 import com.nova.music.ui.viewmodels.PlayerViewModel
 import com.nova.music.ui.util.rememberDynamicBottomPadding
 import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.launch
+import androidx.compose.runtime.rememberCoroutineScope
 
 @Composable
 fun PlaylistItem(
@@ -116,6 +118,8 @@ fun LibraryScreen(
     onNavigateToPlaylist: (String) -> Unit,
     onNavigateToPlayer: (String) -> Unit
 ) {
+    val scope = rememberCoroutineScope()
+    
     val likedSongs by viewModel.likedSongs.collectAsState(initial = emptyList())
     val playlists by viewModel.playlists.collectAsState(initial = emptyList())
     val playlistSongCounts by viewModel.playlistSongCounts.collectAsState(initial = emptyMap())
@@ -380,8 +384,8 @@ fun LibraryScreen(
                 }
             }
 
-                // Create Playlist Card
-            item {
+                // Create Playlist Button
+                item {
                     Spacer(modifier = Modifier.height(8.dp))
                     Card(
                         modifier = Modifier
@@ -400,7 +404,7 @@ fun LibraryScreen(
                                 .padding(horizontal = 16.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween
-                ) {
+                        ) {
                             Text(
                                 text = "Create New Playlist",
                                 style = MaterialTheme.typography.bodyLarge,
@@ -421,8 +425,8 @@ fun LibraryScreen(
                                     tint = Color.Black,
                                     modifier = Modifier.size(24.dp)
                                 )
-                }
-            }
+                            }
+                        }
                     }
                     Spacer(modifier = Modifier.height(16.dp))
                 }
@@ -430,13 +434,11 @@ fun LibraryScreen(
                 // Custom Playlist Cards
             items(playlists.filter { it.id != "downloads" }) { playlist ->
                     val playlistSongs by viewModel.getPlaylistSongs(playlist.id).collectAsState(initial = emptyList())
+                    val playlistSongCount by viewModel.getPlaylistSongCount(playlist.id).collectAsState(initial = 0)
                     
                     // Log playlist songs for debugging
                     LaunchedEffect(playlist.id) {
-                        Log.d("LibraryScreen", "Playlist ${playlist.name} has ${playlistSongs.size} songs")
-                        playlistSongs.forEach { song ->
-                            Log.d("LibraryScreen", "  - Song: ${song.title} (${song.id})")
-                        }
+                        Log.d("LibraryScreen", "Playlist ${playlist.name} has ${playlistSongs.size} songs (count: $playlistSongCount)")
                     }
                     
                     val playlistColor = remember(playlist.id) {
@@ -506,7 +508,7 @@ fun LibraryScreen(
                                 Spacer(modifier = Modifier.height(8.dp))
 
                                 Text(
-                                    text = "${playlistSongCounts[playlist.id] ?: 0} songs",
+                                    text = "$playlistSongCount songs",
                                     style = MaterialTheme.typography.bodyLarge,
                                     color = Color(0xFFE1E1E1)
                                 )

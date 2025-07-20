@@ -51,15 +51,22 @@ class LibraryViewModel @Inject constructor(
 
     val playlistSongCounts: StateFlow<Map<String, Int>> = playlists
         .flatMapLatest { playlists ->
-            combine(
-                playlists.map { playlist ->
-                    musicRepository.getPlaylistSongCount(playlist.id)
-                        .map { count -> playlist.id to count }
+            // For each playlist, get its song count directly from database
+            val countFlows = playlists.map { playlist ->
+                musicRepository.getPlaylistSongCount(playlist.id).map { count ->
+                    playlist.id to count
                 }
-            ) { counts ->
+                }
+            
+            if (countFlows.isEmpty()) {
+                flowOf(emptyMap())
+            } else {
+                combine(countFlows) { counts ->
                 counts.toMap()
+                }
             }
         }
+        .distinctUntilChanged()
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5000),
@@ -85,47 +92,149 @@ class LibraryViewModel @Inject constructor(
     private val preferencesKey = stringPreferencesKey("user_music_preferences")
 
     init {
-        viewModelScope.launch { loadUserPreferences() }
+        viewModelScope.launch { 
+            loadUserPreferences()
+            // Verify downloaded songs on ViewModel initialization
+            verifyDownloadedSongsOnInit()
+            // Sync playlists on ViewModel initialization
+            syncPlaylistsOnInit()
+        }
+    }
+    
+    /**
+     * Verify downloaded songs on ViewModel initialization
+     */
+    private suspend fun verifyDownloadedSongsOnInit() {
+        try {
+            Log.d("LibraryViewModel", "🔄 Verifying downloaded songs on ViewModel init")
+            (musicRepository as? com.nova.music.data.repository.impl.MusicRepositoryImpl)?.syncDownloadedSongsOnStartup()
+            Log.d("LibraryViewModel", "✅ Downloaded songs verified on init")
+        } catch (e: Exception) {
+            Log.e("LibraryViewModel", "❌ Error verifying downloaded songs on init", e)
+        }
+    }
+    
+    /**
+     * Sync playlists on ViewModel initialization
+     */
+    private suspend fun syncPlaylistsOnInit() {
+        try {
+            Log.d("LibraryViewModel", "🔄 Syncing playlists on ViewModel init")
+            (musicRepository as? com.nova.music.data.repository.impl.MusicRepositoryImpl)?.syncPlaylistsOnStartup()
+            Log.d("LibraryViewModel", "✅ Playlists synced on init")
+        } catch (e: Exception) {
+            Log.e("LibraryViewModel", "❌ Error syncing playlists on init", e)
+        }
     }
 
     fun createPlaylist(name: String) {
         viewModelScope.launch {
             musicRepository.createPlaylist(name)
+            // No need to force refresh - the flow will update automatically
         }
     }
 
     fun deletePlaylist(playlistId: String) {
         viewModelScope.launch {
             musicRepository.deletePlaylist(playlistId)
+            // No need to force refresh - the flow will update automatically
         }
     }
 
     fun renamePlaylist(playlistId: String, newName: String) {
         viewModelScope.launch {
             musicRepository.renamePlaylist(playlistId, newName)
+            // No need to force refresh - the flow will update automatically
         }
     }
 
     suspend fun addSongToPlaylist(song: Song, playlistId: String) {
         musicRepository.addSongToPlaylist(song, playlistId)
+        // Force immediate UI update by triggering a refresh
+        refreshPlaylistCounts()
     }
 
     fun removeSongFromPlaylist(songId: String, playlistId: String) {
         viewModelScope.launch {
         musicRepository.removeSongFromPlaylist(songId, playlistId)
+            // Force immediate UI update by triggering a refresh
+            refreshPlaylistCounts()
+        }
+    }
+    
+    /**
+     * Force refresh playlist counts to ensure immediate UI updates
+     */
+    private fun refreshPlaylistCounts() {
+        viewModelScope.launch {
+            try {
+                // Trigger a refresh of playlist counts by getting current playlists
+                val currentPlaylists = playlists.value
+                Log.d("LibraryViewModel", "🔄 Refreshing playlist counts for ${currentPlaylists.size} playlists")
+            } catch (e: Exception) {
+                Log.e("LibraryViewModel", "❌ Error refreshing playlist counts", e)
+            }
         }
     }
 
     fun getPlaylistSongCount(playlistId: String): Flow<Int> {
         return musicRepository.getPlaylistSongCount(playlistId)
+            .distinctUntilChanged()
+            .onEach { count ->
+                Log.d("LibraryViewModel", "🎵 Playlist $playlistId song count: $count")
+            }
     }
 
     fun getPlaylistSongs(playlistId: String): Flow<List<Song>> = 
         musicRepository.getPlaylistSongs(playlistId)
+            .distinctUntilChanged()
             .stateIn(
                 scope = viewModelScope,
                 started = SharingStarted.WhileSubscribed(5000),
                 initialValue = emptyList()
+            )
+
+    /**
+     * Get real-time playlist membership for a song
+     */
+    fun isSongInPlaylistFlow(songId: String, playlistId: String): StateFlow<Boolean> =
+        musicRepository.getPlaylistSongs(playlistId)
+            .map { songs -> songs.any { it.id == songId } }
+            .distinctUntilChanged()
+            .stateIn(
+                scope = viewModelScope,
+                started = SharingStarted.WhileSubscribed(5000),
+                initialValue = false
+            )
+
+    /**
+     * Get all playlist memberships for a song in a single flow
+     */
+    fun getSongPlaylistMemberships(songId: String): StateFlow<Set<String>> =
+        playlists
+            .flatMapLatest { playlists ->
+                val membershipFlows = playlists
+                    .filter { it.id != "liked_songs" && it.id != "downloads" }
+                    .map { playlist ->
+                        musicRepository.getPlaylistSongs(playlist.id)
+                            .map { songs -> 
+                                if (songs.any { it.id == songId }) playlist.id else null 
+                            }
+                    }
+                
+                if (membershipFlows.isEmpty()) {
+                    flowOf(emptySet())
+                } else {
+                    combine(membershipFlows) { memberships ->
+                        memberships.filterNotNull().toSet()
+                    }
+                }
+            }
+            .distinctUntilChanged()
+            .stateIn(
+                scope = viewModelScope,
+                started = SharingStarted.WhileSubscribed(5000),
+                initialValue = emptySet()
             )
 
     suspend fun isSongInPlaylist(songId: String, playlistId: String): Boolean {
@@ -191,11 +300,39 @@ class LibraryViewModel @Inject constructor(
     fun refreshPlaylists() {
         viewModelScope.launch {
             try {
-                // Force refresh by getting playlists again
-                musicRepository.getPlaylists().first()
-                Log.d("LibraryViewModel", "Refreshed playlists")
+                // Force refresh by getting playlists again and emitting immediately
+                val currentPlaylists = musicRepository.getPlaylists().first()
+                Log.d("LibraryViewModel", "Refreshed playlists, count: ${currentPlaylists.size}")
             } catch (e: Exception) {
                 Log.e("LibraryViewModel", "Error refreshing playlists", e)
+            }
+        }
+    }
+
+    /**
+     * Test Firebase sync functionality
+     */
+    fun testFirebaseSync() {
+        viewModelScope.launch {
+            try {
+                Log.d("LibraryViewModel", "🧪 Testing Firebase sync...")
+                
+                // Create a test playlist
+                val testPlaylistName = "Test_${System.currentTimeMillis()}"
+                musicRepository.createPlaylist(testPlaylistName)
+                
+                Log.d("LibraryViewModel", "✅ Test playlist created: $testPlaylistName")
+                
+                // Wait a bit for sync
+                kotlinx.coroutines.delay(2000)
+                
+                // Refresh to see if it appears
+                refreshPlaylists()
+                
+                Log.d("LibraryViewModel", "✅ Firebase sync test completed")
+                
+            } catch (e: Exception) {
+                Log.e("LibraryViewModel", "❌ Firebase sync test failed", e)
             }
         }
     }
@@ -212,51 +349,6 @@ class LibraryViewModel @Inject constructor(
                 Log.d("LibraryViewModel", "Synced playlists with Firebase")
             } catch (e: Exception) {
                 Log.e("LibraryViewModel", "Error syncing playlists with Firebase", e)
-            }
-        }
-    }
-
-    /**
-     * Manually sync liked songs with Firebase for debugging
-     */
-    fun syncLikedSongsWithFirebase() {
-        viewModelScope.launch {
-            try {
-                Log.d("LibraryViewModel", "Manually syncing liked songs with Firebase")
-                musicRepository.syncUserDataWithFirebase()
-                Log.d("LibraryViewModel", "Liked songs sync completed")
-            } catch (e: Exception) {
-                Log.e("LibraryViewModel", "Error syncing liked songs with Firebase", e)
-            }
-        }
-    }
-    
-    /**
-     * Force sync liked songs from Firebase to ensure consistency
-     */
-    fun forceSyncLikedSongs() {
-        viewModelScope.launch {
-            try {
-                Log.d("LibraryViewModel", "Force syncing liked songs from Firebase")
-                musicRepository.syncFromFirebase()
-                Log.d("LibraryViewModel", "Liked songs force sync completed")
-            } catch (e: Exception) {
-                Log.e("LibraryViewModel", "Error force syncing liked songs", e)
-            }
-        }
-    }
-    
-    /**
-     * Force sync all user data (liked and downloaded songs) from Firebase
-     */
-    fun forceSyncAllUserData() {
-        viewModelScope.launch {
-            try {
-                Log.d("LibraryViewModel", "Force syncing all user data from Firebase")
-                musicRepository.syncFromFirebase()
-                Log.d("LibraryViewModel", "All user data force sync completed")
-            } catch (e: Exception) {
-                Log.e("LibraryViewModel", "Error force syncing all user data", e)
             }
         }
     }
@@ -295,6 +387,51 @@ class LibraryViewModel @Inject constructor(
             }
         }
     }
-    
 
+    fun forceRefreshDownloadedSongs() {
+        viewModelScope.launch {
+            Log.d("LibraryViewModel", "🔄 Force refreshing downloaded songs from local database")
+            try {
+                // Force refresh by getting downloaded songs from local database
+                val currentDownloadedSongs = musicRepository.getDownloadedSongs().first()
+                Log.d("LibraryViewModel", "✅ Downloaded songs refreshed successfully: ${currentDownloadedSongs.size} songs")
+            } catch (e: Exception) {
+                Log.e("LibraryViewModel", "❌ Error refreshing downloaded songs", e)
+            }
+        }
+    }
+
+    /**
+     * Restore downloaded songs if they get lost
+     */
+    fun restoreDownloadedSongs() {
+        viewModelScope.launch {
+            Log.d("LibraryViewModel", "🔄 Restoring downloaded songs...")
+            try {
+                (musicRepository as? com.nova.music.data.repository.impl.MusicRepositoryImpl)?.restoreDownloadedSongs()
+                Log.d("LibraryViewModel", "✅ Downloaded songs restored successfully")
+            } catch (e: Exception) {
+                Log.e("LibraryViewModel", "❌ Error restoring downloaded songs", e)
+            }
+        }
+    }
+
+    /**
+     * Force refresh downloaded songs from the repository.
+     * This can be called from the UI to manually refresh downloaded songs.
+     */
+    fun forceRefreshDownloadedSongsFromRepository() {
+        viewModelScope.launch {
+            try {
+                Log.d("LibraryViewModel", "🔄 Force refreshing downloaded songs from repository...")
+                // Force refresh by getting downloaded songs again
+                val currentDownloadedSongs = musicRepository.getDownloadedSongs().first()
+                Log.d("LibraryViewModel", "✅ Force refreshed downloaded songs, count: ${currentDownloadedSongs.size}")
+                Log.d("LibraryViewModel", "📋 Downloaded songs: ${currentDownloadedSongs.map { it.title }}")
+            } catch (e: Exception) {
+                Log.e("LibraryViewModel", "❌ Error force refreshing downloaded songs", e)
+            }
+        }
+    }
+    
 } 

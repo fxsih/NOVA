@@ -22,28 +22,8 @@ data class Song(
     val isRecommended: Boolean = false,
     val isLiked: Boolean = false,
     val isDownloaded: Boolean = false,
-    val localFilePath: String? = null,
-    @ColumnInfo(defaultValue = "") val playlistIds: String = ""
-) {
-    fun getPlaylistIdsList(): List<String> = 
-        if (playlistIds.isBlank()) emptyList() 
-        else playlistIds.split(",").map { it.trim() }.filter { it.isNotBlank() }
-
-    fun addPlaylistId(playlistId: String): String {
-        val currentIds = getPlaylistIdsList()
-        return if (currentIds.isEmpty()) playlistId
-               else if (currentIds.contains(playlistId)) playlistIds
-               else "$playlistIds,$playlistId"
-    }
-
-    fun removePlaylistId(playlistId: String): String =
-        getPlaylistIdsList()
-            .filter { it != playlistId }
-            .joinToString(",")
-            
-    fun isInPlaylist(playlistId: String): Boolean =
-        getPlaylistIdsList().contains(playlistId)
-}
+    val localFilePath: String? = null
+)
 
 @Entity(tableName = "playlists")
 @Serializable
@@ -62,6 +42,17 @@ data class Playlist(
         coverUrl = "",
         createdAt = System.currentTimeMillis()
     )
+    
+    override fun equals(other: Any?): Boolean {
+        return other is Playlist && 
+               other.id == id && 
+               other.name == name && 
+               other.songs.size == songs.size
+    }
+    
+    override fun hashCode(): Int {
+        return java.util.Objects.hash(id, name, songs.size)
+    }
 }
 
 @Entity(

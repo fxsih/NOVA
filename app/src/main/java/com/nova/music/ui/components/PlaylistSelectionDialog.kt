@@ -29,11 +29,19 @@ fun PlaylistSelectionDialog(
     onCreateNewPlaylist: (String) -> Unit,
     onRenamePlaylist: (Playlist, String) -> Unit,
     playlists: List<Playlist>,
-    selectedPlaylistIds: Set<String>
+    selectedPlaylistIds: Set<String>,
+    songId: String? = null,
+    viewModel: LibraryViewModel = hiltViewModel()
 ) {
     var showCreateDialog by remember { mutableStateOf(false) }
     var showRenameDialog by remember { mutableStateOf<Playlist?>(null) }
-    val viewModel: LibraryViewModel = hiltViewModel()
+    
+    // Get all playlist memberships for the song in a single flow
+    val songPlaylistMemberships by if (songId != null) {
+        viewModel.getSongPlaylistMemberships(songId).collectAsState(initial = emptySet())
+    } else {
+        remember { mutableStateOf(emptySet<String>()) }
+    }
 
     Dialog(onDismissRequest = onDismiss) {
         Surface(
@@ -142,8 +150,21 @@ fun PlaylistSelectionDialog(
                         .heightIn(max = 300.dp)
                 ) {
                     items(playlists, key = { it.id }) { playlist ->
-                        val isSelected = playlist.id in selectedPlaylistIds
                         val songCount by viewModel.getPlaylistSongCount(playlist.id).collectAsState(initial = 0)
+                        
+                        // Check if the current song is in this playlist using the efficient approach
+                        val isSongInPlaylist = when {
+                            songId != null && playlist.id != "liked_songs" && playlist.id != "downloads" -> {
+                                // Use the single flow approach to prevent flickering
+                                songPlaylistMemberships.contains(playlist.id)
+                            }
+                            playlist.id == "liked_songs" -> {
+                                selectedPlaylistIds.contains("liked_songs")
+                            }
+                            else -> {
+                                false
+                            }
+                        }
                         
                         Row(
                             modifier = Modifier
@@ -167,7 +188,7 @@ fun PlaylistSelectionDialog(
                                     color = Color.Gray
                                 )
                             }
-                            if (isSelected) {
+                            if (isSongInPlaylist) {
                                 Box(
                                     modifier = Modifier
                                         .size(24.dp)

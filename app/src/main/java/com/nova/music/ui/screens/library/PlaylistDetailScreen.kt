@@ -344,6 +344,14 @@ fun PlaylistDetailScreen(
                         onDetailsClick = {
                             detailsSong = song
                             showDetailsDialog = true
+                        },
+                        onRemoveFromPlaylist = {
+                            // Only show remove option for custom playlists (not liked songs or downloads)
+                            if (playlistId != "liked_songs" && playlistId != "downloads") {
+                                scope.launch {
+                                    libraryViewModel.removeSongFromPlaylist(song.id, playlistId)
+                                }
+                            }
                         }
                 )
                 }
@@ -353,18 +361,36 @@ fun PlaylistDetailScreen(
 
     // Add to Playlist Dialog
     if (showPlaylistDialog && selectedSong != null) {
-        // Create a mutable state to track playlist membership changes immediately
-        val mutableSelectedPlaylistIds = remember(selectedSong) {
-            val ids = mutableSetOf<String>()
-            // Safely capture the selectedSong to a local variable to avoid smart cast issues
-            val song = selectedSong
-            // Add custom playlist IDs
-            if (song != null) {
-                ids.addAll(song.getPlaylistIdsList())
-                // Add liked songs if applicable
-                if (song.isLiked) ids.add("liked_songs")
+        // Create a reactive state that tracks playlist membership in real-time
+        val selectedPlaylistIds by remember(selectedSong) {
+            derivedStateOf {
+                val ids = mutableSetOf<String>()
+                val song = selectedSong
+                
+                if (song != null) {
+                    // Add liked songs if applicable
+                    if (song.isLiked) {
+                        ids.add("liked_songs")
+                    }
+                }
+                ids
             }
-            ids
+        }
+        
+        // Create a state that updates when playlists change
+        val currentPlaylistIds by remember(selectedSong, playlists) {
+            derivedStateOf {
+                val ids = mutableSetOf<String>()
+                val song = selectedSong
+                
+                if (song != null) {
+                    // Add liked songs if applicable
+                    if (song.isLiked) {
+                        ids.add("liked_songs")
+                    }
+                }
+                ids
+            }
         }
         
         PlaylistSelectionDialog(
@@ -380,27 +406,19 @@ fun PlaylistDetailScreen(
                     if (selectedPlaylist.id == "liked_songs") {
                         val isLiked = song.isLiked
                         if (isLiked) {
-                            // Update UI state immediately
-                            mutableSelectedPlaylistIds.remove("liked_songs")
-                            // Then update database
+                            // Update database
                             libraryViewModel.removeSongFromLiked(song.id)
                         } else {
-                            // Update UI state immediately
-                            mutableSelectedPlaylistIds.add("liked_songs")
-                            // Then update database
+                            // Update database
                             libraryViewModel.addSongToLiked(song)
                         }
                     } else {
-                        val isInPlaylist = song.isInPlaylist(selectedPlaylist.id)
+                        val isInPlaylist = libraryViewModel.isSongInPlaylist(song.id, selectedPlaylist.id)
                         if (isInPlaylist) {
-                            // Update UI state immediately
-                            mutableSelectedPlaylistIds.remove(selectedPlaylist.id)
-                            // Then update database
+                            // Update database
                             libraryViewModel.removeSongFromPlaylist(song.id, selectedPlaylist.id)
                         } else {
-                            // Update UI state immediately
-                            mutableSelectedPlaylistIds.add(selectedPlaylist.id)
-                            // Then update database
+                            // Update database
                             libraryViewModel.addSongToPlaylist(song, selectedPlaylist.id)
                         }
                     }
@@ -414,9 +432,7 @@ fun PlaylistDetailScreen(
                     libraryViewModel.createPlaylist(name)
                     // Wait for the playlist to be created and get its ID
                     playlists.firstOrNull { it.name == name }?.let { newPlaylist ->
-                        // Update UI state immediately
-                        mutableSelectedPlaylistIds.add(newPlaylist.id)
-                        // Then update database
+                        // Update database
                         libraryViewModel.addSongToPlaylist(song, newPlaylist.id)
                     }
                 }
@@ -427,7 +443,8 @@ fun PlaylistDetailScreen(
                 }
             },
             playlists = playlists,
-            selectedPlaylistIds = mutableSelectedPlaylistIds
+            selectedPlaylistIds = currentPlaylistIds,
+            songId = selectedSong?.id
         )
     }
 

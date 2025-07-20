@@ -664,6 +664,12 @@ class PlayerViewModel @Inject constructor(
         try {
             Log.d("PlayerViewModel", "Ensuring music service is running")
             
+            // Check if service is already running first
+            if (isServiceRunning(context)) {
+                Log.d("PlayerViewModel", "Music service is already running")
+                return
+            }
+            
             val serviceIntent = Intent(context, MusicPlayerService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(serviceIntent)
@@ -673,14 +679,10 @@ class PlayerViewModel @Inject constructor(
                 Log.d("PlayerViewModel", "Started service")
             }
             
-            // Give the service a moment to start
-            kotlinx.coroutines.runBlocking {
-                delay(500)
-            }
-            
-            Log.d("PlayerViewModel", "Music service should be running now")
+            Log.d("PlayerViewModel", "Music service start command sent")
         } catch (e: Exception) {
             Log.e("PlayerViewModel", "Error starting music service", e)
+            // Don't crash the app if service fails to start
         }
     }
     
