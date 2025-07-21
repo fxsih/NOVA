@@ -72,6 +72,10 @@ class MusicPlayerService : Service() {
         
         // Start collecting song and playback state changes
         observePlaybackState()
+
+        // Re-initialize coroutineScope for progress updates
+        musicPlayerServiceImpl.progressJobSupervisor = SupervisorJob()
+        musicPlayerServiceImpl.coroutineScope = CoroutineScope(musicPlayerServiceImpl.progressJobSupervisor + Dispatchers.Main)
     }
     
     private fun initMediaSession() {
@@ -411,6 +415,8 @@ class MusicPlayerService : Service() {
         serviceJob.cancel()
         mediaSession.release()
         
+        // Cancel the progress coroutine scope
+        musicPlayerServiceImpl.progressJobSupervisor.cancel()
         super.onDestroy()
         musicPlayerServiceImpl.onDestroy()
     }

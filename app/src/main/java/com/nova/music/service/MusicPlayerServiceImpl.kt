@@ -28,7 +28,8 @@ class MusicPlayerServiceImpl @Inject constructor(
     private val preferenceManager: PreferenceManager
 ) : IMusicPlayerService {
 
-    private val coroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    var progressJobSupervisor = SupervisorJob()
+    var coroutineScope = CoroutineScope(progressJobSupervisor + Dispatchers.Main)
     
     // ExoPlayer is now created on demand and can be recreated when needed
     private var exoPlayer: ExoPlayer? = null
@@ -257,7 +258,8 @@ class MusicPlayerServiceImpl @Inject constructor(
                         player.clearMediaItems()
                         player.addMediaItem(mediaItem)
                         player.prepare()
-                        
+                        // Update duration after prepare
+                        _duration.value = player.duration
                         // Reset progress to 0 when new song is prepared
                         _progress.value = 0f
                         
@@ -360,7 +362,8 @@ class MusicPlayerServiceImpl @Inject constructor(
                         
                         // Prepare the player
                         player.prepare()
-                        
+                        // Update duration after prepare
+                        _duration.value = player.duration
                         // Reset progress to 0 when new playlist is prepared
                         _progress.value = 0f
                         
@@ -466,38 +469,52 @@ class MusicPlayerServiceImpl @Inject constructor(
     }
 
     private fun startProgressUpdates() {
+        Log.d(TAG, "startProgressUpdates() called - starting progress coroutine")
+        Log.d(TAG, "coroutineScope isActive=${coroutineScope.isActive}")
         progressJob?.cancel()
-        progressJob = coroutineScope.launch {
-            while (isActive) {
-                val player = exoPlayer ?: break
-                val currentPosition = withContext(Dispatchers.Main) {
-                    player.currentPosition
+        progressJob = coroutineScope.launch(Dispatchers.Main) {
+            Log.d(TAG, "Progress coroutine started (isActive=$isActive)")
+            try {
+                var retries = 0
+                while ((exoPlayer == null || exoPlayer?.mediaItemCount == 0) && retries < 20) {
+                    Log.d(TAG, "Waiting for exoPlayer to be ready... (retries=$retries)")
+                    delay(100)
+                    retries++
                 }
-                val totalDuration = withContext(Dispatchers.Main) {
-                    player.duration
+                val player = exoPlayer
+                if (player == null || player.mediaItemCount == 0) {
+                    Log.w(TAG, "Progress coroutine exiting: exoPlayer is null or has no media items after waiting.")
+                    return@launch
                 }
-                
-                // Ensure values are valid
-                val validDuration = if (totalDuration > 0) totalDuration else 0L
-                val validPosition = if (currentPosition >= 0) currentPosition else 0L
-                
-                // Calculate progress with validation
-                val newProgress = if (validDuration > 0) {
-                    (validPosition.toFloat() / validDuration).coerceIn(0f, 1f)
-                } else {
-                    0f
+                while (isActive) {
+                    val currentPosition = player.currentPosition
+                    val totalDuration = player.duration
+                    
+                    // Ensure values are valid
+                    val validDuration = if (totalDuration > 0) totalDuration else 0L
+                    val validPosition = if (currentPosition >= 0) currentPosition else 0L
+                    
+                    // Calculate progress with validation
+                    val newProgress = if (validDuration > 0) {
+                        (validPosition.toFloat() / validDuration).coerceIn(0f, 1f)
+                    } else {
+                        0f
+                    }
+                    
+                    // Update progress and duration
+                    _progress.value = newProgress
+                    _duration.value = validDuration
+                    
+                    // Log progress for debugging (only every 5 seconds to avoid spam)
+                    if (validPosition % 5000 < 1000) {
+                        Log.d(TAG, "Progress update: ${(newProgress * 100).toInt()}% ($validPosition/$validDuration ms) [progress coroutine running]")
+                    }
+                    
+                    delay(100) // Update more frequently for smoother seekbar
                 }
-                
-                // Update progress and duration
-                _progress.value = newProgress
-                _duration.value = validDuration
-                
-                // Log progress for debugging (only every 5 seconds to avoid spam)
-                if (validPosition % 5000 < 1000) {
-                    Log.d(TAG, "Progress update: ${(newProgress * 100).toInt()}% ($validPosition/$validDuration ms)")
-                }
-                
-                delay(100) // Update more frequently for smoother seekbar
+                Log.d(TAG, "Progress coroutine exited normally (isActive=$isActive)")
+            } finally {
+                Log.d(TAG, "Progress coroutine finally block: Cancelled or completed.")
             }
         }
     }
@@ -512,6 +529,8 @@ class MusicPlayerServiceImpl @Inject constructor(
                         exoPlayer?.playWhenReady = true
                         exoPlayer?.play()
                         Log.d(TAG, "ExoPlayer play() called")
+                        // Start progress updates to update seekbar
+                        startProgressUpdates()
                     }
                 }
             } catch (e: Exception) {
@@ -547,6 +566,8 @@ class MusicPlayerServiceImpl @Inject constructor(
                         exoPlayer?.playWhenReady = true
                         exoPlayer?.play()
                         Log.d(TAG, "ExoPlayer resume() called")
+                        // Start progress updates to update seekbar
+                        startProgressUpdates()
                     }
                 }
             } catch (e: Exception) {
@@ -716,6 +737,8 @@ class MusicPlayerServiceImpl @Inject constructor(
                                     val mediaItem = createMediaItem(currentSongValue)
                                     player.setMediaItem(mediaItem)
                                     player.prepare()
+                                    // Update duration after prepare
+                                    _duration.value = player.duration
                                     
                                     // Wait a moment for the player to load
                                     delay(1000) // Increased delay to ensure proper loading
@@ -779,9 +802,9 @@ class MusicPlayerServiceImpl @Inject constructor(
                                     _progress.value = progress
                                     Log.d(TAG, "Restored progress: ${(progress * 100).toInt()}% ($currentPosition/$totalDuration ms)")
                                 }
-                                
+                                // Always restart progress updates after restore
                                 startProgressUpdates()
-                                Log.d(TAG, "Restarted progress updates")
+                                Log.d(TAG, "Restarted progress updates after restore (hasMediaItems branch)")
                             } else {
                                 Log.d(TAG, "ExoPlayer state is invalid, keeping current state flows")
                             }
@@ -1446,6 +1469,9 @@ class MusicPlayerServiceImpl @Inject constructor(
             Log.d(TAG, "Player in STATE_IDLE, preparing")
             exoPlayer?.prepare()
         }
+        
+        // Update duration after prepare
+        _duration.value = exoPlayer?.duration ?: 0L
         
         // Restore playback state using playWhenReady for reliability
         Log.d(TAG, "Setting playWhenReady=$wasPlaying")

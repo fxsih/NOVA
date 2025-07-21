@@ -364,11 +364,11 @@ fun PlaylistDetailScreen(
         // Create a reactive state that tracks playlist membership in real-time
         val selectedPlaylistIds by remember(selectedSong) {
             derivedStateOf {
-                val ids = mutableSetOf<String>()
-                val song = selectedSong
+            val ids = mutableSetOf<String>()
+            val song = selectedSong
                 
-                if (song != null) {
-                    // Add liked songs if applicable
+            if (song != null) {
+                // Add liked songs if applicable
                     if (song.isLiked) {
                         ids.add("liked_songs")
                     }
@@ -388,8 +388,8 @@ fun PlaylistDetailScreen(
                     if (song.isLiked) {
                         ids.add("liked_songs")
                     }
-                }
-                ids
+            }
+            ids
             }
         }
         
