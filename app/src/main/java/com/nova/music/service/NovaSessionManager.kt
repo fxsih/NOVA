@@ -4,7 +4,6 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
-import com.nova.music.data.model.Song
 
 object NovaSessionManager {
     private const val TAG = "NovaSessionManager"

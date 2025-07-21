@@ -43,7 +43,6 @@ import com.nova.music.util.CenterCropSquareTransformation
 import com.nova.music.ui.viewmodels.PlayerViewModel
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import com.nova.music.util.PreferenceManager
-import javax.inject.Inject
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.material.ExperimentalMaterialApi
 import androidx.compose.material.pullrefresh.PullRefreshIndicator

@@ -18,12 +18,9 @@ import kotlinx.coroutines.isActive
 import javax.inject.Inject
 import android.util.Log
 import android.content.Context
-import android.net.Uri
-import android.os.Environment
 import android.widget.Toast
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.ResponseBody
 import okio.buffer
 import okio.sink
 import java.io.File
@@ -33,8 +30,6 @@ import com.nova.music.NovaApplication
 import android.content.Intent
 import android.os.Build
 import com.nova.music.service.MusicPlayerService
-import androidx.datastore.core.DataStore
-import androidx.datastore.preferences.core.Preferences
 import com.nova.music.service.NovaSessionManager
 
 /**

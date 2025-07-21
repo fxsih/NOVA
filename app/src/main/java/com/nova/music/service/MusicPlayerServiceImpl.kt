@@ -1,14 +1,10 @@
 package com.nova.music.service
 
 import android.content.Context
-import android.net.Uri
 import android.util.Log
 import androidx.media3.common.MediaItem
-import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
-import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import com.nova.music.data.model.Song
 import com.nova.music.data.repository.MusicRepository
 import com.nova.music.data.api.YTMusicService
@@ -17,16 +13,10 @@ import com.nova.music.util.PreferenceManager
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
-import retrofit2.HttpException
 import java.io.File
-import java.io.IOException
+
 import javax.inject.Inject
 import javax.inject.Singleton
-import androidx.datastore.core.DataStore
-import androidx.datastore.preferences.core.Preferences
-import androidx.datastore.preferences.core.edit
-import androidx.datastore.preferences.core.stringPreferencesKey
-import androidx.datastore.preferences.core.MutablePreferences
 
 private const val TAG = "MusicPlayerServiceImpl"
 
