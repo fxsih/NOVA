@@ -1074,21 +1074,21 @@ if __name__ == "__main__":
         )
     else:
         import multiprocessing
-        workers = min(4, multiprocessing.cpu_count() + 1)
-        if workers > 1:
-            uvicorn.run(
+    workers = min(4, multiprocessing.cpu_count() + 1)
+    if workers > 1:
+        uvicorn.run(
                 "main:app",
-                host="0.0.0.0",
-                port=8000,
-                workers=workers,
-                timeout_keep_alive=65,
-                log_level="info"
-            )
-        else:
-            uvicorn.run(
-                app,
-                host="0.0.0.0",
-                port=8000,
-                timeout_keep_alive=65,
-                log_level="info"
-            ) 
+            host="0.0.0.0", 
+            port=8000,
+            workers=workers,
+            timeout_keep_alive=65,
+            log_level="info"
+        )
+    else:
+        uvicorn.run(
+            app, 
+            host="0.0.0.0", 
+            port=8000,
+            timeout_keep_alive=65,
+            log_level="info"
+        ) 

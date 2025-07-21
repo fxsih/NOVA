@@ -93,6 +93,8 @@ NOVA is a modern Android music player app built with Jetpack Compose, following 
   - Language-specific artist suggestions
   - Malayalam language support
   - Downloads playlist for offline playback of downloaded songs
+  - **PERSISTENT SEEKBAR/PROGRESS UPDATES AFTER APP REOPEN**: Fixed issue where seekbar would not update after reopening the app by ensuring the coroutine scope for progress updates is always re-initialized in the service lifecycle. Now, the progress bar always updates correctly after service or player rebuilds.
+  - **ROBUST COROUTINE SCOPE MANAGEMENT**: Refactored MusicPlayerServiceImpl and MusicPlayerService to manage the coroutine scope and its SupervisorJob explicitly, re-initializing on service creation and cancelling on destruction. This ensures all progress and playback coroutines are always active and cleaned up properly.
 
 ## Key Features Implemented
 1. Music Library Management
@@ -253,6 +255,11 @@ NOVA is a modern Android music player app built with Jetpack Compose, following 
 ### 7. Compilation Error Fixes ✅
 - **Issue**: Kotlin flow collection and property delegate errors
 - **Solution**: Fixed type mismatches and flow collection issues in PlaylistSelectionDialog
+
+### 8. Persistent Progress Updates After App Reopen ✅
+- **Issue**: Seekbar/progress bar would not update after reopening the app or after service/player rebuilds
+- **Root Cause**: Coroutine scope for progress updates was not re-initialized after service recreation, causing the progress coroutine to be inactive
+- **Solution**: Made coroutine scope a managed property, re-initialized in MusicPlayerService.onCreate() and cancelled in onDestroy(), ensuring progress updates always work after app restarts
 
 ## Current Implementation Details
 
