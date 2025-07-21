@@ -19,6 +19,15 @@ android {
         ]
     }
     
+    signingConfigs {
+        release {
+            storeFile file('E:/Faseeh Project/NOVA/app/release/NOVA_NEW.jks') // Updated path
+            storePassword 'YOUR_KEYSTORE_PASSWORD' // Replace with your keystore password
+            keyAlias 'YOUR_KEY_ALIAS' // Replace with your key alias
+            keyPassword 'YOUR_KEY_PASSWORD' // Replace with your key password
+        }
+    }
+
     defaultConfig {
         applicationId "com.nova.music"
         minSdk 24
@@ -46,6 +55,7 @@ android {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.release
         }
     }
     compileOptions {

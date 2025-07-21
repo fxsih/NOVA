@@ -1061,27 +1061,34 @@ async def audio_fallback(request: Request, video_id: str = Query(..., descriptio
 
 if __name__ == "__main__":
     import uvicorn
-    import multiprocessing
-    
-    # Calculate optimal number of workers based on CPU cores
-    workers = min(4, multiprocessing.cpu_count() + 1)
-    
-    if workers > 1:
-        # For multiple workers, we need to use an import string
+    import platform
+
+    # Always use a single worker on Windows
+    if platform.system() == "Windows":
         uvicorn.run(
-            "main:app",  # Use import string instead of app instance
-            host="0.0.0.0", 
+            app,
+            host="0.0.0.0",
             port=8000,
-            workers=workers,
             timeout_keep_alive=65,
             log_level="info"
         )
     else:
-        # For single worker, we can use the app instance directly
-        uvicorn.run(
-            app, 
-            host="0.0.0.0", 
-            port=8000,
-            timeout_keep_alive=65,
-            log_level="info"
-        ) 
+        import multiprocessing
+        workers = min(4, multiprocessing.cpu_count() + 1)
+        if workers > 1:
+            uvicorn.run(
+                "main:app",
+                host="0.0.0.0",
+                port=8000,
+                workers=workers,
+                timeout_keep_alive=65,
+                log_level="info"
+            )
+        else:
+            uvicorn.run(
+                app,
+                host="0.0.0.0",
+                port=8000,
+                timeout_keep_alive=65,
+                log_level="info"
+            ) 

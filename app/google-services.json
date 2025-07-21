@@ -14,6 +14,14 @@
       },
       "oauth_client": [
         {
+          "client_id": "643353241365-2ie8mfhhvvvv6hk9ah6qdt8n2l9arlsu.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.nova.music",
+            "certificate_hash": "8f567b68de1ae6ffadc3afae8ade275a754b28fa"
+          }
+        },
+        {
           "client_id": "643353241365-7dclkua2sngdtt3113vec40c3j066bd1.apps.googleusercontent.com",
           "client_type": 1,
           "android_info": {

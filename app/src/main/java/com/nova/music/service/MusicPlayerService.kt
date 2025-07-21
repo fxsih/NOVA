@@ -1,13 +1,11 @@
 package com.nova.music.service
 
-import android.app.Notification
 import android.app.Service
 import android.content.Intent
 import android.os.Binder
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
-import androidx.core.app.NotificationManagerCompat
 import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.MediaMetadataCompat
 import com.nova.music.MainActivity
@@ -21,12 +19,9 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 import android.os.Build
 import com.nova.music.R
-import android.support.v4.media.session.PlaybackStateCompat
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
-import com.nova.music.service.NovaSessionManager
 
 @AndroidEntryPoint
 class MusicPlayerService : Service() {
@@ -431,7 +426,8 @@ class MusicPlayerService : Service() {
         NovaSessionManager.onTaskRemoved(
             applicationContext,
             clearPlaybackState = {
-                kotlinx.coroutines.runBlocking { 
+                // Cleanup must run on the main thread for ExoPlayer
+                CoroutineScope(Dispatchers.Main).launch {
                     musicPlayerServiceImpl.stop()
                     musicPlayerServiceImpl.onDestroy()
                 }

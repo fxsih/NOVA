@@ -32,7 +32,6 @@ import com.nova.music.ui.viewmodels.LibraryViewModel
 import com.nova.music.ui.viewmodels.PlayerViewModel
 import com.nova.music.ui.util.rememberDynamicBottomPadding
 import androidx.compose.ui.platform.LocalContext
-import kotlinx.coroutines.launch
 import androidx.compose.runtime.rememberCoroutineScope
 
 @Composable
