@@ -138,7 +138,7 @@ class MediaNotificationManager(
             .setContentText(song.artist)
             .setContentIntent(contentIntent)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .setOngoing(isPlaying)
+            .setOngoing(true) // Always keep notification ongoing to prevent service from being killed
             .setAutoCancel(false)
             .setShowWhen(false)
             .setPriority(NotificationCompat.PRIORITY_MAX) // Use MAX for better visibility
@@ -176,7 +176,6 @@ class MediaNotificationManager(
         // Apply the MediaStyle
         builder.setStyle(mediaStyle)
             .setColorized(true) // Use colorized notification
-            .setOngoing(isPlaying) // Reinforce this setting
         
         // Load album art asynchronously
         loadAlbumArt(song, builder)

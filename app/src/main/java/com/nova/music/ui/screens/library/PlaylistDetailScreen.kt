@@ -62,7 +62,7 @@ fun PlaylistDetailScreen(
         "liked_songs" -> libraryViewModel.likedSongs
         "downloads" -> libraryViewModel.downloadedSongs
         else -> libraryViewModel.getPlaylistSongs(playlistId)
-    }.collectAsState(initial = emptyList())
+    }.collectAsState()
     var selectedSong by remember { mutableStateOf<Song?>(null) }
     var showPlaylistDialog by remember { mutableStateOf(false) }
     var showCreateDialog by remember { mutableStateOf(false) }

@@ -22,7 +22,10 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -38,6 +41,22 @@ class MusicRepositoryImpl @Inject constructor(
     private val firebaseAuth: FirebaseAuth,
     private val firestore: FirebaseFirestore
 ) : MusicRepository {
+
+    // Custom coroutine scope for repository operations to prevent premature cancellation
+    private val repositoryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    
+    init {
+        Log.d(TAG, "🔧 MusicRepositoryImpl initialized with repositoryScope")
+    }
+    
+    /**
+     * Cleanup method to cancel the repository scope when needed
+     */
+    fun cleanup() {
+        Log.d(TAG, "🧹 Cleaning up repository scope")
+        repositoryScope.cancel()
+        Log.d(TAG, "🔧 Repository scope cancelled")
+    }
 
     private val recentSearchesKey = stringPreferencesKey("recent_searches")
     private val maxRecentSearches = 10
@@ -100,25 +119,23 @@ class MusicRepositoryImpl @Inject constructor(
                 
                 if (snapshot != null) {
                     Log.d(TAG, "🔥 Firebase real-time update: Playlists changed")
-                    // Sync remote → local DB
-                    CoroutineScope(Dispatchers.IO).launch {
+                    // Sync remote → local DB using repository scope
+                    repositoryScope.launch {
                         updateLocalPlaylistsFromRemote(snapshot)
                     }
                 }
             }
             
-            // Initial sync only once
-            val initialSnapshot = playlistsCollection.get().await()
-            updateLocalPlaylistsFromRemote(initialSnapshot)
-            
-            // After sync, emit updated local state
-            val syncedPlaylists = musicDao.getPlaylists().first()
-            val syncedPlaylistsWithSongs = syncedPlaylists.map { playlist ->
-                val songs = musicDao.getPlaylistSongs(playlist.id).first()
-                playlist.apply { this.songs = songs }
+            // Initial sync only once using repository scope
+            repositoryScope.launch {
+                try {
+                    val initialSnapshot = playlistsCollection.get().await()
+                    updateLocalPlaylistsFromRemote(initialSnapshot)
+                    Log.d(TAG, "✅ Initial playlist sync completed")
+                } catch (e: Exception) {
+                    Log.e(TAG, "❌ Error in initial playlist sync", e)
+                }
             }
-            Log.d(TAG, "✅ After sync: ${syncedPlaylistsWithSongs.size} playlists")
-            emit(syncedPlaylistsWithSongs)
             
             // Continue listening to local database changes only
             musicDao.getPlaylists().collect { playlists ->
@@ -270,6 +287,7 @@ class MusicRepositoryImpl @Inject constructor(
         // Get local liked songs first
         val localLikedSongs = musicDao.getLikedSongs().first()
         Log.d(TAG, "📋 Found ${localLikedSongs.size} local liked songs")
+        Log.d(TAG, "📋 Local liked songs: ${localLikedSongs.map { it.title }}")
         
         // Emit local songs immediately
         emit(localLikedSongs)
@@ -284,30 +302,21 @@ class MusicRepositoryImpl @Inject constructor(
             return@flow
         }
         
-        // Sync with Firebase for authenticated users
-        try {
-            Log.d(TAG, "🔄 Syncing liked songs with Firebase")
-            syncLikedSongsFromFirebase(currentUser.uid)
-            
-            // After sync, emit updated local state
-            val syncedLikedSongs = musicDao.getLikedSongs().first()
-            Log.d(TAG, "✅ After sync: ${syncedLikedSongs.size} liked songs")
-            emit(syncedLikedSongs)
-            
-            // Continue listening to local database changes
-            musicDao.getLikedSongs().collect { songs ->
-                Log.d(TAG, "🔄 Local database update: ${songs.size} liked songs")
-                emit(songs)
+        // Sync with Firebase for authenticated users using repository scope
+        repositoryScope.launch {
+            try {
+                Log.d(TAG, "🔄 Syncing liked songs with Firebase")
+                syncLikedSongsFromFirebase(currentUser.uid)
+                Log.d(TAG, "✅ Firebase sync completed for liked songs")
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Error syncing liked songs with Firebase", e)
             }
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ Error syncing liked songs with Firebase", e)
-            // Fallback to local liked songs only
-            Log.d(TAG, "🔄 Falling back to local-only mode")
-            musicDao.getLikedSongs().collect { songs ->
-                Log.d(TAG, "🔄 Local fallback update: ${songs.size} liked songs")
-                emit(songs)
-            }
+        }
+        
+        // Continue listening to local database changes
+        musicDao.getLikedSongs().collect { songs ->
+            Log.d(TAG, "🔄 Local database update: ${songs.size} liked songs")
+            emit(songs)
         }
     }.distinctUntilChanged()
 
@@ -321,8 +330,15 @@ class MusicRepositoryImpl @Inject constructor(
         // Emit local songs immediately
         emit(localDownloadedSongs)
         
-        // Verify and restore downloaded songs if needed
-        verifyAndRestoreDownloadedSongs()
+        // Verify and restore downloaded songs if needed using repository scope
+        repositoryScope.launch {
+            try {
+                verifyAndRestoreDownloadedSongs()
+                Log.d(TAG, "✅ Downloaded songs verification completed")
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Error verifying downloaded songs", e)
+            }
+        }
         
         // Continue listening to local database changes
         musicDao.getDownloadedSongs().collect { songs ->
@@ -332,40 +348,72 @@ class MusicRepositoryImpl @Inject constructor(
     }.distinctUntilChanged()
 
     override suspend fun addSongToLiked(song: Song) {
-        Log.d(TAG, "Adding song to liked: ${song.title}")
-            musicDao.updateSongLikedStatus(song.id, true)
+        Log.d(TAG, "Adding song to liked: ${song.title} (${song.id})")
         
+        // Update local database first (immediate UI update)
+        musicDao.updateSongLikedStatus(song.id, true)
+        Log.d(TAG, "✅ Updated local database for song: ${song.title}")
+        
+        // Firebase operations in background (non-blocking)
         val currentUser = firebaseAuth.currentUser
         if (currentUser != null) {
-            try {
-                firestore.collection("users").document(currentUser.uid)
-                    .collection("songs")
-                    .document(song.id)
-                    .set(song.copy(isLiked = true))
-                    .await()
-                Log.d(TAG, "Synced liked song to Firebase")
-            } catch (e: Exception) {
-                Log.e(TAG, "Error syncing liked song to Firebase", e)
+            repositoryScope.launch {
+                try {
+                    // Use merge to avoid checking if document exists
+                    val songData = mapOf(
+                        "id" to song.id,
+                        "title" to song.title,
+                        "artist" to song.artist,
+                        "album" to song.album,
+                        "albumArt" to song.albumArt,
+                        "albumArtUrl" to song.albumArtUrl,
+                        "duration" to song.duration,
+                        "audioUrl" to song.audioUrl,
+                        "isRecommended" to song.isRecommended,
+                        "isLiked" to true,
+                        "isDownloaded" to song.isDownloaded,
+                        "localFilePath" to song.localFilePath
+                    )
+                    
+                    firestore.collection("users").document(currentUser.uid)
+                        .collection("songs")
+                        .document(song.id)
+                        .set(songData, com.google.firebase.firestore.SetOptions.merge())
+                        .await()
+                    Log.d(TAG, "✅ Synced liked song to Firebase: ${song.title}")
+                } catch (e: Exception) {
+                    Log.e(TAG, "❌ Error syncing liked song to Firebase", e)
+                }
             }
+        } else {
+            Log.d(TAG, "ℹ️ No user authenticated, skipping Firebase sync")
         }
     }
 
     override suspend fun removeSongFromLiked(songId: String) {
         Log.d(TAG, "Removing song from liked: $songId")
-        musicDao.updateSongLikedStatus(songId, false)
         
+        // Update local database first (immediate UI update)
+        musicDao.updateSongLikedStatus(songId, false)
+        Log.d(TAG, "✅ Updated local database for song: $songId")
+        
+        // Firebase operations in background (non-blocking)
         val currentUser = firebaseAuth.currentUser
         if (currentUser != null) {
-            try {
-                firestore.collection("users").document(currentUser.uid)
-                    .collection("songs")
-                    .document(songId)
-                    .update("isLiked", false)
-                    .await()
-                Log.d(TAG, "Synced unliked song to Firebase")
-            } catch (e: Exception) {
-                Log.e(TAG, "Error syncing unliked song to Firebase", e)
+            repositoryScope.launch {
+                try {
+                    firestore.collection("users").document(currentUser.uid)
+                        .collection("songs")
+                        .document(songId)
+                        .update("isLiked", false)
+                        .await()
+                    Log.d(TAG, "✅ Synced unliked song to Firebase: $songId")
+                } catch (e: Exception) {
+                    Log.e(TAG, "❌ Error syncing unliked song to Firebase", e)
+                }
             }
+        } else {
+            Log.d(TAG, "ℹ️ No user authenticated, skipping Firebase sync")
         }
     }
 
@@ -390,7 +438,7 @@ class MusicRepositoryImpl @Inject constructor(
         
         // BACKGROUND: Sync to Firebase if authenticated
         if (currentUser != null) {
-            CoroutineScope(Dispatchers.IO).launch {
+            repositoryScope.launch {
                 try {
                     val playlistData = mapOf(
                         "id" to playlistId,
@@ -428,7 +476,7 @@ class MusicRepositoryImpl @Inject constructor(
         
         // BACKGROUND: Delete from Firebase if authenticated
         if (currentUser != null) {
-            CoroutineScope(Dispatchers.IO).launch {
+            repositoryScope.launch {
                 try {
                     firestore.collection("users").document(currentUser.uid)
                         .collection("playlists")
@@ -456,7 +504,7 @@ class MusicRepositoryImpl @Inject constructor(
         
         // BACKGROUND: Sync to Firebase if authenticated
         if (currentUser != null) {
-            CoroutineScope(Dispatchers.IO).launch {
+            repositoryScope.launch {
                 try {
                     firestore.collection("users").document(currentUser.uid)
                         .collection("playlists")
@@ -529,13 +577,29 @@ class MusicRepositoryImpl @Inject constructor(
         
         // BACKGROUND: Sync to Firestore if authenticated (doesn't block UI)
         if (currentUser != null) {
-            CoroutineScope(Dispatchers.IO).launch {
+            repositoryScope.launch {
                 try {
                     // Store song details in user-specific songs collection
+                    // Use update instead of set to preserve existing fields like isLiked
+                    val songData = mapOf(
+                        "id" to song.id,
+                        "title" to song.title,
+                        "artist" to song.artist,
+                        "album" to song.album,
+                        "albumArt" to song.albumArt,
+                        "albumArtUrl" to song.albumArtUrl,
+                        "duration" to song.duration,
+                        "audioUrl" to song.audioUrl,
+                        "isRecommended" to song.isRecommended,
+                        "isDownloaded" to song.isDownloaded,
+                        "localFilePath" to song.localFilePath
+                        // Note: isLiked is not included here to preserve existing value
+                    )
+                    
                     firestore.collection("users").document(currentUser.uid)
                         .collection("songs")
                         .document(song.id)
-                        .set(song)
+                        .set(songData, com.google.firebase.firestore.SetOptions.merge())
                         .await()
                     
                     // Add song to playlist in Firestore collection structure
@@ -604,7 +668,7 @@ class MusicRepositoryImpl @Inject constructor(
         
         // BACKGROUND: Remove from Firestore if authenticated (doesn't block UI)
         if (currentUser != null) {
-            CoroutineScope(Dispatchers.IO).launch {
+            repositoryScope.launch {
                 try {
                     firestore.collection("users").document(currentUser.uid)
                         .collection("playlists")
@@ -651,30 +715,21 @@ class MusicRepositoryImpl @Inject constructor(
             return@flow
         }
         
-        // Only sync once on first call, not on every emission
-        try {
-            Log.d(TAG, "🔄 Syncing playlist count with Firebase for playlist: $playlistId")
-            syncPlaylistSongsFromFirebase(playlistId, currentUser)
-            
-            // After sync, emit updated local count
-            val syncedCount = musicDao.getPlaylistSongCount(playlistId).first()
-            Log.d(TAG, "✅ After sync: playlist $playlistId has $syncedCount songs")
-            emit(syncedCount)
-            
-            // Continue listening to local database changes only
-            musicDao.getPlaylistSongCount(playlistId).collect { count ->
-                Log.d(TAG, "🔄 Local database update: playlist $playlistId has $count songs")
-                emit(count)
+        // Only sync once on first call, not on every emission using repository scope
+        repositoryScope.launch {
+            try {
+                Log.d(TAG, "🔄 Syncing playlist count with Firebase for playlist: $playlistId")
+                syncPlaylistSongsFromFirebase(playlistId, currentUser)
+                Log.d(TAG, "✅ Playlist count sync completed for playlist: $playlistId")
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Error syncing playlist count with Firebase", e)
             }
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ Error syncing playlist count with Firebase", e)
-            // Fallback to local playlist count only
-            Log.d(TAG, "🔄 Falling back to local-only mode")
-            musicDao.getPlaylistSongCount(playlistId).collect { count ->
-                Log.d(TAG, "🔄 Local fallback update: playlist $playlistId has $count songs")
-                emit(count)
-            }
+        }
+        
+        // Continue listening to local database changes only
+        musicDao.getPlaylistSongCount(playlistId).collect { count ->
+            Log.d(TAG, "🔄 Local database update: playlist $playlistId has $count songs")
+            emit(count)
         }
     }.distinctUntilChanged()
 
@@ -699,30 +754,21 @@ class MusicRepositoryImpl @Inject constructor(
             return@flow
         }
         
-        // Only sync once on first call, not on every emission
-        try {
-            Log.d(TAG, "🔄 Syncing playlist songs with Firebase for playlist: $playlistId")
-            syncPlaylistSongsFromFirebase(playlistId, currentUser)
-            
-            // After sync, emit updated local state
-            val syncedSongs = musicDao.getPlaylistSongs(playlistId).first()
-            Log.d(TAG, "✅ After sync: ${syncedSongs.size} songs in playlist $playlistId")
-            emit(syncedSongs)
-            
-            // Continue listening to local database changes only
-            musicDao.getPlaylistSongs(playlistId).collect { songs ->
-                Log.d(TAG, "🔄 Local database update: ${songs.size} songs in playlist $playlistId")
-                emit(songs)
+        // Only sync once on first call, not on every emission using repository scope
+        repositoryScope.launch {
+            try {
+                Log.d(TAG, "🔄 Syncing playlist songs with Firebase for playlist: $playlistId")
+                syncPlaylistSongsFromFirebase(playlistId, currentUser)
+                Log.d(TAG, "✅ Playlist songs sync completed for playlist: $playlistId")
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Error syncing playlist songs with Firebase", e)
             }
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ Error syncing playlist songs with Firebase", e)
-            // Fallback to local playlist songs only
-            Log.d(TAG, "🔄 Falling back to local-only mode")
-            musicDao.getPlaylistSongs(playlistId).collect { songs ->
-                Log.d(TAG, "🔄 Local fallback update: ${songs.size} songs in playlist $playlistId")
-                emit(songs)
-            }
+        }
+        
+        // Continue listening to local database changes only
+        musicDao.getPlaylistSongs(playlistId).collect { songs ->
+            Log.d(TAG, "🔄 Local database update: ${songs.size} songs in playlist $playlistId")
+            emit(songs)
         }
     }.distinctUntilChanged()
 
@@ -1109,9 +1155,10 @@ class MusicRepositoryImpl @Inject constructor(
             // Check for songs that should be downloaded but aren't marked as such
             var restoredCount = 0
             for (song in allSongs) {
-                if (song.localFilePath != null && !song.isDownloaded) {
+                val localFilePath = song.localFilePath
+                if (localFilePath != null && !song.isDownloaded) {
                     Log.d(TAG, "🔄 Restoring download status for: ${song.title}")
-                    musicDao.updateSongDownloadStatus(song.id, true, song.localFilePath)
+                    musicDao.updateSongDownloadStatus(song.id, true, localFilePath)
                     restoredCount++
                 }
             }
@@ -1150,7 +1197,8 @@ class MusicRepositoryImpl @Inject constructor(
                 } else if (!songFromDb.isDownloaded) {
                     Log.e(TAG, "❌ CRITICAL: Song marked as downloaded but isDownloaded = false: ${song.title}")
                     // Restore the download status
-                    musicDao.updateSongDownloadStatus(song.id, true, song.localFilePath)
+                    val localFilePath = song.localFilePath
+                    musicDao.updateSongDownloadStatus(song.id, true, localFilePath)
                     Log.d(TAG, "✅ Restored download status for: ${song.title}")
                 } else {
                     Log.d(TAG, "✅ Downloaded song properly persisted: ${song.title}")
@@ -1175,18 +1223,37 @@ class MusicRepositoryImpl @Inject constructor(
             
             val songsCollection = firestore.collection("users").document(userId).collection("songs")
             val remoteSongsSnapshot = songsCollection.get().await()
-            val remoteSongIds: List<String> = remoteSongsSnapshot.documents.map { it.id }.filterNotNull()
             
-            Log.d(TAG, "📋 Found ${remoteSongIds.size} remote liked songs for user $userId")
+            // Get all songs from Firebase and check their liked status
+            val remoteLikedSongIds: MutableList<String> = mutableListOf()
+            val remoteUnlikedSongIds: MutableList<String> = mutableListOf()
+            
+            for (doc in remoteSongsSnapshot.documents) {
+                val songId = doc.id
+                val isLiked = doc.getBoolean("isLiked") ?: false
+                val title = doc.getString("title") ?: "Unknown"
+                
+                Log.d(TAG, "📋 Firebase song: $songId ($title), isLiked: $isLiked")
+                
+                if (isLiked) {
+                    remoteLikedSongIds.add(songId)
+                    Log.d(TAG, "✅ Added to remote liked list: $title")
+                } else {
+                    remoteUnlikedSongIds.add(songId)
+                    Log.d(TAG, "❌ Added to remote unliked list: $title")
+                }
+            }
+            
+            Log.d(TAG, "📋 Found ${remoteLikedSongIds.size} remote liked songs and ${remoteUnlikedSongIds.size} unliked songs for user $userId")
             
             // Get current local liked songs
             val localLikedSongs = musicDao.getLikedSongs().first()
             val localLikedSongIds = localLikedSongs.map { it.id }.toSet()
-            val remoteLikedSongIdsSet = remoteSongIds.toSet()
+            val remoteLikedSongIdsSet = remoteLikedSongIds.toSet()
             
-            // Songs to add (in remote but not in local)
+            // Songs to add (in remote liked but not in local liked)
             val songsToAdd = remoteLikedSongIdsSet - localLikedSongIds
-            // Songs to remove (in local but not in remote)
+            // Songs to remove (in local liked but not in remote liked)
             val songsToRemove = localLikedSongIds - remoteLikedSongIdsSet
             
             Log.d(TAG, "🔄 Liked songs sync - To add: $songsToAdd, To remove: $songsToRemove")
@@ -1194,23 +1261,71 @@ class MusicRepositoryImpl @Inject constructor(
             // Add new liked songs to the local database
             for (songId in songsToAdd) {
                 try {
-                    val song = getSongFromFirebase(songId, firebaseAuth.currentUser!!)
-                    if (song != null) {
-                        musicDao.insertSong(song.copy(isLiked = true))
-                        Log.d(TAG, "✅ Inserted liked song from Firebase: ${song.title}")
+                    // Get the song document directly and create the song object manually
+                    val songDoc = firestore.collection("users").document(userId)
+                        .collection("songs")
+                        .document(songId)
+                        .get()
+                        .await()
+                    
+                    if (songDoc.exists()) {
+                        val songData = songDoc.data
+                        if (songData != null) {
+                            val rawIsLiked = songData["isLiked"]
+                            Log.d(TAG, "🔍 Raw isLiked value from Firebase for $songId: $rawIsLiked (type: ${rawIsLiked?.javaClass?.simpleName})")
+                            
+                            val song = Song(
+                                id = songId,
+                                title = songData["title"] as? String ?: "",
+                                artist = songData["artist"] as? String ?: "",
+                                album = songData["album"] as? String ?: "",
+                                albumArt = songData["albumArt"] as? String ?: "",
+                                albumArtUrl = songData["albumArtUrl"] as? String,
+                                duration = (songData["duration"] as? Number)?.toLong() ?: 0L,
+                                audioUrl = songData["audioUrl"] as? String,
+                                isRecommended = songData["isRecommended"] as? Boolean ?: false,
+                                isLiked = songData["isLiked"] as? Boolean ?: false,
+                                isDownloaded = songData["isDownloaded"] as? Boolean ?: false,
+                                localFilePath = songData["localFilePath"] as? String
+                            )
+                            
+                            Log.d(TAG, "🔍 Created song object for $songId: title='${song.title}', isLiked=${song.isLiked}")
+                            
+                            // Ensure the song is marked as liked since it's in the liked list
+                            musicDao.insertSong(song.copy(isLiked = true))
+                            Log.d(TAG, "✅ Inserted liked song from Firebase: ${song.title}")
+                        } else {
+                            Log.w(TAG, "⚠️ Song document exists but has no data: $songId")
+                        }
+                    } else {
+                        Log.w(TAG, "⚠️ Song document does not exist in Firebase: $songId")
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Error adding liked song $songId to local database", e)
                 }
             }
             
-            // Remove deleted liked songs from the local database
+            // Remove songs that are no longer liked in remote
             for (songId in songsToRemove) {
                 try {
                     musicDao.updateSongLikedStatus(songId, false)
                     Log.d(TAG, "✅ Removed liked song $songId from local database")
                 } catch (e: Exception) {
                     Log.e(TAG, "Error removing liked song $songId from local database", e)
+                }
+            }
+            
+            // Also handle songs that are explicitly marked as unliked in remote
+            for (songId in remoteUnlikedSongIds) {
+                try {
+                    // Only update if the song is currently marked as liked locally
+                    val localSong = musicDao.getSongById(songId)
+                    if (localSong?.isLiked == true) {
+                        musicDao.updateSongLikedStatus(songId, false)
+                        Log.d(TAG, "✅ Updated song $songId to unliked based on remote status")
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error updating song $songId to unliked", e)
                 }
             }
             
@@ -1330,10 +1445,11 @@ class MusicRepositoryImpl @Inject constructor(
             // Check for songs that should be downloaded but aren't marked as such
             var restoredCount = 0
             for (song in allSongs) {
-                if (song.localFilePath != null && !song.isDownloaded) {
+                val localFilePath = song.localFilePath
+                if (localFilePath != null && !song.isDownloaded) {
                     Log.d(TAG, "🔄 Restoring download status for: ${song.title}")
-                    musicDao.updateSongDownloadStatus(song.id, true, song.localFilePath)
-                    addToDownloadsDataStore(song.id, song.localFilePath)
+                    musicDao.updateSongDownloadStatus(song.id, true, localFilePath)
+                    addToDownloadsDataStore(song.id, localFilePath)
                     restoredCount++
                 }
             }
@@ -1366,7 +1482,8 @@ class MusicRepositoryImpl @Inject constructor(
                     // Try to get file path from DataStore
                     val paths = dataStore.data.first()[downloadPathsKey] ?: ""
                     val pathEntry = paths.split(",").find { it.startsWith("$songId:") }
-                    val filePath = pathEntry?.substringAfter(":") ?: song.localFilePath
+                    val localFilePath = song.localFilePath
+                    val filePath = pathEntry?.substringAfter(":") ?: localFilePath
                     
                     musicDao.updateSongDownloadStatus(songId, true, filePath)
                     restoredCount++
@@ -1497,15 +1614,15 @@ class MusicRepositoryImpl @Inject constructor(
             var invalidCount = 0
             
             for (song in downloadedSongs) {
-                val filePath = song.localFilePath
-                if (filePath != null) {
-                    val file = File(filePath)
+                val localFilePath = song.localFilePath
+                if (localFilePath != null) {
+                    val file = File(localFilePath)
                     if (file.exists() && file.length() > 0) {
                         validCount++
                         Log.d(TAG, "✅ File exists and valid: ${song.title} -> ${file.length()} bytes")
                     } else {
                         invalidCount++
-                        Log.w(TAG, "⚠️ File missing or empty: ${song.title} -> $filePath")
+                        Log.w(TAG, "⚠️ File missing or empty: ${song.title} -> $localFilePath")
                         
                         // Mark as not downloaded
                         musicDao.updateSongDownloadStatus(song.id, false, null)

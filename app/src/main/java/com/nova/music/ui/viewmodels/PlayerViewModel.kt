@@ -25,7 +25,6 @@ import okio.buffer
 import okio.sink
 import java.io.File
 import java.io.IOException
-import java.util.concurrent.TimeUnit
 import com.nova.music.NovaApplication
 import android.content.Intent
 import android.os.Build
@@ -108,23 +107,13 @@ class PlayerViewModel @Inject constructor(
     private val _isCurrentSongDownloaded = MutableStateFlow(false)
     val isCurrentSongDownloaded: StateFlow<Boolean> = _isCurrentSongDownloaded.asStateFlow()
     
-    // Track sleep timer state
-    private val _sleepTimerActive = MutableStateFlow(false)
-    val sleepTimerActive: StateFlow<Boolean> = _sleepTimerActive.asStateFlow()
-    
-    // Track sleep timer remaining time
-    private val _sleepTimerRemaining = MutableStateFlow<Long>(0)
-    val sleepTimerRemaining: StateFlow<Long> = _sleepTimerRemaining.asStateFlow()
-    
-    // Track current sleep timer option
-    private val _sleepTimerOption = MutableStateFlow(SleepTimerOption.OFF)
-    val sleepTimerOption: StateFlow<SleepTimerOption> = _sleepTimerOption.asStateFlow()
+    // Use service's sleep timer state flows
+    val sleepTimerActive = musicPlayerService.sleepTimerActive
+    val sleepTimerRemaining = musicPlayerService.sleepTimerRemaining
+    val sleepTimerOption = musicPlayerService.sleepTimerOption
     
     // Track current loading job to cancel if needed
     private var loadingJob: Job? = null
-    
-    // Track sleep timer job
-    private var sleepTimerJob: Job? = null
     
     // Track current download job to cancel if needed
     private var downloadJob: Job? = null
@@ -135,8 +124,9 @@ class PlayerViewModel @Inject constructor(
      */
     private fun isSongFileExists(context: Context, song: Song): Boolean {
         // First check if the song has a stored local file path and if that file exists
-        if (song.localFilePath != null) {
-            val storedFile = File(song.localFilePath)
+        val localFilePath = song.localFilePath
+        if (localFilePath != null) {
+            val storedFile = File(localFilePath)
             if (storedFile.exists() && storedFile.length() > 0) {
                 return true
             }
@@ -1060,70 +1050,8 @@ class PlayerViewModel @Inject constructor(
      * Sets a sleep timer with the specified option
      */
     fun setSleepTimer(option: SleepTimerOption) {
-        // Cancel any existing timer
-        sleepTimerJob?.cancel()
-        
-        _sleepTimerOption.value = option
-        
-        when (option) {
-            SleepTimerOption.OFF -> {
-                _sleepTimerActive.value = false
-                _sleepTimerRemaining.value = 0
-            }
-            SleepTimerOption.TEN_MINUTES -> startTimerWithDuration(10 * 60 * 1000L)
-            SleepTimerOption.FIFTEEN_MINUTES -> startTimerWithDuration(15 * 60 * 1000L)
-            SleepTimerOption.THIRTY_MINUTES -> startTimerWithDuration(30 * 60 * 1000L)
-            SleepTimerOption.ONE_HOUR -> startTimerWithDuration(60 * 60 * 1000L)
-            SleepTimerOption.END_OF_SONG -> {
-                // For END_OF_SONG, we'll handle this in the currentSong collector
-                _sleepTimerActive.value = true
-                
-                // Calculate remaining time for the current song
-                val songDuration = duration.value
-                if (songDuration > 0) {
-                    val currentPosition = progress.value * songDuration
-                    _sleepTimerRemaining.value = (songDuration - currentPosition).toLong()
-                    
-                    sleepTimerJob = viewModelScope.launch {
-                        val timeRemaining = _sleepTimerRemaining.value
-                        if (timeRemaining > 0) {
-                            delay(timeRemaining)
-                            if (isActive) {
-                                stopPlayback()
-                                _sleepTimerActive.value = false
-                                _sleepTimerOption.value = SleepTimerOption.OFF
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    /**
-     * Starts a timer with the specified duration in milliseconds
-     */
-    private fun startTimerWithDuration(durationMs: Long) {
-        sleepTimerJob?.cancel() // Cancel previous job before launching new one
-        _sleepTimerActive.value = true
-        _sleepTimerRemaining.value = durationMs
-        sleepTimerJob = viewModelScope.launch {
-            val endTime = System.currentTimeMillis() + durationMs
-            var lastUpdateSec = -1L
-            while (isActive && System.currentTimeMillis() < endTime) {
-                val remaining = endTime - System.currentTimeMillis()
-                val remainingSec = remaining / 1000L
-                if (remainingSec != lastUpdateSec) {
-                _sleepTimerRemaining.value = remaining
-                    lastUpdateSec = remainingSec
-            }
-                delay(200) // Check more frequently, but only update on the second
-            }
-            if (isActive) {
-                stopPlayback()
-                _sleepTimerActive.value = false
-                _sleepTimerOption.value = SleepTimerOption.OFF
-            }
+        viewModelScope.launch {
+            musicPlayerService.setSleepTimer(option)
         }
     }
     
@@ -1131,30 +1059,17 @@ class PlayerViewModel @Inject constructor(
      * Cancels the current sleep timer
      */
     fun cancelSleepTimer() {
-        sleepTimerJob?.cancel()
-        _sleepTimerActive.value = false
-        _sleepTimerRemaining.value = 0
-        _sleepTimerOption.value = SleepTimerOption.OFF
+        viewModelScope.launch {
+            musicPlayerService.cancelSleepTimer()
+        }
     }
     
     /**
      * Formats the remaining time as a string (MM:SS)
      */
     fun formatSleepTimerRemaining(): String {
-        val remaining = _sleepTimerRemaining.value
-        
-        if (remaining <= 0) {
-            return "00:00"
-        }
-        
-        if (_sleepTimerOption.value == SleepTimerOption.END_OF_SONG) {
-            return "End of song"
-        }
-        
-        val minutes = TimeUnit.MILLISECONDS.toMinutes(remaining)
-        val seconds = TimeUnit.MILLISECONDS.toSeconds(remaining) - TimeUnit.MINUTES.toSeconds(minutes)
-        
-        return String.format("%02d:%02d", minutes, seconds)
+        // The service handles its own timer, so we just format the remaining time
+        return musicPlayerService.formatSleepTimerRemaining()
     }
 
     /**
@@ -1211,13 +1126,14 @@ class PlayerViewModel @Inject constructor(
                 val song = musicRepository.getSongById(songId) ?: return@launch
                 
                 // Check if the song is actually downloaded
-                if (!song.isDownloaded || song.localFilePath == null) {
+                val localFilePath = song.localFilePath
+                if (!song.isDownloaded || localFilePath == null) {
                     Toast.makeText(context, "Song is not downloaded", Toast.LENGTH_SHORT).show()
                     return@launch
                 }
                 
                 // Delete the file
-                val file = File(song.localFilePath)
+                val file = File(localFilePath)
                 if (file.exists()) {
                     val deleted = file.delete()
                     if (deleted) {

@@ -10,6 +10,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
@@ -34,12 +35,23 @@ class LibraryViewModel @Inject constructor(
             initialValue = emptyList()
         )
 
-    val likedSongs: StateFlow<List<Song>> = musicRepository.getLikedSongs()
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.WhileSubscribed(5000),
-            initialValue = emptyList()
-        )
+    // ⚡ Elite UX: Use Snapshot State for blazing-fast UI updates
+    private val _likedSongs = MutableStateFlow<List<Song>>(emptyList())
+    val likedSongs: StateFlow<List<Song>> = _likedSongs.asStateFlow()
+    
+    // 🧹 Flow Debounce Safety: Prevent jank under heavy sync load
+    init {
+        // Initialize liked songs flow with frame-level debounce
+        viewModelScope.launch {
+            musicRepository.getLikedSongs()
+                .debounce(16) // Frame-level debounce (16ms = 60fps)
+                .distinctUntilChanged()
+                .collect { songs ->
+                    _likedSongs.value = songs
+                    Log.d("LibraryViewModel", "📊 Liked songs updated: ${songs.size} songs")
+                }
+        }
+    }
 
     val downloadedSongs: StateFlow<List<Song>> = musicRepository.getDownloadedSongs()
         .stateIn(
@@ -48,29 +60,174 @@ class LibraryViewModel @Inject constructor(
             initialValue = emptyList()
         )
 
-    val playlistSongCounts: StateFlow<Map<String, Int>> = playlists
-        .flatMapLatest { playlists ->
-            // For each playlist, get its song count directly from database
-            val countFlows = playlists.map { playlist ->
-                musicRepository.getPlaylistSongCount(playlist.id).map { count ->
-                    playlist.id to count
-                }
-                }
-            
-            if (countFlows.isEmpty()) {
-                flowOf(emptyMap())
-            } else {
-                combine(countFlows) { counts ->
-                counts.toMap()
+    // Use a more stable approach to prevent flickering
+    private val _playlistSongCounts = MutableStateFlow<Map<String, Int>>(emptyMap())
+    val playlistSongCounts: StateFlow<Map<String, Int>> = _playlistSongCounts.asStateFlow()
+    
+    // Track which playlists we're already monitoring
+    private val monitoredPlaylists = mutableSetOf<String>()
+    
+    init {
+        // Initialize playlist counts when playlists change, but only for new playlists
+        viewModelScope.launch {
+            playlists.collect { playlistsList ->
+                val newPlaylists = playlistsList.filter { it.id !in monitoredPlaylists }
+                if (newPlaylists.isNotEmpty()) {
+                    Log.d("LibraryViewModel", "🔄 Adding ${newPlaylists.size} new playlists to monitoring")
+                    newPlaylists.forEach { playlist ->
+                        monitoredPlaylists.add(playlist.id)
+                        startMonitoringPlaylist(playlist.id)
+                    }
                 }
             }
         }
-        .distinctUntilChanged()
+    }
+    
+    private fun startMonitoringPlaylist(playlistId: String) {
+        viewModelScope.launch {
+            musicRepository.getPlaylistSongCount(playlistId)
+                .debounce(16) // Frame-level debounce to prevent flickering
+                .distinctUntilChanged()
+                .collect { count ->
+                    val currentCounts = _playlistSongCounts.value.toMutableMap()
+                    currentCounts[playlistId] = count
+                    _playlistSongCounts.value = currentCounts
+                    Log.d("LibraryViewModel", "📊 Playlist $playlistId count updated: $count")
+                }
+        }
+    }
+    
+    private suspend fun updateSinglePlaylistCount(playlistId: String) {
+        try {
+            val count = musicRepository.getPlaylistSongCount(playlistId).first()
+            val currentCounts = _playlistSongCounts.value.toMutableMap()
+            currentCounts[playlistId] = count
+            _playlistSongCounts.value = currentCounts
+            Log.d("LibraryViewModel", "✅ Updated count for playlist $playlistId: $count")
+        } catch (e: Exception) {
+            Log.e("LibraryViewModel", "Error updating count for playlist $playlistId", e)
+        }
+    }
+    
+    /**
+     * Clear the playlist songs cache for a specific playlist
+     */
+    fun clearPlaylistSongsCache(playlistId: String) {
+        playlistSongsCache.remove(playlistId)
+        Log.d("LibraryViewModel", "🧹 Cleared cache for playlist: $playlistId")
+    }
+    
+    /**
+     * Clear all playlist songs cache
+     */
+    fun clearAllPlaylistSongsCache() {
+        playlistSongsCache.clear()
+        Log.d("LibraryViewModel", "🧹 Cleared all playlist songs cache")
+    }
+    
+    /**
+     * Clear song memberships cache for a specific song
+     */
+    fun clearSongMembershipsCache(songId: String) {
+        songMembershipsCache.remove(songId)
+        Log.d("LibraryViewModel", "🧹 Cleared song memberships cache for song: $songId")
+    }
+    
+    /**
+     * Clear all song memberships cache
+     */
+    fun clearAllSongMembershipsCache() {
+        songMembershipsCache.clear()
+        Log.d("LibraryViewModel", "🧹 Cleared all song memberships cache")
+    }
+    
+    /**
+     * 🎯 Merge pending state with database state for UI display
+     * This ensures pending additions/removals are reflected immediately
+     * 🧠 Overlay state is prioritized as source of truth during transitions
+     */
+    fun getMergedSongPlaylistMemberships(songId: String): StateFlow<Set<String>> {
+        return combine(
+            getSongPlaylistMemberships(songId),
+            pendingPlaylistAdditions
+        ) { databaseMemberships, pendingAdditions ->
+            val songPending = pendingAdditions[songId] ?: emptySet()
+            
+            // 🧠 Use overlay as source of truth during transitions
+            if (songPending.isNotEmpty()) {
+                val overlayMemberships = mutableSetOf<String>()
+                
+                // Start with database memberships
+                overlayMemberships.addAll(databaseMemberships)
+                
+                // Apply pending additions
+                songPending.forEach { pendingPlaylist ->
+                    if (!pendingPlaylist.startsWith("REMOVE_")) {
+                        overlayMemberships.add(pendingPlaylist)
+                    }
+                }
+                
+                // Apply pending removals
+                songPending.forEach { pendingPlaylist ->
+                    if (pendingPlaylist.startsWith("REMOVE_")) {
+                        val playlistToRemove = pendingPlaylist.removePrefix("REMOVE_")
+                        overlayMemberships.remove(playlistToRemove)
+                    }
+                }
+                
+                overlayMemberships.toSet()
+            } else {
+                // No pending state, use database as source of truth
+                databaseMemberships
+            }
+        }
+        .debounce(16) // ⏳ Prevent frequent updates from flooding the UI
+        .distinctUntilChanged() // 🔄 Only emit when actually changed
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5000),
-            initialValue = emptyMap()
+            initialValue = emptySet()
         )
+    }
+    
+    /**
+     * 🧩 Normalize display logic to ensure consistent ID-based comparisons
+     * This prevents false negatives from object reference mismatches
+     */
+    fun isSongInPlaylistNormalized(songId: String, playlistId: String): Boolean {
+        val mergedMemberships = getMergedSongPlaylistMemberships(songId).value
+        return mergedMemberships.contains(playlistId)
+    }
+    
+    /**
+     * 🤹‍♀️ Elite UX: Retry helper for Firebase operations
+     * Provides exponential backoff and automatic retry logic
+     */
+    private suspend fun <T> retryWithBackoff(
+        maxRetries: Int = 3,
+        initialDelay: Long = 100L,
+        operation: suspend () -> T
+    ): T {
+        var retryCount = 0
+        var lastException: Exception? = null
+        
+        while (retryCount < maxRetries) {
+            try {
+                return operation()
+            } catch (e: Exception) {
+                lastException = e
+                retryCount++
+                Log.e("LibraryViewModel", "❌ Operation failed (attempt $retryCount/$maxRetries)", e)
+                
+                if (retryCount < maxRetries) {
+                    val delay = initialDelay * retryCount // Exponential backoff
+                    delay(delay)
+                }
+            }
+        }
+        
+        throw lastException ?: Exception("Operation failed after $maxRetries attempts")
+    }
         
     // Count of downloaded songs
     val downloadedSongsCount: StateFlow<Int> = downloadedSongs
@@ -93,38 +250,10 @@ class LibraryViewModel @Inject constructor(
     init {
         viewModelScope.launch { 
             loadUserPreferences()
-            // Verify downloaded songs on ViewModel initialization
-            verifyDownloadedSongsOnInit()
-            // Sync playlists on ViewModel initialization
-            syncPlaylistsOnInit()
         }
     }
     
-    /**
-     * Verify downloaded songs on ViewModel initialization
-     */
-    private suspend fun verifyDownloadedSongsOnInit() {
-        try {
-            Log.d("LibraryViewModel", "🔄 Verifying downloaded songs on ViewModel init")
-            (musicRepository as? com.nova.music.data.repository.impl.MusicRepositoryImpl)?.syncDownloadedSongsOnStartup()
-            Log.d("LibraryViewModel", "✅ Downloaded songs verified on init")
-        } catch (e: Exception) {
-            Log.e("LibraryViewModel", "❌ Error verifying downloaded songs on init", e)
-        }
-    }
-    
-    /**
-     * Sync playlists on ViewModel initialization
-     */
-    private suspend fun syncPlaylistsOnInit() {
-        try {
-            Log.d("LibraryViewModel", "🔄 Syncing playlists on ViewModel init")
-            (musicRepository as? com.nova.music.data.repository.impl.MusicRepositoryImpl)?.syncPlaylistsOnStartup()
-            Log.d("LibraryViewModel", "✅ Playlists synced on init")
-        } catch (e: Exception) {
-            Log.e("LibraryViewModel", "❌ Error syncing playlists on init", e)
-        }
-    }
+
 
     fun createPlaylist(name: String) {
         viewModelScope.launch {
@@ -136,7 +265,8 @@ class LibraryViewModel @Inject constructor(
     fun deletePlaylist(playlistId: String) {
         viewModelScope.launch {
             musicRepository.deletePlaylist(playlistId)
-            // No need to force refresh - the flow will update automatically
+            // Clear the cache for the deleted playlist
+            playlistSongsCache.remove(playlistId)
         }
     }
 
@@ -148,16 +278,87 @@ class LibraryViewModel @Inject constructor(
     }
 
     suspend fun addSongToPlaylist(song: Song, playlistId: String) {
+        // 🎯 Temporary UI Overlay: Mark as pending to be added to playlist
+        val currentPending = _pendingPlaylistAdditions.value.toMutableMap()
+        val songPendingPlaylists = currentPending[song.id]?.toMutableSet() ?: mutableSetOf()
+        songPendingPlaylists.add(playlistId)
+        currentPending[song.id] = songPendingPlaylists
+        _pendingPlaylistAdditions.value = currentPending
+        Log.d("LibraryViewModel", "✅ Pending state updated for song: ${song.title} -> playlist: $playlistId")
+        
+        try {
         musicRepository.addSongToPlaylist(song, playlistId)
-        // Force immediate UI update by triggering a refresh
-        refreshPlaylistCounts()
+            // Update the specific playlist count immediately
+            updateSinglePlaylistCount(playlistId)
+            Log.d("LibraryViewModel", "✅ Song added to playlist successfully")
+            
+            // Clear pending state after successful operation
+            val updatedPending = _pendingPlaylistAdditions.value.toMutableMap()
+            val updatedSongPending = updatedPending[song.id]?.toMutableSet() ?: mutableSetOf()
+            updatedSongPending.remove(playlistId)
+            if (updatedSongPending.isEmpty()) {
+                updatedPending.remove(song.id)
+            } else {
+                updatedPending[song.id] = updatedSongPending
+            }
+            _pendingPlaylistAdditions.value = updatedPending
+            Log.d("LibraryViewModel", "🧹 Cleared pending state for song: ${song.title} -> playlist: $playlistId")
+        } catch (e: Exception) {
+            Log.e("LibraryViewModel", "❌ Error adding song to playlist", e)
+            // Revert pending state on error
+            val updatedPending = _pendingPlaylistAdditions.value.toMutableMap()
+            val updatedSongPending = updatedPending[song.id]?.toMutableSet() ?: mutableSetOf()
+            updatedSongPending.remove(playlistId)
+            if (updatedSongPending.isEmpty()) {
+                updatedPending.remove(song.id)
+            } else {
+                updatedPending[song.id] = updatedSongPending
+            }
+            _pendingPlaylistAdditions.value = updatedPending
+            throw e
+        }
     }
 
     fun removeSongFromPlaylist(songId: String, playlistId: String) {
+        // 🎯 Temporary UI Overlay: Mark as pending to be removed from playlist
+        val currentPending = _pendingPlaylistAdditions.value.toMutableMap()
+        val songPendingPlaylists = currentPending[songId]?.toMutableSet() ?: mutableSetOf()
+        songPendingPlaylists.add("REMOVE_$playlistId") // Prefix to distinguish removal
+        currentPending[songId] = songPendingPlaylists
+        _pendingPlaylistAdditions.value = currentPending
+        Log.d("LibraryViewModel", "✅ Pending state updated for song: $songId -> remove from playlist: $playlistId")
+        
         viewModelScope.launch {
+            try {
         musicRepository.removeSongFromPlaylist(songId, playlistId)
-            // Force immediate UI update by triggering a refresh
-            refreshPlaylistCounts()
+                // Update the specific playlist count immediately
+                updateSinglePlaylistCount(playlistId)
+                Log.d("LibraryViewModel", "✅ Song removed from playlist successfully")
+                
+                // Clear pending state after successful operation
+                val updatedPending = _pendingPlaylistAdditions.value.toMutableMap()
+                val updatedSongPending = updatedPending[songId]?.toMutableSet() ?: mutableSetOf()
+                updatedSongPending.remove("REMOVE_$playlistId")
+                if (updatedSongPending.isEmpty()) {
+                    updatedPending.remove(songId)
+                } else {
+                    updatedPending[songId] = updatedSongPending
+                }
+                _pendingPlaylistAdditions.value = updatedPending
+                Log.d("LibraryViewModel", "🧹 Cleared pending state for song: $songId -> remove from playlist: $playlistId")
+            } catch (e: Exception) {
+                Log.e("LibraryViewModel", "❌ Error removing song from playlist", e)
+                // Revert pending state on error
+                val updatedPending = _pendingPlaylistAdditions.value.toMutableMap()
+                val updatedSongPending = updatedPending[songId]?.toMutableSet() ?: mutableSetOf()
+                updatedSongPending.remove("REMOVE_$playlistId")
+                if (updatedSongPending.isEmpty()) {
+                    updatedPending.remove(songId)
+                } else {
+                    updatedPending[songId] = updatedSongPending
+                }
+                _pendingPlaylistAdditions.value = updatedPending
+            }
         }
     }
     
@@ -170,6 +371,9 @@ class LibraryViewModel @Inject constructor(
                 // Trigger a refresh of playlist counts by getting current playlists
                 val currentPlaylists = playlists.value
                 Log.d("LibraryViewModel", "🔄 Refreshing playlist counts for ${currentPlaylists.size} playlists")
+                currentPlaylists.forEach { playlist ->
+                    updateSinglePlaylistCount(playlist.id)
+                }
             } catch (e: Exception) {
                 Log.e("LibraryViewModel", "❌ Error refreshing playlist counts", e)
             }
@@ -184,14 +388,21 @@ class LibraryViewModel @Inject constructor(
             }
     }
 
-    fun getPlaylistSongs(playlistId: String): Flow<List<Song>> = 
+    // Cache for playlist songs to prevent flickering
+    private val playlistSongsCache = mutableMapOf<String, StateFlow<List<Song>>>()
+    
+    fun getPlaylistSongs(playlistId: String): StateFlow<List<Song>> {
+        return playlistSongsCache.getOrPut(playlistId) {
         musicRepository.getPlaylistSongs(playlistId)
+                .debounce(16) // Frame-level debounce to prevent flickering
             .distinctUntilChanged()
             .stateIn(
                 scope = viewModelScope,
                 started = SharingStarted.WhileSubscribed(5000),
                 initialValue = emptyList()
             )
+        }
+    }
 
     /**
      * Get real-time playlist membership for a song
@@ -206,17 +417,43 @@ class LibraryViewModel @Inject constructor(
                 initialValue = false
             )
 
+    // Cache for song playlist memberships to prevent flickering
+    private val songMembershipsCache = mutableMapOf<String, MutableStateFlow<Set<String>>>()
+    
+    // 🎯 Temporary UI Overlay State: Track songs that were just added to playlists
+    // 🔄 Using MutableStateFlow to ensure state survives recomposition
+    private val _pendingPlaylistAdditions = MutableStateFlow<Map<String, Set<String>>>(emptyMap())
+    val pendingPlaylistAdditions: StateFlow<Map<String, Set<String>>> = _pendingPlaylistAdditions.asStateFlow()
+    
+    /**
+     * 🔄 Ensure overlay state survives recomposition and lifecycle events
+     * This prevents state loss during configuration changes or recomposition
+     */
+    fun ensureOverlayStatePersistence() {
+        // The MutableStateFlow already persists across recomposition
+        // This function can be called to verify state integrity
+        Log.d("LibraryViewModel", "🔄 Overlay state persistence check - pending: ${_pendingPlaylistAdditions.value.size} songs")
+    }
+
     /**
      * Get all playlist memberships for a song in a single flow
+     * ⏳ Optimized to prevent frequent updates from flooding the UI
      */
-    fun getSongPlaylistMemberships(songId: String): StateFlow<Set<String>> =
+    fun getSongPlaylistMemberships(songId: String): StateFlow<Set<String>> {
+        return songMembershipsCache.getOrPut(songId) {
+            // Create a MutableStateFlow that we can update directly
+            val mutableFlow = MutableStateFlow<Set<String>>(emptySet())
+            
+            // Start collecting the actual data and updating our mutable flow
+            viewModelScope.launch {
         playlists
-            .flatMapLatest { playlists ->
+                    .flatMapConcat { playlists ->
                 val membershipFlows = playlists
                     .filter { it.id != "liked_songs" && it.id != "downloads" }
                     .map { playlist ->
                         musicRepository.getPlaylistSongs(playlist.id)
                             .map { songs -> 
+                                        // 🧩 Compare by song.id instead of object equality
                                 if (songs.any { it.id == songId }) playlist.id else null 
                             }
                     }
@@ -229,43 +466,84 @@ class LibraryViewModel @Inject constructor(
                     }
                 }
             }
-            .distinctUntilChanged()
-            .stateIn(
-                scope = viewModelScope,
-                started = SharingStarted.WhileSubscribed(5000),
-                initialValue = emptySet()
-            )
+                    .debounce(32) // ⏳ Increased debounce to prevent flooding
+                    .distinctUntilChanged() // 🔄 Only emit when actually changed
+                    .collect { memberships ->
+                        mutableFlow.value = memberships
+                    }
+            }
+            
+            mutableFlow
+        }
+    }
 
     suspend fun isSongInPlaylist(songId: String, playlistId: String): Boolean {
         return musicRepository.isSongInPlaylist(songId, playlistId)
     }
 
     fun addSongToLiked(song: Song) {
+        Log.d("LibraryViewModel", "Adding song to liked: ${song.title} (${song.id})")
+        
+        // ⚡ Elite UX: Update UI immediately (synchronous)
+        val currentLikedSongs = _likedSongs.value.toMutableList()
+        if (!currentLikedSongs.any { it.id == song.id }) {
+            currentLikedSongs.add(song.copy(isLiked = true))
+            _likedSongs.value = currentLikedSongs
+            Log.d("LibraryViewModel", "✅ UI updated immediately for liked song: ${song.title}")
+        }
+        
+        // 🤹‍♀️ Sync Retry Strategy: Optimism plus retry = best of both worlds
         viewModelScope.launch {
-            Log.d("LibraryViewModel", "Adding song to liked: ${song.title} (${song.id})")
             try {
+                retryWithBackoff {
             musicRepository.addSongToLiked(song)
-                Log.d("LibraryViewModel", "Song added to liked successfully")
+                }
+                Log.d("LibraryViewModel", "✅ Song added to liked successfully")
             } catch (e: Exception) {
-                Log.e("LibraryViewModel", "Error adding song to liked", e)
+                Log.e("LibraryViewModel", "🔄 All retries failed, reverting UI for song: ${song.title}", e)
+                // Revert UI change on error
+                val currentLikedSongs = _likedSongs.value.toMutableList()
+                currentLikedSongs.removeAll { it.id == song.id }
+                _likedSongs.value = currentLikedSongs
             }
         }
     }
 
     fun removeSongFromLiked(songId: String) {
+        Log.d("LibraryViewModel", "Removing song from liked: $songId")
+        
+        // ⚡ Elite UX: Update UI immediately (synchronous)
+        val currentLikedSongs = _likedSongs.value.toMutableList()
+        val songToRemove = currentLikedSongs.find { it.id == songId }
+        if (songToRemove != null) {
+            currentLikedSongs.removeAll { it.id == songId }
+            _likedSongs.value = currentLikedSongs
+            Log.d("LibraryViewModel", "✅ UI updated immediately for unliked song: ${songToRemove.title}")
+            
+            // 🤹‍♀️ Sync Retry Strategy: Optimism plus retry = best of both worlds
         viewModelScope.launch {
-            Log.d("LibraryViewModel", "Removing song from liked: $songId")
+                try {
+                    retryWithBackoff {
             musicRepository.removeSongFromLiked(songId)
-            Log.d("LibraryViewModel", "Song removed from liked successfully")
+                    }
+                    Log.d("LibraryViewModel", "✅ Song removed from liked successfully")
+                } catch (e: Exception) {
+                    Log.e("LibraryViewModel", "🔄 All retries failed, reverting UI for song: ${songToRemove.title}", e)
+                    // Revert UI change on error
+                    val currentLikedSongs = _likedSongs.value.toMutableList()
+                    currentLikedSongs.add(songToRemove)
+                    _likedSongs.value = currentLikedSongs
+                }
+            }
         }
     }
     
     fun toggleLike(song: Song) {
         viewModelScope.launch {
             if (song.isLiked) {
-                musicRepository.removeSongFromLiked(song.id)
+                removeSongFromLiked(song.id)
             } else {
-                musicRepository.addSongToLiked(song)
+                addSongToLiked(song)
             }
         }
     }
