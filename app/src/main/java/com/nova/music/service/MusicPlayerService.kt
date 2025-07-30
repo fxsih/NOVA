@@ -191,16 +191,18 @@ class MusicPlayerService : Service() {
             .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, musicPlayerServiceImpl.duration.value)
         
         // Add album art URI to metadata
+        val albumArtUrl = song.albumArtUrl
+        val albumArt = song.albumArt
         when {
-            !song.albumArtUrl.isNullOrBlank() -> {
-                metadataBuilder.putString(MediaMetadataCompat.METADATA_KEY_ALBUM_ART_URI, song.albumArtUrl)
+            !albumArtUrl.isNullOrBlank() -> {
+                metadataBuilder.putString(MediaMetadataCompat.METADATA_KEY_ALBUM_ART_URI, albumArtUrl)
                 // We'll load the actual bitmap asynchronously
-                loadAlbumArtForMediaSession(song.albumArtUrl, metadataBuilder)
+                loadAlbumArtForMediaSession(albumArtUrl, metadataBuilder)
             }
-            !song.albumArt.isBlank() -> {
-                metadataBuilder.putString(MediaMetadataCompat.METADATA_KEY_ALBUM_ART_URI, song.albumArt)
+            !albumArt.isBlank() -> {
+                metadataBuilder.putString(MediaMetadataCompat.METADATA_KEY_ALBUM_ART_URI, albumArt)
                 // We'll load the actual bitmap asynchronously
-                loadAlbumArtForMediaSession(song.albumArt, metadataBuilder)
+                loadAlbumArtForMediaSession(albumArt, metadataBuilder)
             }
         }
         
@@ -293,18 +295,10 @@ class MusicPlayerService : Service() {
             Log.d(TAG, "Updating notification, isPlaying: $isPlaying")
             val notification = notificationManager.updateNotification(song, isPlaying)
             
-            if (isPlaying) {
-                Log.d(TAG, "Starting foreground service with notification")
-                startForeground(MediaNotificationManager.NOTIFICATION_ID, notification)
-            } else {
-                // If not playing, we can make the notification dismissible but keep the service running
-                Log.d(TAG, "Stopping foreground but keeping notification")
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                    stopForeground(STOP_FOREGROUND_DETACH)
-                } else {
-                    stopForeground(false)
-                }
-            }
+            // Always keep the service in foreground to prevent it from being killed
+            // This ensures the mini player and music state persist when app is backgrounded
+            Log.d(TAG, "Starting foreground service with notification (playing: $isPlaying)")
+            startForeground(MediaNotificationManager.NOTIFICATION_ID, notification)
         } catch (e: Exception) {
             Log.e(TAG, "Error updating notification", e)
         }
@@ -356,7 +350,7 @@ class MusicPlayerService : Service() {
                 Log.d(TAG, "Received STOP action")
                 serviceScope.launch {
                     musicPlayerServiceImpl.stop()
-                    stopSelf()
+            stopSelf()
                 }
             }
         }
@@ -413,12 +407,12 @@ class MusicPlayerService : Service() {
         
         // Release resources
         serviceJob.cancel()
-        mediaSession.release()
-        
+            mediaSession.release()
+            
         // Cancel the progress coroutine scope
         musicPlayerServiceImpl.progressJobSupervisor.cancel()
         super.onDestroy()
-        musicPlayerServiceImpl.onDestroy()
+            musicPlayerServiceImpl.onDestroy()
     }
     
     /**
@@ -434,13 +428,13 @@ class MusicPlayerService : Service() {
             clearPlaybackState = {
                 // Cleanup must run on the main thread for ExoPlayer
                 CoroutineScope(Dispatchers.Main).launch {
-                    musicPlayerServiceImpl.stop()
-                    musicPlayerServiceImpl.onDestroy()
+                musicPlayerServiceImpl.stop()
+            musicPlayerServiceImpl.onDestroy()
                 }
             },
             stopService = {
                 // Cancel notification first
-                notificationManager.cancelNotification()
+            notificationManager.cancelNotification()
                 // Stop foreground service
                 stopForeground(true)
                 // Stop the service

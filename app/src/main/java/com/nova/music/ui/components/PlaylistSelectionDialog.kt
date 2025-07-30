@@ -36,11 +36,19 @@ fun PlaylistSelectionDialog(
     var showCreateDialog by remember { mutableStateOf(false) }
     var showRenameDialog by remember { mutableStateOf<Playlist?>(null) }
     
-    // Get all playlist memberships for the song in a single flow
+    // Get all playlist memberships for the song in a single flow (with pending state merged)
+    // 🧠 Using collectAsState instead of collectLatest to prevent cancellation of optimistic updates
     val songPlaylistMemberships by if (songId != null) {
-        viewModel.getSongPlaylistMemberships(songId).collectAsState(initial = emptySet())
+        viewModel.getMergedSongPlaylistMemberships(songId).collectAsState(initial = emptySet())
     } else {
         remember { mutableStateOf(emptySet<String>()) }
+    }
+    
+    // 🔄 Ensure overlay state persistence on composition
+    LaunchedEffect(songId) {
+        if (songId != null) {
+            viewModel.ensureOverlayStatePersistence()
+        }
     }
 
     Dialog(onDismissRequest = onDismiss) {

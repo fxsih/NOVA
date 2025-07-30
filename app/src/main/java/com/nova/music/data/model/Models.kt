@@ -12,17 +12,17 @@ import kotlinx.serialization.Serializable
 @Serializable
 data class Song(
     @PrimaryKey val id: String = "",
-    val title: String = "",
-    val artist: String = "",
-    val album: String = "",
-    val albumArt: String = "",
-    val albumArtUrl: String? = null,
-    val duration: Long = 0L,
-    val audioUrl: String? = null,
-    val isRecommended: Boolean = false,
-    val isLiked: Boolean = false,
-    val isDownloaded: Boolean = false,
-    val localFilePath: String? = null
+    var title: String = "",
+    var artist: String = "",
+    var album: String = "",
+    var albumArt: String = "",
+    var albumArtUrl: String? = null,
+    var duration: Long = 0L,
+    var audioUrl: String? = null,
+    var isRecommended: Boolean = false,
+    var isLiked: Boolean = false,
+    var isDownloaded: Boolean = false,
+    var localFilePath: String? = null
 )
 
 @Entity(tableName = "playlists")

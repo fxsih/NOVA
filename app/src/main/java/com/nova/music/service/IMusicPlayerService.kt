@@ -2,6 +2,7 @@ package com.nova.music.service
 
 import com.nova.music.data.model.Song
 import com.nova.music.ui.viewmodels.RepeatMode
+import com.nova.music.ui.viewmodels.SleepTimerOption
 import kotlinx.coroutines.flow.StateFlow
 
 /**
@@ -16,6 +17,11 @@ interface IMusicPlayerService {
     val repeatMode: StateFlow<RepeatMode>
     val duration: StateFlow<Long>
     val currentQueue: StateFlow<List<Song>>
+    
+    // Sleep timer state flows
+    val sleepTimerActive: StateFlow<Boolean>
+    val sleepTimerRemaining: StateFlow<Long>
+    val sleepTimerOption: StateFlow<SleepTimerOption>
     
     suspend fun playSong(song: Song)
     suspend fun setPlaylistQueue(songs: List<Song>, startSongId: String? = null)
@@ -37,4 +43,9 @@ interface IMusicPlayerService {
     suspend fun playQueueItemAt(index: Int)
     suspend fun resetPlayerForNewSong()
     suspend fun restorePlayerState()
+    
+    // Sleep timer methods
+    suspend fun setSleepTimer(option: SleepTimerOption)
+    suspend fun cancelSleepTimer()
+    fun formatSleepTimerRemaining(): String
 } 

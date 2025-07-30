@@ -9,11 +9,13 @@ import com.nova.music.data.model.Song
 import com.nova.music.data.repository.MusicRepository
 import com.nova.music.data.api.YTMusicService
 import com.nova.music.ui.viewmodels.RepeatMode
+import com.nova.music.ui.viewmodels.SleepTimerOption
 import com.nova.music.util.PreferenceManager
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import java.io.File
+import java.util.concurrent.TimeUnit
 
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -30,6 +32,17 @@ class MusicPlayerServiceImpl @Inject constructor(
 
     var progressJobSupervisor = SupervisorJob()
     var coroutineScope = CoroutineScope(progressJobSupervisor + Dispatchers.Main)
+    
+    // Separate coroutine scope for repository operations to avoid interference
+    private val repositoryCoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    
+    /**
+     * Cleanup method to cancel the repository coroutine scope when needed
+     */
+    fun cleanupRepositoryScope() {
+        Log.d(TAG, "🧹 Cleaning up repository coroutine scope")
+        repositoryCoroutineScope.cancel()
+    }
     
     // ExoPlayer is now created on demand and can be recreated when needed
     private var exoPlayer: ExoPlayer? = null
@@ -56,10 +69,23 @@ class MusicPlayerServiceImpl @Inject constructor(
     private val _currentQueue = MutableStateFlow<List<Song>>(emptyList())
     override val currentQueue: StateFlow<List<Song>> = _currentQueue
 
+    // Sleep timer state flows
+    private val _sleepTimerActive = MutableStateFlow(false)
+    override val sleepTimerActive: StateFlow<Boolean> = _sleepTimerActive
+
+    private val _sleepTimerRemaining = MutableStateFlow<Long>(0)
+    override val sleepTimerRemaining: StateFlow<Long> = _sleepTimerRemaining
+
+    private val _sleepTimerOption = MutableStateFlow(SleepTimerOption.OFF)
+    override val sleepTimerOption: StateFlow<SleepTimerOption> = _sleepTimerOption
+
     private var progressJob: Job? = null
     
     // Keep track of the current queue (internal use)
     private var currentQueueInternal: List<Song> = emptyList()
+    
+    // Track sleep timer job
+    private var sleepTimerJob: Job? = null
     
     // Ensure ExoPlayer is created and configured properly
     private fun ensurePlayerCreated() {
@@ -94,7 +120,23 @@ class MusicPlayerServiceImpl @Inject constructor(
                         _duration.value = player.duration
                     }
                 }
-                Player.STATE_ENDED -> Log.d(TAG, "ExoPlayer ended")
+                Player.STATE_ENDED -> {
+                    Log.d(TAG, "🎵 ExoPlayer STATE_ENDED triggered")
+                    Log.d(TAG, "🎵 Sleep timer state - active: ${_sleepTimerActive.value}, option: ${_sleepTimerOption.value}")
+                    
+                    // Check if sleep timer is set to END_OF_SONG
+                    if (_sleepTimerOption.value == SleepTimerOption.END_OF_SONG && _sleepTimerActive.value) {
+                        Log.d(TAG, "🎵 Song ended with END_OF_SONG timer active, stopping playback")
+                        coroutineScope.launch {
+                            clearCurrentSong()
+                            _sleepTimerActive.value = false
+                            _sleepTimerOption.value = SleepTimerOption.OFF
+                            Log.d(TAG, "🎵 Sleep timer stopped and state reset after song ended")
+                        }
+                    } else {
+                        Log.d(TAG, "🎵 Song ended but no END_OF_SONG timer active")
+                    }
+                }
             }
         }
         
@@ -109,6 +151,7 @@ class MusicPlayerServiceImpl @Inject constructor(
             val currentMediaItemIndex = exoPlayer?.currentMediaItemIndex ?: 0
             val mediaId = mediaItem.mediaId
             Log.d(TAG, "Media item transitioned to index: $currentMediaItemIndex, mediaId: $mediaId, reason: $reason")
+            Log.d(TAG, "Sleep timer state during transition - active: ${_sleepTimerActive.value}, option: ${_sleepTimerOption.value}")
             
             // Find the song in the current queue with this media ID
             val song = currentQueueInternal.find { it.id == mediaId }
@@ -116,14 +159,8 @@ class MusicPlayerServiceImpl @Inject constructor(
                 _currentSong.value = song
                 Log.d(TAG, "Media item transitioned to: ${song.title}")
                 
-                // Add to recently played
-                coroutineScope.launch {
-                    try {
-                        musicRepository.addToRecentlyPlayed(song)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error adding song to recently played", e)
-                    }
-                }
+                // Don't add to recently played here - only add when explicitly played
+                // This prevents songs from being added when they're just loaded/transitioned
             } else {
                 Log.d(TAG, "Could not find song with mediaId=$mediaId in the queue")
                 
@@ -233,13 +270,14 @@ class MusicPlayerServiceImpl @Inject constructor(
                 _currentQueue.value = currentQueueInternal
                 
                 // Create a media item for the song - check if downloaded first
-                val mediaItem = if (song.isDownloaded && song.localFilePath != null) {
-                    val file = File(song.localFilePath)
+                val localFilePath = song.localFilePath
+                val mediaItem = if (song.isDownloaded && localFilePath != null) {
+                    val file = File(localFilePath)
                     if (file.exists() && file.length() > 0) {
-                        Log.d(TAG, "Using local file for playback: ${song.localFilePath}")
+                        Log.d(TAG, "Using local file for playback: $localFilePath")
                         MediaItem.Builder()
                             .setMediaId(song.id)
-                            .setUri(song.localFilePath)
+                            .setUri(localFilePath)
                             .build()
                     } else {
                         Log.d(TAG, "Local file doesn't exist, falling back to streaming")
@@ -278,10 +316,11 @@ class MusicPlayerServiceImpl @Inject constructor(
                     }
                 }
                 
-                // Add to recently played
-                coroutineScope.launch {
+                // Add to recently played using separate repository scope
+                repositoryCoroutineScope.launch {
                     try {
                         musicRepository.addToRecentlyPlayed(song)
+                        Log.d(TAG, "✅ Added song to recently played successfully")
                     } catch (e: Exception) {
                         Log.e(TAG, "Error adding song to recently played", e)
                     }
@@ -319,13 +358,14 @@ class MusicPlayerServiceImpl @Inject constructor(
                 // Create media items for all songs
                 val mediaItems = songs.map { song ->
                     // Check if the song is downloaded
-                    if (song.isDownloaded && song.localFilePath != null) {
-                        val file = File(song.localFilePath)
+                    val localFilePath = song.localFilePath
+                    if (song.isDownloaded && localFilePath != null) {
+                        val file = File(localFilePath)
                         if (file.exists() && file.length() > 0) {
-                            Log.d(TAG, "Using local file for song ${song.title}: ${song.localFilePath}")
+                            Log.d(TAG, "Using local file for song ${song.title}: $localFilePath")
                             MediaItem.Builder()
                                 .setMediaId(song.id)
-                                .setUri(song.localFilePath)
+                                .setUri(localFilePath)
                                 .build()
                         } else {
                             Log.d(TAG, "Local file for song ${song.title} doesn't exist, falling back to streaming")
@@ -415,11 +455,12 @@ class MusicPlayerServiceImpl @Inject constructor(
                     }
                 }
                 
-                // Add the start song to recently played
+                // Add the start song to recently played using separate repository scope
                 if (startIndex < songs.size) {
-                    coroutineScope.launch {
+                    repositoryCoroutineScope.launch {
                         try { 
                             musicRepository.addToRecentlyPlayed(songs[startIndex]) 
+                            Log.d(TAG, "✅ Added start song to recently played successfully")
                         } catch (e: Exception) {
                             Log.e(TAG, "Error adding song to recently played", e)
                         }
@@ -439,13 +480,14 @@ class MusicPlayerServiceImpl @Inject constructor(
      */
     private fun createMediaItem(song: Song): MediaItem {
         // Check if the song is downloaded and has a local file path
-        if (song.isDownloaded && song.localFilePath != null) {
-            val file = File(song.localFilePath)
+        val localFilePath = song.localFilePath
+        if (song.isDownloaded && localFilePath != null) {
+            val file = File(localFilePath)
             if (file.exists() && file.length() > 0) {
-                Log.d(TAG, "Using local file for playback: ${song.localFilePath}")
+                Log.d(TAG, "Using local file for playback: $localFilePath")
                 return MediaItem.Builder()
                     .setMediaId(song.id)
-                    .setUri(song.localFilePath)
+                    .setUri(localFilePath)
                     .build()
             } else {
                 Log.d(TAG, "Local file doesn't exist, falling back to streaming: ${song.title}")
@@ -497,10 +539,10 @@ class MusicPlayerServiceImpl @Inject constructor(
                     // Calculate progress with validation
                     val newProgress = if (validDuration > 0) {
                         (validPosition.toFloat() / validDuration).coerceIn(0f, 1f)
-                    } else {
-                        0f
-                    }
-                    
+                } else {
+                    0f
+                }
+                
                     // Update progress and duration
                     _progress.value = newProgress
                     _duration.value = validDuration
@@ -984,11 +1026,14 @@ class MusicPlayerServiceImpl @Inject constructor(
                 _currentSong.value = song
                 Log.d(TAG, "Updated current song to: ${song.title}")
                 
-                // Add to recently played
-                try {
-                    musicRepository.addToRecentlyPlayed(song)
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error adding song to recently played", e)
+                // Add to recently played using separate repository scope
+                repositoryCoroutineScope.launch {
+                    try {
+                        musicRepository.addToRecentlyPlayed(song)
+                        Log.d(TAG, "✅ Added song to recently played successfully")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error adding song to recently played", e)
+                    }
                 }
             } else {
                 Log.d(TAG, "Could not find song with mediaId=$mediaId in the queue")
@@ -1520,6 +1565,9 @@ class MusicPlayerServiceImpl @Inject constructor(
         // Cancel progress updates
         progressJob?.cancel()
         
+        // Cancel sleep timer
+        sleepTimerJob?.cancel()
+        
         // Reset all state flows to initial values
         _currentSong.value = null
         _isPlaying.value = false
@@ -1530,6 +1578,147 @@ class MusicPlayerServiceImpl @Inject constructor(
         _currentQueue.value = emptyList()
         currentQueueInternal = emptyList()
         
+        // Reset sleep timer state
+        _sleepTimerActive.value = false
+        _sleepTimerRemaining.value = 0
+        _sleepTimerOption.value = SleepTimerOption.OFF
+        
         Log.d(TAG, "All state flows reset to initial values")
+    }
+    
+    // Sleep timer implementation
+    override suspend fun setSleepTimer(option: SleepTimerOption) {
+        withContext(Dispatchers.IO) {
+            try {
+                Log.d(TAG, "⏰ setSleepTimer called with option: $option")
+                Log.d(TAG, "⏰ Current song: ${_currentSong.value?.title}, duration: ${duration.value}, progress: ${progress.value}")
+                
+                sleepTimerJob?.cancel()
+                _sleepTimerOption.value = option
+                when (option) {
+                    SleepTimerOption.OFF -> {
+                        Log.d(TAG, "⏰ Turning off sleep timer")
+                        _sleepTimerActive.value = false
+                        _sleepTimerRemaining.value = 0
+                    }
+                    SleepTimerOption.TEN_MINUTES -> {
+                        Log.d(TAG, "⏰ Setting 10-minute timer")
+                        startTimerWithDuration(10 * 60 * 1000L)
+                    }
+                    SleepTimerOption.FIFTEEN_MINUTES -> {
+                        Log.d(TAG, "⏰ Setting 15-minute timer")
+                        startTimerWithDuration(15 * 60 * 1000L)
+                    }
+                    SleepTimerOption.THIRTY_MINUTES -> {
+                        Log.d(TAG, "⏰ Setting 30-minute timer")
+                        startTimerWithDuration(30 * 60 * 1000L)
+                    }
+                    SleepTimerOption.ONE_HOUR -> {
+                        Log.d(TAG, "⏰ Setting 1-hour timer")
+                        startTimerWithDuration(60 * 60 * 1000L)
+                    }
+                    SleepTimerOption.END_OF_SONG -> {
+                        _sleepTimerActive.value = true
+                        
+                        // For END_OF_SONG, we need to monitor progress and stop when the song is about to end
+                        sleepTimerJob = coroutineScope.launch {
+                            Log.d(TAG, "🎵 END_OF_SONG timer started - monitoring song progress")
+                            
+                            while (isActive && _sleepTimerActive.value) {
+                                val songDuration = duration.value
+                                val currentProgress = progress.value
+                                
+                                Log.d(TAG, "🎵 Timer check - duration: ${songDuration}ms, progress: ${(currentProgress * 100).toInt()}%, active: ${_sleepTimerActive.value}")
+                                
+                                // Update remaining time for display
+                                if (songDuration > 0) {
+                                    val currentPosition = currentProgress * songDuration
+                                    _sleepTimerRemaining.value = (songDuration - currentPosition).toLong()
+                                    
+                                    // Stop when the song is about to end (99.5% complete)
+                                    if (currentProgress >= 0.995f) {
+                                        Log.d(TAG, "🎵 Song about to end (${(currentProgress * 100).toInt()}%), stopping playback")
+                                        clearCurrentSong()
+                                        _sleepTimerActive.value = false
+                                        _sleepTimerOption.value = SleepTimerOption.OFF
+                                        Log.d(TAG, "🎵 Sleep timer stopped and state reset - song ending")
+                                        break
+                                    }
+                                } else {
+                                    Log.d(TAG, "🎵 No duration available yet, waiting...")
+                                }
+                                
+                                delay(500) // Check more frequently
+                            }
+                            
+                            Log.d(TAG, "🎵 END_OF_SONG timer loop ended - active: ${_sleepTimerActive.value}")
+                        }
+                    }
+                }
+                Log.d(TAG, "Sleep timer set to: $option, active: ${_sleepTimerActive.value}, remaining: ${_sleepTimerRemaining.value}")
+                Log.d(TAG, "Current song: ${_currentSong.value?.title}, duration: ${duration.value}")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error setting sleep timer", e)
+                _error.value = "Error setting sleep timer: ${e.message}"
+            }
+        }
+    }
+
+    private fun startTimerWithDuration(durationMs: Long) {
+        Log.d(TAG, "⏰ startTimerWithDuration called with ${durationMs}ms")
+        sleepTimerJob?.cancel()
+        _sleepTimerActive.value = true
+        _sleepTimerRemaining.value = durationMs
+        sleepTimerJob = coroutineScope.launch {
+            Log.d(TAG, "⏰ Duration timer started - will expire in ${durationMs / 1000} seconds")
+            val endTime = System.currentTimeMillis() + durationMs
+            var lastUpdateSec = -1L
+            while (isActive && System.currentTimeMillis() < endTime) {
+                val remaining = endTime - System.currentTimeMillis()
+                val remainingSec = remaining / 1000L
+                if (remainingSec != lastUpdateSec) {
+                    _sleepTimerRemaining.value = remaining
+                    lastUpdateSec = remainingSec
+                    Log.d(TAG, "⏰ Duration timer remaining: ${remainingSec}s")
+                }
+                delay(200)
+            }
+            if (isActive) {
+                Log.d(TAG, "⏰ Duration timer expired, stopping playback")
+                Log.d(TAG, "⏰ Current song: ${_currentSong.value?.title}, isPlaying: ${_isPlaying.value}")
+                clearCurrentSong()
+                _sleepTimerActive.value = false
+                _sleepTimerOption.value = SleepTimerOption.OFF
+                Log.d(TAG, "⏰ Duration timer stopped and state reset")
+            }
+        }
+    }
+
+    override suspend fun cancelSleepTimer() {
+        withContext(Dispatchers.IO) {
+            try {
+                sleepTimerJob?.cancel()
+                _sleepTimerActive.value = false
+                _sleepTimerRemaining.value = 0
+                _sleepTimerOption.value = SleepTimerOption.OFF
+                Log.d(TAG, "Sleep timer cancelled")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error cancelling sleep timer", e)
+                _error.value = "Error cancelling sleep timer: ${e.message}"
+            }
+        }
+    }
+
+    override fun formatSleepTimerRemaining(): String {
+        val remaining = _sleepTimerRemaining.value
+        if (remaining <= 0) {
+            return "00:00"
+        }
+        if (_sleepTimerOption.value == SleepTimerOption.END_OF_SONG) {
+            return "End of song"
+        }
+        val minutes = java.util.concurrent.TimeUnit.MILLISECONDS.toMinutes(remaining)
+        val seconds = java.util.concurrent.TimeUnit.MILLISECONDS.toSeconds(remaining) - java.util.concurrent.TimeUnit.MINUTES.toSeconds(minutes)
+        return String.format("%02d:%02d", minutes, seconds)
     }
 } 
