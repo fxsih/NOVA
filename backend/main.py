@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, RedirectResponse, StreamingResponse
+from contextlib import asynccontextmanager
 import yt_dlp
 from ytmusicapi import YTMusic
 import json
@@ -18,7 +19,32 @@ from cachetools import TTLCache
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="NOVA Music API", description="API for streaming music from YouTube Music")
+# Lifespan context manager for startup and shutdown events
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    logger.info("Starting NOVA Music API...")
+    yield
+    # Shutdown
+    logger.info("Shutting down NOVA Music API...")
+    try:
+        # Shutdown priority thread pool
+        priority_pool.shutdown()
+        logger.info("Priority thread pool shutdown complete")
+        
+        # Shutdown legacy thread pools
+        prefetch_thread_pool.shutdown(wait=True)
+        download_thread_pool.shutdown(wait=True)
+        logger.info("Legacy thread pools shutdown complete")
+        
+        # Clean up locks
+        cleanup_locks()
+        logger.info("Lock cleanup complete")
+        
+    except Exception as e:
+        logger.error(f"Error during shutdown: {str(e)}")
+
+app = FastAPI(title="NOVA Music API", description="API for streaming music from YouTube Music", lifespan=lifespan)
 
 # Configure CORS to allow requests from the Android app
 app.add_middleware(
@@ -716,27 +742,7 @@ async def get_yt_audio(request: Request, video_id: str = Query(..., description=
         logger.error(f"Error in yt_audio: {str(e)}", exc_info=True)
         return {"error": f"Error streaming audio: {str(e)}"}
 
-# Shutdown event handler to clean up resources
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Clean up resources on shutdown"""
-    logger.info("Shutting down NOVA Music API...")
-    try:
-        # Shutdown priority thread pool
-        priority_pool.shutdown()
-        logger.info("Priority thread pool shutdown complete")
-        
-        # Shutdown legacy thread pools
-        prefetch_thread_pool.shutdown(wait=True)
-        download_thread_pool.shutdown(wait=True)
-        logger.info("Legacy thread pools shutdown complete")
-        
-        # Clean up locks
-        cleanup_locks()
-        logger.info("Lock cleanup complete")
-        
-    except Exception as e:
-        logger.error(f"Error during shutdown: {str(e)}")
+
 
 @app.get("/download_audio")
 async def download_audio(video_id: str = Query(..., description="YouTube video ID")):
