@@ -18,6 +18,7 @@ import com.nova.music.data.local.DatabaseInitializer
 import com.nova.music.data.local.MusicDao
 import com.nova.music.data.api.YTMusicService
 import com.nova.music.util.PreferenceManager
+import com.nova.music.util.DynamicBaseUrlInterceptor
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -36,7 +37,6 @@ import java.io.File
 abstract class AppModule {
 
     companion object {
-        private const val BASE_URL = "http://192.168.29.154:8000/"
         
         @Provides
         @Singleton
@@ -87,12 +87,17 @@ abstract class AppModule {
         
         @Provides
         @Singleton
-        fun provideOkHttpClient(loggingInterceptor: HttpLoggingInterceptor): OkHttpClient {
+        fun provideOkHttpClient(
+            loggingInterceptor: HttpLoggingInterceptor,
+            preferenceManager: PreferenceManager
+        ): OkHttpClient {
             return OkHttpClient.Builder()
                 .connectTimeout(30, TimeUnit.SECONDS)
                 .readTimeout(30, TimeUnit.SECONDS)
                 .writeTimeout(30, TimeUnit.SECONDS)
                 .addInterceptor(loggingInterceptor)
+                // Add dynamic base URL interceptor
+                .addInterceptor(DynamicBaseUrlInterceptor { preferenceManager.getApiBaseUrl() })
                 // Configure connection pooling for better performance
                 .connectionPool(okhttp3.ConnectionPool(
                     maxIdleConnections = 10,
@@ -120,7 +125,7 @@ abstract class AppModule {
         @Singleton
         fun provideRetrofit(okHttpClient: OkHttpClient): Retrofit {
             return Retrofit.Builder()
-                .baseUrl(BASE_URL)
+                .baseUrl("http://placeholder.com/") // Placeholder base URL - will be overridden by interceptor
                 .client(okHttpClient)
                 .addConverterFactory(GsonConverterFactory.create())
                 .build()

@@ -22,9 +22,13 @@ NOVA is a modern Android music player app built with Jetpack Compose, following 
 ## Current Development State
 - **Database Version**: 7
 - **Active Branch**: main
-- **Current Focus**: Production-ready release with elite UX optimizations
+- **Current Focus**: Production-ready release with elite UX optimizations and backend improvements
 - **Release Status**: Ready for Release
 - **Last Implemented Features**: 
+  - **FASTAPI DEPRECATION WARNING FIX**: Replaced deprecated `@app.on_event("shutdown")` with modern `lifespan` context manager
+  - **DOUBLE SLASH URL ISSUE RESOLUTION**: Fixed hardcoded URL construction in MusicPlayerServiceImpl that was causing 404 errors
+  - **DYNAMIC BASE URL INTERCEPTOR**: Implemented OkHttp interceptor for runtime URL switching without app rebuilds
+  - **NETWORK SECURITY CONFIGURATION**: Enhanced to allow cleartext traffic to any IP address for flexible server connections
   - **ELITE UX OPTIMIZATIONS**: Implemented comprehensive performance optimizations for instant UI feedback
   - **LIKED SONGS INSTANT UPDATES**: Optimistic UI updates with background Firebase sync for immediate like/unlike feedback
   - **CHECKMARK FLICKERING RESOLUTION**: Fixed playlist checkmark flickering with temporary UI overlay state
@@ -347,7 +351,34 @@ NOVA is a modern Android music player app built with Jetpack Compose, following 
 ### 16. Persistent Progress Updates After App Reopen ✅
 - **Issue**: Seekbar/progress bar would not update after reopening the app or after service/player rebuilds
 - **Root Cause**: Coroutine scope for progress updates was not re-initialized after service recreation, causing the progress coroutine to be inactive
-- **Solution**: Made coroutine scope a managed property, re-initialized in MusicPlayerService.onCreate() and cancelled in onDestroy(), ensuring progress updates always work after app restarts
+- **Solution**: Made coroutine scope a managed property, re-initialized in MusicPlayerService.onCreate() and cancelled onDestroy(), ensuring progress updates always work after app restarts
+
+### 17. FastAPI Deprecation Warning Fix ✅
+- **Issue**: FastAPI showing deprecation warning about `@app.on_event("shutdown")` being deprecated
+- **Root Cause**: FastAPI has deprecated the old event handler pattern in favor of modern lifespan context managers
+- **Solution**: 
+  - Replaced `@app.on_event("shutdown")` with `@asynccontextmanager` lifespan context manager
+  - Added `from contextlib import asynccontextmanager` import
+  - Updated FastAPI app initialization to use `lifespan=lifespan` parameter
+  - Maintained all existing shutdown cleanup logic (thread pools, locks, etc.)
+
+### 18. Double Slash URL Issue Resolution ✅
+- **Issue**: Server logs showing `GET //yt_audio?video_id=... HTTP/1.1" 404 Not Found` with double slashes
+- **Root Cause**: Hardcoded URL construction in `MusicPlayerServiceImpl.kt` bypassing the `DynamicBaseUrlInterceptor`
+- **Solution**:
+  - Fixed hardcoded URL construction: `val baseUrl = preferenceManager.getApiBaseUrl().removeSuffix("/")`
+  - Ensured proper URL construction without double slashes
+  - Maintained functionality while fixing the path issue
+  - Now generates correct URLs like `http://192.168.29.30:8000/yt_audio` instead of `http://192.168.29.30:8000//yt_audio`
+
+### 19. Dynamic Base URL Interceptor Implementation ✅
+- **Feature**: Runtime server URL switching without app rebuilds
+- **Implementation**:
+  - Created `DynamicBaseUrlInterceptor` class for OkHttp request interception
+  - Added server URL setting in ProfileScreen with user-friendly dialog
+  - Implemented URL normalization to prevent double slash issues
+  - Added network security configuration to allow cleartext traffic to any IP
+  - Created comprehensive documentation in `DYNAMIC_BASE_URL_GUIDE.md`
 
 ## Current Implementation Details
 

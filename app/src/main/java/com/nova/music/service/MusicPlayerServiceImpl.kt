@@ -501,7 +501,8 @@ class MusicPlayerServiceImpl @Inject constructor(
             song.id
         }
         
-        val streamUrl = "${preferenceManager.getApiBaseUrl()}/yt_audio?video_id=$videoId"
+        val baseUrl = preferenceManager.getApiBaseUrl().removeSuffix("/")
+        val streamUrl = "$baseUrl/yt_audio?video_id=$videoId"
         Log.d(TAG, "Creating media item with streaming URL: $streamUrl")
         
         return MediaItem.Builder()

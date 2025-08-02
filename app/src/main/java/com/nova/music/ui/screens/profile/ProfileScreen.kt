@@ -23,6 +23,7 @@ import com.nova.music.ui.viewmodels.AuthViewModel
 import androidx.compose.foundation.clickable
 import com.nova.music.ui.viewmodels.LibraryViewModel
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.ui.graphics.Color
 import com.nova.music.data.model.UserMusicPreferences
 import kotlinx.coroutines.launch
@@ -54,6 +55,7 @@ fun ProfileScreen(
     var isEditing by remember { mutableStateOf(false) }
     var showSignOutDialog by remember { mutableStateOf(false) }
     var showPreferencesDialog by remember { mutableStateOf(false) }
+    var showBaseUrlDialog by remember { mutableStateOf(false) }
     
     // Preferences state
     val userPreferences by libraryViewModel.userPreferences.collectAsState()
@@ -226,6 +228,35 @@ fun ProfileScreen(
                         },
                         modifier = Modifier.clickable {
                             showPreferencesDialog = true
+                        }
+                    )
+                    
+                    Divider()
+                    
+                    // Server URL Settings
+                    ListItem(
+                        headlineContent = { Text("Server URL") },
+                        supportingContent = { 
+                            Text(
+                                text = "Change API server URL",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        },
+                        leadingContent = {
+                            Icon(
+                                imageVector = Icons.Default.Settings,
+                                contentDescription = "Server URL"
+                            )
+                        },
+                        trailingContent = {
+                            Icon(
+                                imageVector = Icons.Default.ChevronRight,
+                                contentDescription = "Go"
+                            )
+                        },
+                        modifier = Modifier.clickable {
+                            showBaseUrlDialog = true
                         }
                     )
                     
@@ -529,5 +560,136 @@ fun ProfileScreen(
                 }
             }
         )
+    }
+    
+    // Base URL Settings Dialog
+    if (showBaseUrlDialog) {
+        val preferenceManager = LocalPreferenceManager.current
+        var baseUrl by remember { mutableStateOf(preferenceManager.getApiBaseUrl()) }
+        
+        AlertDialog(
+            onDismissRequest = { showBaseUrlDialog = false },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            title = {
+                Text(
+                    "Server URL Settings",
+                    style = MaterialTheme.typography.headlineSmall.copy(
+                        fontWeight = FontWeight.Bold
+                    ),
+                    color = Color.White
+                )
+            },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp)
+                ) {
+                    Text(
+                        "Change the API server URL to connect to your backend server.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.White.copy(alpha = 0.7f),
+                        modifier = Modifier.padding(bottom = 16.dp)
+                    )
+                    
+                    OutlinedTextField(
+                        value = baseUrl,
+                        onValueChange = { baseUrl = it },
+                        label = { Text("Server URL") },
+                        placeholder = { Text("http://192.168.1.100:8000") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Color(0xFFBB86FC),
+                            unfocusedBorderColor = Color.White.copy(alpha = 0.3f),
+                            focusedLabelColor = Color(0xFFBB86FC),
+                            unfocusedLabelColor = Color.White.copy(alpha = 0.7f)
+                        )
+                    )
+                    
+                    Spacer(modifier = Modifier.height(8.dp))
+                    
+                    Text(
+                        "Examples:\n" +
+                        "• http://192.168.1.100:8000 (Home WiFi)\n" +
+                        "• http://10.0.0.50:8000 (College WiFi)\n" +
+                        "• http://localhost:8000 (Same device)",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.White.copy(alpha = 0.6f)
+                    )
+                    
+                    Spacer(modifier = Modifier.height(16.dp))
+                    
+                    // Revert to Default Button
+                    OutlinedButton(
+                        onClick = { 
+                            baseUrl = "http://192.168.29.154:8000/"
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = Color(0xFFBB86FC),
+                            containerColor = Color.Transparent
+                        ),
+                        border = BorderStroke(1.dp, Color(0xFFBB86FC))
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "Revert to Default",
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Revert to Default")
+                    }
+                }
+            },
+            containerColor = Color(0xFF121212),
+            confirmButton = {
+                Button(
+                    onClick = {
+                        preferenceManager.setApiBaseUrl(baseUrl)
+                        showBaseUrlDialog = false
+                        
+                        // Show success toast
+                        android.widget.Toast.makeText(
+                            context,
+                            "Server URL saved successfully!",
+                            android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 16.dp),
+                    shape = RoundedCornerShape(24.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFFBB86FC),
+                        contentColor = Color.Black
+                    )
+                ) {
+                    Text(
+                        "Save",
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            fontWeight = FontWeight.Medium
+                        ),
+                        modifier = Modifier.padding(vertical = 4.dp)
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showBaseUrlDialog = false },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        "Cancel",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = Color.White
+                    )
+                }
+            }
+        )
+        
+
     }
 } 
