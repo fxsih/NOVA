@@ -181,6 +181,6 @@ class PreferenceManager @Inject constructor(
         const val KEY_LAST_PLAYED_PLAYLIST_SONG_IDS = "last_played_playlist_song_ids"
         
         // Default values
-        const val DEFAULT_API_BASE_URL = "http://192.168.29.154:8000"
+        const val DEFAULT_API_BASE_URL = "http://192.168.29.154:8000/"
     }
 } 
