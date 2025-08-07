@@ -1435,3 +1435,800 @@ android {
 # Keep Firebase classes
 -keep class com.google.firebase.** { *; }
 ``` 
+
+## **4.2.1 INPUT LAYOUT**
+
+This section details the design of input screens and components, focusing on how users enter data and interact with the app. The NOVA app implements various input field types, validation techniques, and security considerations to ensure a robust and user-friendly experience.
+
+### **Input Field Types Used in NOVA App**
+
+1. **Text Input Fields (OutlinedTextField)**
+   - Email input with email keyboard type
+   - Username input with text keyboard type
+   - Password input with password keyboard type and visibility toggle
+   - Search input with search keyboard type
+   - Playlist name input with text keyboard type
+
+2. **Password Fields with Security Features**
+   - Password visibility toggle (show/hide)
+   - Password confirmation fields
+   - Secure password storage using Firebase Authentication
+
+3. **Search Input Fields**
+   - Real-time search with debouncing
+   - Search suggestions and history
+   - Clear button functionality
+
+4. **Dialog Input Fields**
+   - Modal dialogs for playlist creation
+   - Server URL configuration dialogs
+   - Form validation with error messages
+
+### **Input Validation Techniques**
+
+1. **Real-time Validation**
+   - Email format validation using regex patterns
+   - Password strength requirements (minimum 6 characters)
+   - Username length validation (minimum 3 characters)
+   - Password confirmation matching
+
+2. **Form-level Validation**
+   - Complete form validation before submission
+   - Error state management and display
+   - Loading states during validation
+
+3. **Input Sanitization**
+   - Trim whitespace from inputs
+   - Prevent SQL injection through parameterized queries
+   - XSS prevention through proper encoding
+
+### **Security Considerations**
+
+1. **Authentication Security**
+   - Firebase Authentication for secure user management
+   - Password hashing and secure storage
+   - Session management with automatic timeout
+   - Secure token-based authentication
+
+2. **Data Protection**
+   - Input validation to prevent malicious data
+   - Secure communication with backend APIs
+   - Local data encryption for sensitive information
+   - Privacy-first approach with minimal data collection
+
+3. **Network Security**
+   - HTTPS communication for API calls
+   - CORS configuration for secure cross-origin requests
+   - Input sanitization to prevent injection attacks
+
+---
+
+### **1. Login Screen Input Layout**
+
+**File:** `app/src/main/java/com/nova/music/ui/screens/auth/LoginScreen.kt`
+
+**Description:**  
+The login screen allows users to enter their email and password to access the app. It includes password visibility toggle, "Forgot Password" link, and social login options (Google and Guest).
+
+**Input Field Types:**
+- Email input with email keyboard type and validation
+- Password input with password keyboard type and visibility toggle
+- Social login buttons (Google, Guest)
+
+**Validation Techniques:**
+- Email format validation using `email.contains("@")`
+- Password length validation (minimum 6 characters)
+- Real-time form validation with error display
+
+**Security Considerations:**
+- Firebase Authentication for secure login
+- Password visibility toggle for user convenience
+- Secure token-based session management
+- Error handling without exposing sensitive information
+
+**Code Snippet:**
+```kotlin
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun LoginScreen(
+    onLoginSuccess: () -> Unit,
+    onNavigateToSignUp: () -> Unit,
+    viewModel: AuthViewModel = hiltViewModel()
+) {
+    var email by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var showPassword by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    
+    val focusManager = LocalFocusManager.current
+    val scrollState = rememberScrollState()
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+            .verticalScroll(scrollState),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        // Email Input Field with Validation
+        OutlinedTextField(
+            value = email,
+            onValueChange = { email = it },
+            label = { Text("Email") },
+            leadingIcon = { Icon(Icons.Default.Email, "Email") },
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Email,
+                imeAction = ImeAction.Next
+            ),
+            keyboardActions = KeyboardActions(
+                onNext = { focusManager.moveFocus(FocusDirection.Down) }
+            ),
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+            isError = error?.contains("email", ignoreCase = true) == true
+        )
+        
+        Spacer(modifier = Modifier.height(16.dp))
+        
+        // Password Input Field with Security Features
+        OutlinedTextField(
+            value = password,
+            onValueChange = { password = it },
+            label = { Text("Password") },
+            leadingIcon = { Icon(Icons.Default.Lock, "Password") },
+            trailingIcon = {
+                IconButton(onClick = { showPassword = !showPassword }) {
+                    Icon(
+                        if (showPassword) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                        "Toggle password visibility"
+                    )
+                }
+            },
+            visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Password,
+                imeAction = ImeAction.Done
+            ),
+            keyboardActions = KeyboardActions(
+                onDone = { focusManager.clearFocus() }
+            ),
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+            isError = error?.contains("password", ignoreCase = true) == true
+        )
+        
+        // Forgot Password Link
+        TextButton(
+            onClick = { /* Forgot password logic */ },
+            modifier = Modifier.align(Alignment.End)
+        ) {
+            Text("Forgot Password?", color = MaterialTheme.colors.primary)
+        }
+        
+        Spacer(modifier = Modifier.height(24.dp))
+        
+        // Sign In Button with Validation
+        Button(
+            onClick = { viewModel.signIn(email, password) },
+            enabled = email.isNotEmpty() && password.isNotEmpty(),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Sign In")
+        }
+    }
+}
+```
+
+**Insert Screenshot Here:**  
+> ![Login Screen Input Layout](insert_login_screen_input_screenshot_here.png)  
+> *Figure 4.1: Login Screen Input Layout*
+
+---
+
+### **2. Signup Screen Input Layout**
+
+**File:** `app/src/main/java/com/nova/music/ui/screens/auth/SignupScreen.kt`
+
+**Description:**  
+The signup screen allows new users to create an account by entering their username, email, password, and confirm password with visibility toggles for security.
+
+**Input Field Types:**
+- Username input with text keyboard type
+- Email input with email keyboard type
+- Password input with password keyboard type and visibility toggle
+- Confirm password input with password keyboard type and visibility toggle
+
+**Validation Techniques:**
+- Email format validation: `email.isNotBlank() && email.contains("@")`
+- Username length validation: `username.isNotBlank() && username.length >= 3`
+- Password strength validation: `password.isNotBlank() && password.length >= 6`
+- Password confirmation matching: `password == confirmPassword`
+- Real-time form validation with visual feedback
+
+**Security Considerations:**
+- Password visibility toggles for user convenience
+- Secure password storage using Firebase Authentication
+- Input sanitization and validation
+- Error handling without exposing sensitive information
+
+**Code Snippet:**
+```kotlin
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SignupScreen(
+    onNavigateBack: () -> Unit,
+    onSignUpSuccess: () -> Unit,
+    viewModel: AuthViewModel = hiltViewModel()
+) {
+    var email by remember { mutableStateOf("") }
+    var username by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var confirmPassword by remember { mutableStateOf("") }
+    var showPassword by remember { mutableStateOf(false) }
+    var showConfirmPassword by remember { mutableStateOf(false) }
+    
+    val focusManager = LocalFocusManager.current
+    val scrollState = rememberScrollState()
+    
+    // Validation states with real-time feedback
+    val isEmailValid = email.isNotBlank() && email.contains("@")
+    val isUsernameValid = username.isNotBlank() && username.length >= 3
+    val isPasswordValid = password.isNotBlank() && password.length >= 6
+    val doPasswordsMatch = password == confirmPassword
+    val isFormValid = isEmailValid && isUsernameValid && isPasswordValid && doPasswordsMatch && confirmPassword.isNotBlank()
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+            .verticalScroll(scrollState),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        // Username Input Field with Validation
+        OutlinedTextField(
+            value = username,
+            onValueChange = { username = it },
+            label = { Text("Username") },
+            leadingIcon = { Icon(Icons.Default.Person, "Username") },
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Text,
+                imeAction = ImeAction.Next
+            ),
+            keyboardActions = KeyboardActions(
+                onNext = { focusManager.moveFocus(FocusDirection.Down) }
+            ),
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+            isError = username.isNotBlank() && !isUsernameValid
+        )
+        
+        Spacer(modifier = Modifier.height(16.dp))
+        
+        // Email Input Field with Validation
+        OutlinedTextField(
+            value = email,
+            onValueChange = { email = it },
+            label = { Text("Email") },
+            leadingIcon = { Icon(Icons.Default.Email, "Email") },
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Email,
+                imeAction = ImeAction.Next
+            ),
+            keyboardActions = KeyboardActions(
+                onNext = { focusManager.moveFocus(FocusDirection.Down) }
+            ),
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+            isError = email.isNotBlank() && !isEmailValid
+        )
+        
+        Spacer(modifier = Modifier.height(16.dp))
+        
+        // Password Input Field with Security Features
+        OutlinedTextField(
+            value = password,
+            onValueChange = { password = it },
+            label = { Text("Password") },
+            leadingIcon = { Icon(Icons.Default.Lock, "Password") },
+            trailingIcon = {
+                IconButton(onClick = { showPassword = !showPassword }) {
+                    Icon(
+                        if (showPassword) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                        "Toggle password visibility"
+                    )
+                }
+            },
+            visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Password,
+                imeAction = ImeAction.Next
+            ),
+            keyboardActions = KeyboardActions(
+                onNext = { focusManager.moveFocus(FocusDirection.Down) }
+            ),
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+            isError = password.isNotBlank() && !isPasswordValid
+        )
+        
+        Spacer(modifier = Modifier.height(16.dp))
+        
+        // Confirm Password Input Field with Validation
+        OutlinedTextField(
+            value = confirmPassword,
+            onValueChange = { confirmPassword = it },
+            label = { Text("Confirm Password") },
+            leadingIcon = { Icon(Icons.Default.Lock, "Confirm Password") },
+            trailingIcon = {
+                IconButton(onClick = { showConfirmPassword = !showConfirmPassword }) {
+                    Icon(
+                        if (showConfirmPassword) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                        "Toggle confirm password visibility"
+                    )
+                }
+            },
+            visualTransformation = if (showConfirmPassword) VisualTransformation.None else PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Password,
+                imeAction = ImeAction.Done
+            ),
+            keyboardActions = KeyboardActions(
+                onDone = { focusManager.clearFocus() }
+            ),
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+            isError = confirmPassword.isNotBlank() && !doPasswordsMatch
+        )
+        
+        Spacer(modifier = Modifier.height(24.dp))
+        
+        // Create Account Button with Form Validation
+        Button(
+            onClick = { viewModel.signUp(email, password, username) },
+            enabled = isFormValid,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Sign Up")
+        }
+    }
+}
+```
+
+**Insert Screenshot Here:**  
+> ![Signup Screen Input Layout](insert_signup_screen_input_screenshot_here.png)  
+> *Figure 4.2: Signup Screen Input Layout*
+
+---
+
+### **3. Search Bar Input Layout**
+
+**File:** `app/src/main/java/com/nova/music/ui/components/SearchBar.kt`
+
+**Description:**  
+The search bar provides a primary input mechanism for users to discover music, artists, and albums within the application. It supports real-time input with a prominent search icon and on-screen keyboard.
+
+**Input Field Types:**
+- Search input with search keyboard type
+- Real-time search with debouncing
+- Clear button functionality
+- Search suggestions and history
+
+**Validation Techniques:**
+- Input sanitization and trimming
+- Minimum search query length validation
+- Search history management
+- Debounced search to prevent excessive API calls
+
+**Security Considerations:**
+- Input sanitization to prevent XSS attacks
+- Search query length limits
+- Secure API communication for search results
+
+**Code Snippet:**
+```kotlin
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SearchBar(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    onSearch: () -> Unit,
+    active: Boolean,
+    onActiveChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+    hasRecentSearches: Boolean = false
+) {
+    val cornerRadius = 28.dp
+    
+    Surface(
+        modifier = modifier
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .height(68.dp),
+        shape = RoundedCornerShape(cornerRadius),
+        color = Color(0xFF1E1E1E)
+    ) {
+        TextField(
+            value = query,
+            onValueChange = { 
+                // Input sanitization and validation
+                val sanitizedQuery = it.trim()
+                onQueryChange(sanitizedQuery)
+            },
+            modifier = Modifier.fillMaxSize(),
+            placeholder = {
+                Text(
+                    text = "Search songs, artists, or albums",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = Color.Gray
+                )
+            },
+            leadingIcon = {
+                Icon(
+                    Icons.Default.Search,
+                    contentDescription = "Search",
+                    tint = Color.White
+                )
+            },
+            trailingIcon = if (query.isNotEmpty()) {
+                {
+                    IconButton(
+                        onClick = { 
+                            onQueryChange("")
+                            onActiveChange(false)
+                        }
+                    ) {
+                        Icon(
+                            Icons.Default.Clear,
+                            contentDescription = "Clear search",
+                            tint = Color.White
+                        )
+                    }
+                }
+            } else null,
+            colors = TextFieldDefaults.colors(
+                focusedTextColor = Color.White,
+                unfocusedTextColor = Color.White,
+                cursorColor = Color.White,
+                focusedContainerColor = Color.Transparent,
+                unfocusedContainerColor = Color.Transparent,
+                disabledContainerColor = Color.Transparent,
+                focusedIndicatorColor = Color.Transparent,
+                unfocusedIndicatorColor = Color.Transparent,
+            ),
+            keyboardOptions = KeyboardOptions(
+                imeAction = ImeAction.Search
+            ),
+            keyboardActions = KeyboardActions(
+                onSearch = { 
+                    if (query.isNotBlank()) {
+                        onSearch()
+                    }
+                }
+            ),
+            singleLine = true
+        )
+    }
+}
+```
+
+**Insert Screenshot Here:**  
+> ![Search Bar Input Layout](insert_search_bar_input_screenshot_here.png)  
+> *Figure 4.3: Search Bar Input Layout*
+
+---
+
+### **4. Create Playlist Dialog Input Layout**
+
+**File:** `app/src/main/java/com/nova/music/ui/screens/library/CreatePlaylistDialog.kt`
+
+**Description:**  
+Dialog for users to create a new playlist by entering a name with validation and error handling.
+
+**Input Field Types:**
+- Playlist name input with text keyboard type
+- Form validation with error display
+- Modal dialog with confirmation/cancel buttons
+
+**Validation Techniques:**
+- Playlist name required validation
+- Real-time error display
+- Form submission validation
+
+**Security Considerations:**
+- Input sanitization for playlist names
+- Secure storage in Firebase Firestore
+- User permission validation
+
+**Code Snippet:**
+```kotlin
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun CreatePlaylistDialog(
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit
+) {
+    var playlistName by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = MaterialTheme.shapes.medium,
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 6.dp
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(24.dp)
+            ) {
+                Text(
+                    text = "Create New Playlist",
+                    style = MaterialTheme.typography.titleLarge
+                )
+                
+                Spacer(modifier = Modifier.height(16.dp))
+                
+                // Playlist Name Input with Validation
+                OutlinedTextField(
+                    value = playlistName,
+                    onValueChange = { 
+                        playlistName = it.trim() // Input sanitization
+                        error = null // Clear error on input change
+                    },
+                    label = { Text("Playlist Name") },
+                    isError = error != null,
+                    supportingText = error?.let { { Text(it) } },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Text,
+                        imeAction = ImeAction.Done
+                    )
+                )
+                
+                Spacer(modifier = Modifier.height(24.dp))
+                
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    TextButton(onClick = onDismiss) {
+                        Text("Cancel")
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Button(
+                        onClick = {
+                            // Form validation
+                            if (playlistName.isBlank()) {
+                                error = "Please enter a playlist name"
+                                return@Button
+                            }
+                            if (playlistName.length < 3) {
+                                error = "Playlist name must be at least 3 characters"
+                                return@Button
+                            }
+                            onConfirm(playlistName)
+                        }
+                    ) {
+                        Text("Create")
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+**Insert Screenshot Here:**  
+> ![Create Playlist Dialog Input Layout](insert_create_playlist_dialog_input_screenshot_here.png)  
+> *Figure 4.4: Create Playlist Dialog Input Layout*
+
+---
+
+### **5. Server URL Settings Dialog Input Layout**
+
+**File:** `app/src/main/java/com/nova/music/ui/screens/profile/ProfileScreen.kt`
+
+**Description:**  
+Dialog for users to configure the backend server URL for API connections, including examples and revert functionality.
+
+**Input Field Types:**
+- Server URL input with URL keyboard type
+- Examples and help text
+- Revert to default functionality
+- Form validation for URL format
+
+**Validation Techniques:**
+- URL format validation
+- Network connectivity testing
+- Default URL restoration
+
+**Security Considerations:**
+- URL sanitization and validation
+- Secure communication with backend
+- Network security configuration
+
+**Code Snippet:**
+```kotlin
+@Composable
+fun ServerUrlSettingsDialog(
+    showBaseUrlDialog: Boolean,
+    onDismiss: () -> Unit
+) {
+    if (showBaseUrlDialog) {
+        val preferenceManager = LocalPreferenceManager.current
+        var baseUrl by remember { mutableStateOf(preferenceManager.getApiBaseUrl()) }
+        var error by remember { mutableStateOf<String?>(null) }
+        
+        AlertDialog(
+            onDismissRequest = onDismiss,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            title = {
+                Text(
+                    "Server URL Settings",
+                    style = MaterialTheme.typography.headlineSmall.copy(
+                        fontWeight = FontWeight.Bold
+                    ),
+                    color = Color.White
+                )
+            },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp)
+                ) {
+                    Text(
+                        "Change the API server URL to connect to your backend server.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.White.copy(alpha = 0.7f),
+                        modifier = Modifier.padding(bottom = 16.dp)
+                    )
+                    
+                    // Server URL Input Field with Validation
+                    OutlinedTextField(
+                        value = baseUrl,
+                        onValueChange = { 
+                            baseUrl = it.trim() // Input sanitization
+                            error = null // Clear error on input change
+                        },
+                        label = { Text("Server URL") },
+                        placeholder = { Text("http://192.168.1.100:8000") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        isError = error != null,
+                        supportingText = error?.let { { Text(it) } },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Color(0xFFBB86FC),
+                            unfocusedBorderColor = Color.White.copy(alpha = 0.3f),
+                            focusedLabelColor = Color(0xFFBB86FC),
+                            unfocusedLabelColor = Color.White.copy(alpha = 0.7f)
+                        )
+                    )
+                    
+                    Spacer(modifier = Modifier.height(8.dp))
+                    
+                    Text(
+                        "Examples:\n" +
+                        "• http://192.168.1.100:8000 (Home WiFi)\n" +
+                        "• http://10.0.0.50:8000 (College WiFi)\n" +
+                        "• http://localhost:8000 (Same device)",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.White.copy(alpha = 0.6f)
+                    )
+                    
+                    Spacer(modifier = Modifier.height(16.dp))
+                    
+                    // Revert to Default Button
+                    OutlinedButton(
+                        onClick = { 
+                            baseUrl = "http://192.168.29.154:8000/"
+                            error = null
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = Color(0xFFBB86FC),
+                            containerColor = Color.Transparent
+                        ),
+                        border = BorderStroke(1.dp, Color(0xFFBB86FC))
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "Revert to Default",
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Revert to Default")
+                    }
+                }
+            },
+            containerColor = Color(0xFF121212),
+            confirmButton = {
+                Button(
+                    onClick = {
+                        // URL validation
+                        if (baseUrl.isBlank()) {
+                            error = "Please enter a server URL"
+                            return@Button
+                        }
+                        if (!baseUrl.startsWith("http://") && !baseUrl.startsWith("https://")) {
+                            error = "Please enter a valid URL starting with http:// or https://"
+                            return@Button
+                        }
+                        preferenceManager.setApiBaseUrl(baseUrl)
+                        onDismiss()
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 16.dp),
+                    shape = RoundedCornerShape(24.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFFBB86FC),
+                        contentColor = Color.Black
+                    )
+                ) {
+                    Text(
+                        "Save",
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            fontWeight = FontWeight.Medium
+                        ),
+                        modifier = Modifier.padding(vertical = 4.dp)
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        "Cancel",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = Color.White
+                    )
+                }
+            }
+        )
+    }
+}
+```
+
+**Insert Screenshot Here:**  
+> ![Server URL Settings Input Layout](insert_server_url_settings_input_screenshot_here.png)  
+> *Figure 4.5: Server URL Settings Input Layout*
+
+---
+
+### **Summary of Input Design Features**
+
+**Input Field Types Implemented:**
+- Text inputs with various keyboard types (email, text, password, search, URL)
+- Password fields with visibility toggles
+- Search inputs with real-time functionality
+- Dialog inputs with validation
+- Form inputs with error handling
+
+**Validation Techniques Used:**
+- Real-time validation with visual feedback
+- Form-level validation before submission
+- Input sanitization and trimming
+- Error state management and display
+- Minimum length and format validation
+
+**Security Considerations Implemented:**
+- Firebase Authentication for secure user management
+- Password hashing and secure storage
+- Input sanitization to prevent XSS attacks
+- Secure communication with backend APIs
+- Privacy-first approach with minimal data collection
+- Network security configuration for localhost deployment
+
+**User Experience Enhancements:**
+- Intuitive keyboard navigation
+- Visual feedback for validation states
+- Loading states during operations
+- Error messages for user guidance
+- Accessibility features for inclusive design 
