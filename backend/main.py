@@ -14,6 +14,27 @@ import time
 import random
 import threading
 from cachetools import TTLCache
+from enum import IntEnum
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# Custom lock class that tracks acquisition time
+class TimedLock:
+    def __init__(self):
+        self._lock = threading.RLock()
+        self._acquire_time = None
+    
+    def acquire(self, timeout=None):
+        result = self._lock.acquire(timeout=timeout)
+        if result:
+            self._acquire_time = time.time()
+        return result
+    
+    def release(self):
+        self._lock.release()
+        self._acquire_time = None
+    
+    def locked(self):
+        return self._lock._count > 0
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -24,15 +45,20 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting NOVA Music API...")
+    
+    # No pre-caching of popular songs to avoid startup overhead
+    logger.info("Starting NOVA Music API without pre-caching popular songs...")
+    print("🚀 NOVA Music API starting up...")
+    
     yield
     # Shutdown
     logger.info("Shutting down NOVA Music API...")
     try:
-        # Shutdown priority thread pool
-        priority_pool.shutdown()
+        # Shutdown priority thread pool with timeout
+        priority_pool.shutdown(wait=True)
         logger.info("Priority thread pool shutdown complete")
         
-        # Shutdown legacy thread pools
+        # Shutdown legacy thread pools with timeout
         prefetch_thread_pool.shutdown(wait=True)
         download_thread_pool.shutdown(wait=True)
         logger.info("Legacy thread pools shutdown complete")
@@ -41,8 +67,22 @@ async def lifespan(app: FastAPI):
         cleanup_locks()
         logger.info("Lock cleanup complete")
         
+        # Clear all caches to free memory
+        audio_url_cache.clear()
+        video_info_cache.clear()
+        audio_url_failure_cache.clear()
+        logger.info("Cache cleanup complete")
+        
+        # Force garbage collection
+        import gc
+        gc.collect()
+        logger.info("Garbage collection complete")
+        
     except Exception as e:
         logger.error(f"Error during shutdown: {str(e)}")
+    finally:
+        logger.info("NOVA Music API shutdown complete")
+        print("🛑 NOVA Music API shutdown complete")
 
 app = FastAPI(title="NOVA Music API", description="API for streaming music from YouTube Music", lifespan=lifespan)
 
@@ -58,12 +98,15 @@ app.add_middleware(
 # Initialize YouTube Music API client
 ytmusic = YTMusic()
 
-# LRU cache for audio URLs (max 2048 entries, 2 hour TTL)
-audio_url_cache = TTLCache(maxsize=2048, ttl=7200)
+# LRU cache for audio URLs (max 8192 entries, 6 hour TTL for better caching)
+audio_url_cache = TTLCache(maxsize=8192, ttl=21600)
 # Locks for each video_id to avoid duplicate yt-dlp calls
 audio_url_locks = {}
 # Cache for failures (short TTL)
-audio_url_failure_cache = TTLCache(maxsize=512, ttl=300)  # 5 min TTL for failures
+audio_url_failure_cache = TTLCache(maxsize=2048, ttl=900)  # 15 min TTL for failures
+# Cache for video info to avoid re-extraction
+video_info_cache = TTLCache(maxsize=4096, ttl=7200)  # 2 hour TTL for video info
+# Removed popular video cache to avoid unnecessary memory usage
 
 # Function to extract expire parameter from YouTube URL
 def parse_expire_from_url(url):
@@ -80,14 +123,99 @@ def parse_expire_from_url(url):
 # Cleanup function for locks to prevent memory leaks
 def cleanup_locks():
     to_remove = []
+    current_time = time.time()
+    
     for video_id, lock in audio_url_locks.items():
+        # Remove unlocked locks
         if not lock.locked():
+            to_remove.append(video_id)
+        # Also remove locks that have been held for too long (potential deadlocks)
+        elif hasattr(lock, '_acquire_time') and current_time - lock._acquire_time > 30:
+            logger.warning(f"Removing stuck lock for {video_id} (held for {current_time - lock._acquire_time:.1f}s)")
             to_remove.append(video_id)
     
     for video_id in to_remove:
+        try:
+            # Try to release the lock if it's still held
+            if video_id in audio_url_locks and audio_url_locks[video_id].locked():
+                audio_url_locks[video_id].release()
+        except:
+            pass  # Ignore errors when releasing
         del audio_url_locks[video_id]
     
-    logger.info(f"Cleaned up {len(to_remove)} unused locks. Active locks: {len(audio_url_locks)}")
+    if to_remove:
+        logger.info(f"Cleaned up {len(to_remove)} locks. Active locks: {len(audio_url_locks)}")
+
+def force_cleanup_locks():
+    """Emergency cleanup function to remove all locks"""
+    global audio_url_locks
+    logger.warning("Force cleaning up all locks due to potential deadlock")
+    audio_url_locks.clear()
+    logger.info("All locks cleared")
+
+# Helper function to extract video info efficiently
+def extract_video_info_fast(video_id):
+    """Extract video info with optimized settings for speed"""
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    
+    # Check cache first
+    if video_id in video_info_cache:
+        logger.info(f"Using cached video info for {video_id}")
+        return video_info_cache[video_id]
+    
+    # Popular video cache removed to avoid unnecessary memory usage
+    
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'quiet': True,
+        'no_warnings': True,
+        'noplaylist': True,
+        'skip_download': True,
+        'socket_timeout': 5,  # Even faster timeout
+        'retries': 0,  # No retries for maximum speed
+        'fragment_retries': 0,
+        'extractor_retries': 0,
+        'file_access_retries': 0,
+        'http_chunk_size': 10485760,
+        'max_downloads': 1,
+        'concurrent_fragment_downloads': 1,
+        'format_sort': ['asr', 'abr', 'size', 'quality'],
+        'extract_flat': False,
+        'ignoreerrors': False,
+        'prefer_ffmpeg': False,
+        'postprocessors': [],
+        # Skip unnecessary data extraction
+        'writesubtitles': False,
+        'writeautomaticsub': False,
+        'writethumbnail': False,
+        'writedescription': False,
+        'writeinfojson': False,
+        # Additional speed optimizations
+        'no_check_certificate': True,  # Skip SSL verification for speed
+        'prefer_insecure': True,  # Prefer HTTP over HTTPS when possible
+        'nocheckcertificate': True,  # Alternative SSL skip
+        'geo_bypass': True,  # Skip geo-restriction checks
+        'extractor_args': {
+            'youtube': {
+                'skip': ['dash', 'hls'],  # Skip DASH and HLS formats
+                'player_client': ['android'],  # Use Android client only
+            }
+        },
+        # Use more compatible format specification
+        'format': 'bestaudio/best',
+    }
+    
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            if info:
+                # Cache the info
+                video_info_cache[video_id] = info
+                logger.info(f"Cached video info for {video_id}")
+                return info
+    except Exception as e:
+        logger.error(f"Error extracting video info for {video_id}: {str(e)}")
+        return None
 
 # Helper function to get or fetch and cache audio URL for a video_id
 def get_or_cache_audio_url(video_id):
@@ -95,15 +223,23 @@ def get_or_cache_audio_url(video_id):
     if video_id in audio_url_failure_cache:
         return None, None, None
     
-    # Periodically clean up locks (every ~100 calls)
-    if random.random() < 0.01:
+    # Periodically clean up locks (every ~25 calls)
+    if random.random() < 0.04:
         cleanup_locks()
     
-    lock = audio_url_locks.setdefault(video_id, threading.Lock())
+    # Use a more robust lock management system
+    lock = audio_url_locks.setdefault(video_id, TimedLock())  # Use TimedLock for better tracking
+    
     # Add timeout to lock acquisition to prevent deadlocks
-    acquired = lock.acquire(timeout=10)
+    acquired = lock.acquire(timeout=5)  # Reduced timeout
     if not acquired:
         logger.error(f"Timeout acquiring lock for {video_id}, possible deadlock")
+        # Force remove the stuck lock
+        if video_id in audio_url_locks:
+            del audio_url_locks[video_id]
+        # If we have too many active locks, force cleanup
+        if len(audio_url_locks) > 100:
+            force_cleanup_locks()
         return None, None, None
     
     try:
@@ -250,9 +386,9 @@ class PriorityThreadPool:
 # Create priority thread pool
 priority_pool = PriorityThreadPool(max_workers=15)
 
-# Legacy thread pools for backward compatibility
-prefetch_thread_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="prefetch")
-download_thread_pool = ThreadPoolExecutor(max_workers=5, thread_name_prefix="download")
+# Legacy thread pools for backward compatibility (optimized for speed)
+prefetch_thread_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="prefetch")
+download_thread_pool = ThreadPoolExecutor(max_workers=6, thread_name_prefix="download")
 
 # Background pre-fetch for audio URLs with priority
 def background_prefetch_audio_urls(video_ids, priority=TaskPriority.LOW):
@@ -368,53 +504,78 @@ def get_recommended(
 
 @app.get("/trending")
 def get_trending(limit: int = Query(20, description="Number of trending songs to return")):
+    """
+    Get international trending songs using multiple search terms and global music hits.
+    This provides truly global trending songs instead of region-specific content.
+    """
     try:
-        logger.info("Getting trending songs from featured playlists...")
-        try:
-            featured_playlists = []
-            home_content = ytmusic.get_home()
-            for section in home_content:
-                if 'contents' in section:
-                    for item in section['contents']:
-                        if 'playlistId' in item:
-                            featured_playlists.append({
-                                'playlistId': item['playlistId'],
-                                'title': item.get('title', 'Unknown Playlist')
-                            })
-                            if len(featured_playlists) >= 3:
+        logger.info("Getting international trending songs...")
+        
+        # Multiple search terms for international trending content
+        trending_terms = [
+            "top hits 2024", "viral songs", "trending music", "popular songs",
+            "billboard hot 100", "global hits", "international hits", "chart toppers"
+        ]
+        
+        all_songs = []
+        seen_video_ids = set()  # To avoid duplicates
+        
+        for term in trending_terms:
+            try:
+                logger.info(f"Searching for trending songs with term: {term}")
+                search_results = ytmusic.search(term, filter="songs", limit=limit//len(trending_terms))
+                
+                if search_results:
+                    for song in search_results:
+                        video_id = song.get('videoId')
+                        if video_id and video_id not in seen_video_ids:
+                            all_songs.append(song)
+                            seen_video_ids.add(video_id)
+                            
+                            # Stop if we have enough songs
+                            if len(all_songs) >= limit:
                                 break
-                if len(featured_playlists) >= 3:
+                
+                # Stop if we have enough songs
+                if len(all_songs) >= limit:
                     break
-            all_songs = []
-            for playlist_info in featured_playlists:
+                    
+            except Exception as e:
+                logger.error(f"Error searching for term '{term}': {str(e)}")
+                continue
+        
+        # If we don't have enough songs, try some fallback searches
+        if len(all_songs) < limit:
+            fallback_terms = ["music hits", "popular music", "trending songs"]
+            for term in fallback_terms:
                 try:
-                    if 'playlistId' in playlist_info:
-                        playlist_id = playlist_info['playlistId']
-                        search_results = ytmusic.search(playlist_info['title'], filter="songs", limit=5)
-                        if search_results and len(search_results) > 0:
-                            all_songs.extend(search_results)
+                    remaining = limit - len(all_songs)
+                    if remaining <= 0:
+                        break
+                        
+                    search_results = ytmusic.search(term, filter="songs", limit=remaining)
+                    if search_results:
+                        for song in search_results:
+                            video_id = song.get('videoId')
+                            if video_id and video_id not in seen_video_ids:
+                                all_songs.append(song)
+                                seen_video_ids.add(video_id)
+                                
+                                if len(all_songs) >= limit:
+                                    break
                 except Exception as e:
-                    logger.error(f"Error getting songs from playlist {playlist_info.get('title')}: {str(e)}")
+                    logger.error(f"Error in fallback search for '{term}': {str(e)}")
                     continue
-            
-            # Prefetch top results in the background with MEDIUM priority
-            if all_songs:
-                video_ids = [song.get('videoId') for song in all_songs[:3] if song.get('videoId')]
-                if video_ids:
-                    background_prefetch_audio_urls(video_ids, TaskPriority.MEDIUM)
-            
-            return all_songs[:limit]
-        except Exception as featured_error:
-            logger.error(f"Error using featured playlists approach: {str(featured_error)}")
-            search_results = ytmusic.search("top hits", filter="songs", limit=limit)
-            
-            # Prefetch top results in the background with MEDIUM priority
-            if search_results:
-                video_ids = [song.get('videoId') for song in search_results[:3] if song.get('videoId')]
-                if video_ids:
-                    background_prefetch_audio_urls(video_ids, TaskPriority.MEDIUM)
-            
-            return search_results
+        
+        # Prefetch top results in the background with MEDIUM priority
+        if all_songs:
+            video_ids = [song.get('videoId') for song in all_songs[:3] if song.get('videoId')]
+            if video_ids:
+                background_prefetch_audio_urls(video_ids, TaskPriority.MEDIUM)
+        
+        logger.info(f"Found {len(all_songs)} international trending songs")
+        return all_songs[:limit]
+        
     except Exception as e:
         logger.error(f"Error fetching trending songs: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to get trending songs: {str(e)}")
@@ -589,90 +750,78 @@ async def get_yt_audio(request: Request, video_id: str = Query(..., description=
         # If not in cache or expired, extract new URL with CRITICAL priority
         if audio_url is None:
             logger.info(f"Extracting new audio URL for {video_id} (CRITICAL priority)")
-            url = f"https://www.youtube.com/watch?v={video_id}"
-            
-            ydl_opts = {
-                'format': 'bestaudio/best',
-                'quiet': False,
-                'no_warnings': False,
-                'noplaylist': True,
-                'skip_download': True,
-                'socket_timeout': 15,  # Add timeout for network operations
-                # Prioritize faster formats with smaller file sizes
-                'format_sort': ['asr', 'abr', 'size', 'quality'],
-            }
             
             try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(url, download=False)
+                # Use optimized extraction function
+                info = extract_video_info_fast(video_id)
+                
+                if not info:
+                    logger.error("No info returned from yt-dlp")
+                    return {"error": "Could not extract video information"}
+                
+                # Try direct URL first
+                if 'url' in info:
+                    audio_url = info['url']
+                    logger.info("Found direct URL in info dict")
                     
-                    if not info:
-                        logger.error("No info returned from yt-dlp")
-                        return {"error": "Could not extract video information"}
+                    # Make a HEAD request to get content type
+                    try:
+                        head_response = requests.head(audio_url, timeout=3)  # Faster timeout
+                        content_type = head_response.headers.get('Content-Type', 'audio/mpeg')
+                    except Exception as e:
+                        logger.warning(f"HEAD request failed: {str(e)}")
+                        content_type = 'audio/mpeg'  # Default if HEAD request fails
                     
-                    # Try direct URL first
-                    if 'url' in info:
-                        audio_url = info['url']
-                        logger.info("Found direct URL in info dict")
-                        
-                        # Make a HEAD request to get content type
-                        try:
-                            head_response = requests.head(audio_url, timeout=5)
-                            content_type = head_response.headers.get('Content-Type', 'audio/mpeg')
-                        except Exception as e:
-                            logger.warning(f"HEAD request failed: {str(e)}")
-                            content_type = 'audio/mpeg'  # Default if HEAD request fails
-                        
-                        # Parse expiration time
-                        expire_timestamp = parse_expire_from_url(audio_url)
-                        
-                        # Cache the URL
-                        audio_url_cache[video_id] = (audio_url, expire_timestamp, content_type)
-                        
-                        logger.info(f"Cached audio URL for {video_id}, expires at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(expire_timestamp))}")
-                        
-                    else:
-                        # Back to the old way if no direct URL
-                        formats = info.get('formats', [])
-                        if not formats:
-                            return {"error": "No formats found", "url": url}
-                        
-                        # Try to find an audio format
-                        audio_formats = [f for f in formats if f.get('acodec') != 'none']
-                        
-                        if not audio_formats:
-                            # Fall back to any format if no audio formats are found
-                            logger.warning("No audio formats found, using all formats")
-                            audio_formats = formats
-                        
-                        # Sort by quality (prefer audio only, smaller file size, then by bitrate)
-                        audio_formats.sort(key=lambda f: (
-                            0 if f.get('vcodec') in (None, 'none') else 1,  # Prefer audio only
-                            f.get('filesize') or float('inf'),  # Then prefer smaller file size
-                            -(f.get('abr', 0) or 0)  # Then by audio bitrate (higher first)
-                        ))
-                        
-                        if not audio_formats:
-                            return {"error": "No formats available"}
-                        
-                        best_audio = audio_formats[0]
-                        audio_url = best_audio.get('url')
-                        
-                        if not audio_url:
-                            return {"error": "No URL found in best audio format"}
-                        
-                        logger.info(f"Selected format: {best_audio.get('format_id')}, filesize: {best_audio.get('filesize') or 'unknown'}")
-                        
-                        # Get content type
-                        content_type = best_audio.get('mime_type', 'audio/mpeg').split(';')[0]
-                        
-                        # Parse expiration time
-                        expire_timestamp = parse_expire_from_url(audio_url)
-                        
-                        # Cache the URL
-                        audio_url_cache[video_id] = (audio_url, expire_timestamp, content_type)
-                        
-                        logger.info(f"Cached audio URL for {video_id}, expires at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(expire_timestamp))}")
+                    # Parse expiration time
+                    expire_timestamp = parse_expire_from_url(audio_url)
+                    
+                    # Cache the URL
+                    audio_url_cache[video_id] = (audio_url, expire_timestamp, content_type)
+                    
+                    logger.info(f"Cached audio URL for {video_id}, expires at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(expire_timestamp))}")
+                    
+                else:
+                    # Back to the old way if no direct URL
+                    formats = info.get('formats', [])
+                    if not formats:
+                        return {"error": "No formats found"}
+                    
+                    # Try to find an audio format
+                    audio_formats = [f for f in formats if f.get('acodec') != 'none']
+                    
+                    if not audio_formats:
+                        # Fall back to any format if no audio formats are found
+                        logger.warning("No audio formats found, using all formats")
+                        audio_formats = formats
+                    
+                    # Sort by quality (prefer audio only, smaller file size, then by bitrate)
+                    audio_formats.sort(key=lambda f: (
+                        0 if f.get('vcodec') in (None, 'none') else 1,  # Prefer audio only
+                        f.get('filesize') or float('inf'),  # Then prefer smaller file size
+                        -(f.get('abr', 0) or 0)  # Then by audio bitrate (higher first)
+                    ))
+                    
+                    if not audio_formats:
+                        return {"error": "No formats available"}
+                    
+                    best_audio = audio_formats[0]
+                    audio_url = best_audio.get('url')
+                    
+                    if not audio_url:
+                        return {"error": "No URL found in best audio format"}
+                    
+                    logger.info(f"Selected format: {best_audio.get('format_id')}, filesize: {best_audio.get('filesize') or 'unknown'}")
+                    
+                    # Get content type
+                    content_type = best_audio.get('mime_type', 'audio/mpeg').split(';')[0]
+                    
+                    # Parse expiration time
+                    expire_timestamp = parse_expire_from_url(audio_url)
+                    
+                    # Cache the URL
+                    audio_url_cache[video_id] = (audio_url, expire_timestamp, content_type)
+                    
+                    logger.info(f"Cached audio URL for {video_id}, expires at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(expire_timestamp))}")
             except Exception as yt_error:
                 logger.error(f"Error extracting with yt-dlp: {str(yt_error)}")
                 return {"error": f"Error extracting audio: {str(yt_error)}"}
@@ -943,72 +1092,61 @@ async def audio_fallback(request: Request, video_id: str = Query(..., descriptio
             audio_url = None
             content_type = None
         
-        # If not in cache or expired, extract new URL
+        # If not in cache or expired, extract new URL using fast extraction
         if audio_url is None:
             logger.info(f"Audio fallback for ID: {video_id}")
-            url = f"https://www.youtube.com/watch?v={video_id}"
-            
-            # Use the same approach as the main endpoint but with different options
-            ydl_opts = {
-                'format': 'bestaudio/best',
-                'quiet': False,
-                'no_warnings': False,
-                'noplaylist': True,
-                'skip_download': True,
-                'socket_timeout': 15,  # Add timeout for network operations
-            }
             
             try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(url, download=False)
+                # Use the optimized fast extraction function
+                info = extract_video_info_fast(video_id)
+                
+                if not info:
+                    return {"error": "Could not extract video information"}
+                
+                # Try direct URL first
+                if 'url' in info:
+                    audio_url = info['url']
+                    logger.info("Found direct URL in fallback")
                     
-                    if not info:
-                        return {"error": "Could not extract video information"}
+                    # Make a HEAD request to get content type
+                    try:
+                        head_response = requests.head(audio_url, timeout=3)  # Faster timeout
+                        content_type = head_response.headers.get('Content-Type', 'audio/mpeg')
+                    except Exception as e:
+                        logger.warning(f"HEAD request failed in fallback: {str(e)}")
+                        content_type = 'audio/mpeg'  # Default if HEAD request fails
                     
-                    # Try direct URL first
-                    if 'url' in info:
-                        audio_url = info['url']
-                        logger.info("Found direct URL in fallback")
+                    # Parse expiration time
+                    expire_timestamp = parse_expire_from_url(audio_url)
+                    
+                    # Cache the URL
+                    audio_url_cache[video_id] = (audio_url, expire_timestamp, content_type)
+                    
+                    logger.info(f"Cached fallback audio URL for {video_id}, expires at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(expire_timestamp))}")
+                    
+                else:
+                    # Process formats if no direct URL
+                    formats = info.get('formats', [])
+                    if formats:
+                        # Try to find an audio format
+                        audio_formats = [f for f in formats if f.get('acodec') != 'none']
                         
-                        # Make a HEAD request to get content type
-                        try:
-                            head_response = requests.head(audio_url, timeout=5)
-                            content_type = head_response.headers.get('Content-Type', 'audio/mpeg')
-                        except Exception as e:
-                            logger.warning(f"HEAD request failed in fallback: {str(e)}")
-                            content_type = 'audio/mpeg'  # Default if HEAD request fails
-                        
-                        # Parse expiration time
-                        expire_timestamp = parse_expire_from_url(audio_url)
-                        
-                        # Cache the URL
-                        audio_url_cache[video_id] = (audio_url, expire_timestamp, content_type)
-                        
-                        logger.info(f"Cached fallback audio URL for {video_id}, expires at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(expire_timestamp))}")
-                        
-                    else:
-                        # Process formats if no direct URL
-                        formats = info.get('formats', [])
-                        if formats:
-                            # Try to find an audio format
-                            audio_formats = [f for f in formats if f.get('acodec') != 'none']
+                        if audio_formats:
+                            audio_formats.sort(key=lambda f: -(f.get('abr', 0) or 0))
+                            best_audio = audio_formats[0]
+                            audio_url = best_audio.get('url')
                             
-                            if audio_formats:
-                                audio_formats.sort(key=lambda f: -(f.get('abr', 0) or 0))
-                                best_audio = audio_formats[0]
-                                audio_url = best_audio.get('url')
+                            if audio_url:
+                                # Get content type
+                                content_type = best_audio.get('mime_type', 'audio/mpeg').split(';')[0]
                                 
-                                if audio_url:
-                                    # Get content type
-                                    content_type = best_audio.get('mime_type', 'audio/mpeg').split(';')[0]
-                                    
-                                    # Parse expiration time
-                                    expire_timestamp = parse_expire_from_url(audio_url)
-                                    
-                                    # Cache the URL
-                                    audio_url_cache[video_id] = (audio_url, expire_timestamp, content_type)
-                                    
-                                    logger.info(f"Cached fallback audio URL for {video_id}, expires at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(expire_timestamp))}")
+                                # Parse expiration time
+                                expire_timestamp = parse_expire_from_url(audio_url)
+                                
+                                # Cache the URL
+                                audio_url_cache[video_id] = (audio_url, expire_timestamp, content_type)
+                                
+                                logger.info(f"Cached fallback audio URL for {video_id}, expires at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(expire_timestamp))}")
             except Exception as yt_error:
                 logger.error(f"Error extracting with yt-dlp in fallback: {str(yt_error)}")
                 return {"error": f"Error extracting audio in fallback: {str(yt_error)}", "video_id": video_id}
@@ -1068,33 +1206,56 @@ async def audio_fallback(request: Request, video_id: str = Query(..., descriptio
 if __name__ == "__main__":
     import uvicorn
     import platform
-
-    # Always use a single worker on Windows
-    if platform.system() == "Windows":
-        uvicorn.run(
-            app,
-            host="0.0.0.0",
-            port=8000,
-            timeout_keep_alive=65,
-            log_level="info"
-        )
-    else:
-        import multiprocessing
-    workers = min(4, multiprocessing.cpu_count() + 1)
-    if workers > 1:
-        uvicorn.run(
-                "main:app",
-            host="0.0.0.0", 
-            port=8000,
-            workers=workers,
-            timeout_keep_alive=65,
-            log_level="info"
-        )
-    else:
+    import argparse
+    
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description="NOVA Music API Server")
+    parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
+    parser.add_argument("--port", type=int, default=8000, help="Port to bind to")
+    parser.add_argument("--fast", action="store_true", help="Fast startup mode")
+    
+    args = parser.parse_args()
+    
+    # Configure uvicorn settings
+    if args.fast:
+        # Fast startup mode - minimal features
         uvicorn.run(
             app, 
-            host="0.0.0.0", 
-            port=8000,
-            timeout_keep_alive=65,
-            log_level="info"
-        ) 
+            host=args.host, 
+            port=args.port,
+            workers=1,
+            reload=False,
+            access_log=False,
+            log_level="warning",
+            timeout_keep_alive=30
+        )
+    else:
+        # Normal mode with full features
+        if platform.system() == "Windows":
+            uvicorn.run(
+                app,
+                host=args.host,
+                port=args.port,
+                timeout_keep_alive=65,
+                log_level="info"
+            )
+        else:
+            import multiprocessing
+            workers = min(4, multiprocessing.cpu_count() + 1)
+            if workers > 1:
+                uvicorn.run(
+                    "main:app",
+                    host=args.host, 
+                    port=args.port,
+                    workers=workers,
+                    timeout_keep_alive=65,
+                    log_level="info"
+                )
+            else:
+                uvicorn.run(
+                    app, 
+                    host=args.host, 
+                    port=args.port,
+                    timeout_keep_alive=65,
+                    log_level="info"
+                ) 
