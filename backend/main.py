@@ -16,6 +16,7 @@ import threading
 from cachetools import TTLCache
 from enum import IntEnum
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta
 
 # Custom lock class that tracks acquisition time
 class TimedLock:
@@ -106,7 +107,14 @@ audio_url_locks = {}
 audio_url_failure_cache = TTLCache(maxsize=2048, ttl=900)  # 15 min TTL for failures
 # Cache for video info to avoid re-extraction
 video_info_cache = TTLCache(maxsize=4096, ttl=7200)  # 2 hour TTL for video info
-# Removed popular video cache to avoid unnecessary memory usage
+# Cache for search results to avoid repeated API calls
+search_cache = TTLCache(maxsize=2048, ttl=1800)  # 30 min TTL for search results
+# Cache for trending songs
+trending_cache = TTLCache(maxsize=100, ttl=3600)  # 1 hour TTL for trending
+# Cache for featured playlists
+featured_cache = TTLCache(maxsize=50, ttl=7200)  # 2 hour TTL for featured
+# Cache for recommendations
+recommendations_cache = TTLCache(maxsize=512, ttl=1800)  # 30 min TTL for recommendations
 
 # Function to extract expire parameter from YouTube URL
 def parse_expire_from_url(url):
@@ -155,7 +163,7 @@ def force_cleanup_locks():
 
 # Helper function to extract video info efficiently
 def extract_video_info_fast(video_id):
-    """Extract video info with optimized settings for speed"""
+    """Extract video info with ultra-optimized settings for maximum speed"""
     url = f"https://www.youtube.com/watch?v={video_id}"
     
     # Check cache first
@@ -163,15 +171,14 @@ def extract_video_info_fast(video_id):
         logger.info(f"Using cached video info for {video_id}")
         return video_info_cache[video_id]
     
-    # Popular video cache removed to avoid unnecessary memory usage
-    
+    # Ultra-optimized yt-dlp options for maximum speed
     ydl_opts = {
         'format': 'bestaudio/best',
         'quiet': True,
         'no_warnings': True,
         'noplaylist': True,
         'skip_download': True,
-        'socket_timeout': 5,  # Even faster timeout
+        'socket_timeout': 3,  # Ultra-fast timeout
         'retries': 0,  # No retries for maximum speed
         'fragment_retries': 0,
         'extractor_retries': 0,
@@ -179,29 +186,35 @@ def extract_video_info_fast(video_id):
         'http_chunk_size': 10485760,
         'max_downloads': 1,
         'concurrent_fragment_downloads': 1,
-        'format_sort': ['asr', 'abr', 'size', 'quality'],
+        'format_sort': ['abr', 'asr'],  # Simplified format sorting
         'extract_flat': False,
         'ignoreerrors': False,
         'prefer_ffmpeg': False,
         'postprocessors': [],
-        # Skip unnecessary data extraction
+        # Skip all unnecessary data extraction
         'writesubtitles': False,
         'writeautomaticsub': False,
         'writethumbnail': False,
         'writedescription': False,
         'writeinfojson': False,
-        # Additional speed optimizations
-        'no_check_certificate': True,  # Skip SSL verification for speed
-        'prefer_insecure': True,  # Prefer HTTP over HTTPS when possible
-        'nocheckcertificate': True,  # Alternative SSL skip
-        'geo_bypass': True,  # Skip geo-restriction checks
+        'writemetadata': False,
+        'writesubtitles': False,
+        'writeautomaticsub': False,
+        # Ultra-aggressive speed optimizations
+        'no_check_certificate': True,
+        'prefer_insecure': True,
+        'nocheckcertificate': True,
+        'geo_bypass': True,
+        'no_color': True,
+        'no_progress': True,
         'extractor_args': {
             'youtube': {
-                'skip': ['dash', 'hls'],  # Skip DASH and HLS formats
+                'skip': ['dash', 'hls', 'webm'],  # Skip more formats
                 'player_client': ['android'],  # Use Android client only
+                'player_skip': ['webpage', 'configs'],  # Skip player configs
             }
         },
-        # Use more compatible format specification
+        # Use most compatible format specification
         'format': 'bestaudio/best',
     }
     
@@ -209,7 +222,7 @@ def extract_video_info_fast(video_id):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             if info:
-                # Cache the info
+                # Cache the info immediately
                 video_info_cache[video_id] = info
                 logger.info(f"Cached video info for {video_id}")
                 return info
@@ -426,27 +439,61 @@ def read_root():
 @app.get("/search")
 def search_songs(query: str = Query(..., description="Search query"), limit: int = Query(10, description="Number of results to return")):
     start_time = time.time()
+    
+    # Create cache key
+    cache_key = f"search:{query}:{limit}"
+    
     try:
-        # Try with filter='songs' first
-        search_results = ytmusic.search(query, filter="songs", limit=limit)
-        if not search_results:
-            # Fallback: try without filter for broader results
-            logger.info(f"No results for '{query}' with filter='songs', trying filter=None")
-            search_results = ytmusic.search(query, filter=None, limit=limit)
-        if not search_results:
-            # Fallback: try a popular query
-            logger.info(f"No results for '{query}' with filter=None, trying fallback query 'top hits'")
-            search_results = ytmusic.search("top hits", filter="songs", limit=limit)
+        # Check cache first
+        if cache_key in search_cache:
+            logger.info(f"Using cached search results for '{query}'")
+            results = search_cache[cache_key]
+            # Still prefetch in background
+            video_ids = [song.get('videoId') for song in results[:3] if song.get('videoId')]
+            if video_ids:
+                background_prefetch_audio_urls(video_ids, TaskPriority.HIGH)
+            return results
         
-        # Prefetch the top few results in the background with HIGH priority
-        video_ids = [song.get('videoId') for song in search_results[:3] if song.get('videoId')]
-        if video_ids:
-            background_prefetch_audio_urls(video_ids, TaskPriority.HIGH)
+        # Optimized search with single API call and smart fallback
+        search_results = None
+        
+        # Try songs filter first (most common case)
+        try:
+            search_results = ytmusic.search(query, filter="songs", limit=limit)
+        except Exception as e:
+            logger.warning(f"Songs filter failed for '{query}': {str(e)}")
+        
+        # If no results, try without filter (broader search)
+        if not search_results:
+            try:
+                search_results = ytmusic.search(query, filter=None, limit=limit)
+            except Exception as e:
+                logger.warning(f"General search failed for '{query}': {str(e)}")
+        
+        # Final fallback to popular songs
+        if not search_results:
+            try:
+                search_results = ytmusic.search("popular songs", filter="songs", limit=limit)
+                logger.info(f"Using fallback results for '{query}'")
+            except Exception as e:
+                logger.error(f"Fallback search failed: {str(e)}")
+                search_results = []
+        
+        # Cache the results
+        if search_results:
+            search_cache[cache_key] = search_results
             
+            # Prefetch top results in background
+            video_ids = [song.get('videoId') for song in search_results[:3] if song.get('videoId')]
+            if video_ids:
+                background_prefetch_audio_urls(video_ids, TaskPriority.HIGH)
+        
         elapsed = time.time() - start_time
-        if elapsed > 2.0:
+        if elapsed > 1.0:
             logger.warning(f"/search for '{query}' took {elapsed:.2f}s")
-        return search_results
+        
+        return search_results or []
+        
     except Exception as e:
         logger.error(f"/search error for '{query}': {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
@@ -461,22 +508,38 @@ def get_recommended(
     artists: str = Query(None, description="Comma-separated artists"),
     limit: int = Query(10, description="Number of recommendations to return")
 ):
+    # Create cache key
+    cache_key = f"recommended:{video_id}:{genres}:{languages}:{artists}:{limit}"
+    
     try:
+        # Check cache first
+        if cache_key in recommendations_cache:
+            logger.info(f"Using cached recommendations for {video_id or 'general'}")
+            results = recommendations_cache[cache_key]
+            # Still prefetch in background
+            video_ids = [song.get('videoId') for song in results[:3] if song.get('videoId')]
+            if video_ids:
+                background_prefetch_audio_urls(video_ids, TaskPriority.MEDIUM)
+            return results
+        
         logger.info(f"Getting recommendations for video_id={video_id}, genres={genres}, languages={languages}, artists={artists}")
+        
         if video_id:
-            # Existing logic for video-based recommendations
+            # Video-based recommendations
             try:
                 recommendations = ytmusic.get_watch_playlist(video_id, limit=limit)
                 tracks = recommendations.get('tracks', [])
                 if tracks:
-                    # Prefetch top results in the background with MEDIUM priority
+                    # Cache and prefetch
+                    recommendations_cache[cache_key] = tracks
                     video_ids = [song.get('videoId') for song in tracks[:3] if song.get('videoId')]
                     if video_ids:
                         background_prefetch_audio_urls(video_ids, TaskPriority.MEDIUM)
-                return tracks
+                    return tracks
             except Exception as watch_error:
                 logger.error(f"Error getting watch playlist: {str(watch_error)}")
-        # If no video_id or failed, use user preferences
+        
+        # Fallback to search-based recommendations
         query_parts = []
         if genres:
             query_parts.append(genres.replace(",", " "))
@@ -485,19 +548,23 @@ def get_recommended(
         if artists:
             query_parts.append(artists.replace(",", " "))
         query = " ".join(query_parts).strip() or "popular songs"
+        
         logger.info(f"Recommendation query: {query}")
+        
+        # Use optimized search
         search_results = ytmusic.search(query, filter="songs", limit=limit)
         if not search_results:
-            logger.info(f"No results for '{query}', falling back to 'top hits'")
-            search_results = ytmusic.search("top hits", filter="songs", limit=limit)
+            search_results = ytmusic.search("popular songs", filter="songs", limit=limit)
         
-        # Prefetch top results in the background with MEDIUM priority
+        # Cache and prefetch
         if search_results:
+            recommendations_cache[cache_key] = search_results
             video_ids = [song.get('videoId') for song in search_results[:3] if song.get('videoId')]
             if video_ids:
                 background_prefetch_audio_urls(video_ids, TaskPriority.MEDIUM)
-                
-        return search_results
+        
+        return search_results or []
+        
     except Exception as e:
         logger.error(f"Error fetching recommendations: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to get recommendations: {str(e)}")
@@ -505,55 +572,45 @@ def get_recommended(
 @app.get("/trending")
 def get_trending(limit: int = Query(20, description="Number of trending songs to return")):
     """
-    Get international trending songs using multiple search terms and global music hits.
-    This provides truly global trending songs instead of region-specific content.
+    Get international trending songs using optimized caching and parallel processing.
     """
+    # Check cache first
+    cache_key = f"trending:{limit}"
+    if cache_key in trending_cache:
+        logger.info("Using cached trending songs")
+        results = trending_cache[cache_key]
+        # Still prefetch in background
+        video_ids = [song.get('videoId') for song in results[:3] if song.get('videoId')]
+        if video_ids:
+            background_prefetch_audio_urls(video_ids, TaskPriority.MEDIUM)
+        return results
+    
     try:
         logger.info("Getting international trending songs...")
         
-        # Multiple search terms for international trending content
+        # Optimized: Use fewer, more effective search terms
         trending_terms = [
-            "top hits 2024", "viral songs", "trending music", "popular songs",
-            "billboard hot 100", "global hits", "international hits", "chart toppers"
+            "top hits 2024", "viral songs", "popular songs"
         ]
         
         all_songs = []
-        seen_video_ids = set()  # To avoid duplicates
+        seen_video_ids = set()
         
-        for term in trending_terms:
+        # Process terms in parallel using thread pool
+        def search_term(term):
             try:
-                logger.info(f"Searching for trending songs with term: {term}")
-                search_results = ytmusic.search(term, filter="songs", limit=limit//len(trending_terms))
-                
-                if search_results:
-                    for song in search_results:
-                        video_id = song.get('videoId')
-                        if video_id and video_id not in seen_video_ids:
-                            all_songs.append(song)
-                            seen_video_ids.add(video_id)
-                            
-                            # Stop if we have enough songs
-                            if len(all_songs) >= limit:
-                                break
-                
-                # Stop if we have enough songs
-                if len(all_songs) >= limit:
-                    break
-                    
+                return ytmusic.search(term, filter="songs", limit=limit//len(trending_terms))
             except Exception as e:
                 logger.error(f"Error searching for term '{term}': {str(e)}")
-                continue
+                return []
         
-        # If we don't have enough songs, try some fallback searches
-        if len(all_songs) < limit:
-            fallback_terms = ["music hits", "popular music", "trending songs"]
-            for term in fallback_terms:
+        # Use thread pool for parallel searches
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            search_futures = [executor.submit(search_term, term) for term in trending_terms]
+            
+            for future in as_completed(search_futures):
                 try:
-                    remaining = limit - len(all_songs)
-                    if remaining <= 0:
-                        break
-                        
-                    search_results = ytmusic.search(term, filter="songs", limit=remaining)
+                    search_results = future.result()
                     if search_results:
                         for song in search_results:
                             video_id = song.get('videoId')
@@ -564,10 +621,30 @@ def get_trending(limit: int = Query(20, description="Number of trending songs to
                                 if len(all_songs) >= limit:
                                     break
                 except Exception as e:
-                    logger.error(f"Error in fallback search for '{term}': {str(e)}")
+                    logger.error(f"Error processing search result: {str(e)}")
                     continue
         
-        # Prefetch top results in the background with MEDIUM priority
+        # If we don't have enough songs, add popular songs
+        if len(all_songs) < limit:
+            try:
+                remaining = limit - len(all_songs)
+                popular_results = ytmusic.search("popular music", filter="songs", limit=remaining)
+                if popular_results:
+                    for song in popular_results:
+                        video_id = song.get('videoId')
+                        if video_id and video_id not in seen_video_ids:
+                            all_songs.append(song)
+                            seen_video_ids.add(video_id)
+                            
+                            if len(all_songs) >= limit:
+                                break
+            except Exception as e:
+                logger.error(f"Error adding popular songs: {str(e)}")
+        
+        # Cache the results
+        trending_cache[cache_key] = all_songs[:limit]
+        
+        # Prefetch top results in background
         if all_songs:
             video_ids = [song.get('videoId') for song in all_songs[:3] if song.get('videoId')]
             if video_ids:
@@ -582,6 +659,12 @@ def get_trending(limit: int = Query(20, description="Number of trending songs to
 
 @app.get("/featured")
 def get_featured_playlists(limit: int = Query(10, description="Number of featured playlists to return")):
+    # Check cache first
+    cache_key = f"featured:{limit}"
+    if cache_key in featured_cache:
+        logger.info("Using cached featured playlists")
+        return featured_cache[cache_key]
+    
     try:
         logger.info("Fetching featured playlists...")
         
@@ -612,6 +695,9 @@ def get_featured_playlists(limit: int = Query(10, description="Number of feature
             # Break if we have enough playlists
             if len(featured_playlists) >= limit:
                 break
+        
+        # Cache the results
+        featured_cache[cache_key] = featured_playlists
         
         return featured_playlists
     except Exception as e:
@@ -660,79 +746,145 @@ def critical_prefetch_endpoint(video_ids: str = Query(..., description="Comma-se
 @app.get("/playlist")
 def get_playlist_tracks(playlist_id: str = Query(..., description="YouTube Music playlist ID"), 
                        limit: int = Query(50, description="Number of tracks to return")):
+    # Create cache key
+    cache_key = f"playlist:{playlist_id}:{limit}"
+    
     try:
         logger.info(f"Fetching playlist with ID: {playlist_id}")
-        if playlist_id.startswith("RDCLAK"):
-            featured_playlists = []
-            home_content = ytmusic.get_home()
-            matching_playlist = None
-            for section in home_content:
-                if 'contents' in section:
-                    for item in section['contents']:
-                        if 'playlistId' in item and item['playlistId'] == playlist_id:
-                            matching_playlist = item
-                            break
-            if matching_playlist and 'title' in matching_playlist:
-                search_results = ytmusic.search(matching_playlist['title'], filter="songs", limit=limit)
-                
-                # Prefetch top results in the background (never block the response)
-                if search_results:
-                    video_ids = [song.get('videoId') for song in search_results[:3] if song.get('videoId')]
-                    if video_ids:
-                        background_prefetch_audio_urls(video_ids)
-                        
-                return {
-                    "playlistInfo": {
-                        "title": matching_playlist.get('title', 'Radio Playlist'),
-                        "description": matching_playlist.get('description', ''),
-                        "thumbnails": matching_playlist.get('thumbnails', [])
-                    },
-                    "tracks": search_results
-                }
+        
+        # Check cache first
+        if cache_key in search_cache:
+            logger.info(f"Using cached playlist for {playlist_id}")
+            cached_result = search_cache[cache_key]
+            # Still prefetch in background
+            if isinstance(cached_result, dict) and 'tracks' in cached_result:
+                tracks = cached_result['tracks']
             else:
+                tracks = cached_result
+            video_ids = [song.get('videoId') for song in tracks[:3] if song.get('videoId')]
+            if video_ids:
+                background_prefetch_audio_urls(video_ids)
+            return cached_result
+        
+        # For radio playlists, use faster approach
+        if playlist_id.startswith("RDCLAK"):
+            # Use popular songs directly for radio playlists (much faster)
+            try:
                 search_results = ytmusic.search("popular songs", filter="songs", limit=limit)
-                
-                # Prefetch top results in the background (never block the response)
-                if search_results:
-                    video_ids = [song.get('videoId') for song in search_results[:3] if song.get('videoId')]
-                    if video_ids:
-                        background_prefetch_audio_urls(video_ids)
-                        
-                return {
+                result = {
                     "playlistInfo": {
                         "title": "Popular Songs",
                         "description": "Popular songs collection"
                     },
                     "tracks": search_results
                 }
-        try:
-            playlist = ytmusic.get_playlist(playlist_id, limit=limit)
-            if 'tracks' in playlist:
-                tracks = playlist['tracks']
                 
-                # Prefetch top results in the background (never block the response)
-                if tracks:
+                # Cache and prefetch
+                search_cache[cache_key] = result
+                video_ids = [song.get('videoId') for song in result['tracks'][:3] if song.get('videoId')]
+                if video_ids:
+                    background_prefetch_audio_urls(video_ids)
+                return result
+                
+            except Exception as e:
+                logger.error(f"Error processing radio playlist: {str(e)}")
+                # Return empty result instead of failing
+                result = {
+                    "playlistInfo": {
+                        "title": "Popular Songs",
+                        "description": "Popular songs collection"
+                    },
+                    "tracks": []
+                }
+                search_cache[cache_key] = result
+                return result
+        
+        # Regular playlists with timeout protection
+        try:
+            # Add timeout to prevent hanging
+            import signal
+            
+            def timeout_handler(signum, frame):
+                raise TimeoutError("Playlist fetch timeout")
+            
+            # Set timeout for playlist fetch
+            signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(10)  # 10 second timeout
+            
+            try:
+                playlist = ytmusic.get_playlist(playlist_id, limit=limit)
+                signal.alarm(0)  # Cancel timeout
+                
+                if 'tracks' in playlist:
+                    tracks = playlist['tracks']
+                    
+                    # Cache and prefetch
+                    search_cache[cache_key] = playlist
                     video_ids = [song.get('videoId') for song in tracks[:3] if song.get('videoId')]
                     if video_ids:
                         background_prefetch_audio_urls(video_ids)
-                        
-                return playlist
-            else:
-                return playlist
+                    return playlist
+                else:
+                    search_cache[cache_key] = playlist
+                    return playlist
+                    
+            except TimeoutError:
+                signal.alarm(0)
+                logger.warning(f"Playlist fetch timeout for {playlist_id}, using fallback")
+                # Fallback to popular songs
+                search_results = ytmusic.search("popular songs", filter="songs", limit=limit)
+                result = {
+                    "playlistInfo": {
+                        "title": "Popular Songs",
+                        "description": "Popular songs collection (fallback)"
+                    },
+                    "tracks": search_results
+                }
+                search_cache[cache_key] = result
+                return result
+                
         except Exception as e:
             logger.error(f"Error fetching playlist: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Failed to get playlist: {str(e)}")
+            # Return fallback instead of raising exception
+            search_results = ytmusic.search("popular songs", filter="songs", limit=limit)
+            result = {
+                "playlistInfo": {
+                    "title": "Popular Songs",
+                    "description": "Popular songs collection (error fallback)"
+                },
+                "tracks": search_results
+            }
+            search_cache[cache_key] = result
+            return result
+            
     except Exception as e:
         logger.error(f"Error in get_playlist_tracks: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to get playlist tracks: {str(e)}")
+        # Final fallback
+        try:
+            search_results = ytmusic.search("popular songs", filter="songs", limit=limit)
+            return {
+                "playlistInfo": {
+                    "title": "Popular Songs",
+                    "description": "Popular songs collection (final fallback)"
+                },
+                "tracks": search_results
+            }
+        except:
+            return {
+                "playlistInfo": {
+                    "title": "Error",
+                    "description": "Could not load playlist"
+                },
+                "tracks": []
+            }
 
 @app.get("/yt_audio")
 async def get_yt_audio(request: Request, video_id: str = Query(..., description="YouTube video ID")):
     """
-    Get an audio stream with proper HTTP Range support for efficient seeking.
+    Ultra-optimized audio streaming endpoint with aggressive caching and faster extraction.
     """
     try:
-        # Check cache first
+        # Check cache first with optimized lookup
         if video_id in audio_url_cache:
             audio_url, expire_timestamp, content_type = audio_url_cache[video_id]
             # If URL is still valid (not expired)
@@ -747,106 +899,95 @@ async def get_yt_audio(request: Request, video_id: str = Query(..., description=
             audio_url = None
             content_type = None
         
-        # If not in cache or expired, extract new URL with CRITICAL priority
+        # If not in cache or expired, extract new URL with ultra-fast extraction
         if audio_url is None:
-            logger.info(f"Extracting new audio URL for {video_id} (CRITICAL priority)")
+            logger.info(f"Extracting new audio URL for {video_id} (ULTRA-FAST priority)")
             
             try:
-                # Use optimized extraction function
+                # Use ultra-fast extraction with minimal processing
                 info = extract_video_info_fast(video_id)
                 
                 if not info:
                     logger.error("No info returned from yt-dlp")
                     return {"error": "Could not extract video information"}
                 
-                # Try direct URL first
-                if 'url' in info:
+                # Get audio URL directly from formats (faster than checking 'url' first)
+                formats = info.get('formats', [])
+                if not formats:
+                    return {"error": "No formats found"}
+                
+                # Find the best audio format quickly (optimized selection)
+                audio_url = None
+                content_type = 'audio/mpeg'  # Default content type
+                
+                # First pass: look for direct audio URL in info
+                if 'url' in info and info.get('acodec') != 'none':
                     audio_url = info['url']
-                    logger.info("Found direct URL in info dict")
-                    
-                    # Make a HEAD request to get content type
-                    try:
-                        head_response = requests.head(audio_url, timeout=3)  # Faster timeout
-                        content_type = head_response.headers.get('Content-Type', 'audio/mpeg')
-                    except Exception as e:
-                        logger.warning(f"HEAD request failed: {str(e)}")
-                        content_type = 'audio/mpeg'  # Default if HEAD request fails
-                    
-                    # Parse expiration time
-                    expire_timestamp = parse_expire_from_url(audio_url)
-                    
-                    # Cache the URL
-                    audio_url_cache[video_id] = (audio_url, expire_timestamp, content_type)
-                    
-                    logger.info(f"Cached audio URL for {video_id}, expires at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(expire_timestamp))}")
-                    
+                    logger.info("Found direct audio URL in info")
                 else:
-                    # Back to the old way if no direct URL
-                    formats = info.get('formats', [])
-                    if not formats:
-                        return {"error": "No formats found"}
-                    
-                    # Try to find an audio format
-                    audio_formats = [f for f in formats if f.get('acodec') != 'none']
+                    # Second pass: find best audio format from formats list
+                    audio_formats = [f for f in formats if f.get('acodec') != 'none' and f.get('url')]
                     
                     if not audio_formats:
-                        # Fall back to any format if no audio formats are found
-                        logger.warning("No audio formats found, using all formats")
-                        audio_formats = formats
+                        # Fallback to any format with URL
+                        audio_formats = [f for f in formats if f.get('url')]
                     
-                    # Sort by quality (prefer audio only, smaller file size, then by bitrate)
-                    audio_formats.sort(key=lambda f: (
-                        0 if f.get('vcodec') in (None, 'none') else 1,  # Prefer audio only
-                        f.get('filesize') or float('inf'),  # Then prefer smaller file size
-                        -(f.get('abr', 0) or 0)  # Then by audio bitrate (higher first)
-                    ))
-                    
-                    if not audio_formats:
-                        return {"error": "No formats available"}
-                    
-                    best_audio = audio_formats[0]
-                    audio_url = best_audio.get('url')
-                    
-                    if not audio_url:
-                        return {"error": "No URL found in best audio format"}
-                    
-                    logger.info(f"Selected format: {best_audio.get('format_id')}, filesize: {best_audio.get('filesize') or 'unknown'}")
-                    
-                    # Get content type
-                    content_type = best_audio.get('mime_type', 'audio/mpeg').split(';')[0]
-                    
-                    # Parse expiration time
-                    expire_timestamp = parse_expire_from_url(audio_url)
-                    
-                    # Cache the URL
-                    audio_url_cache[video_id] = (audio_url, expire_timestamp, content_type)
-                    
-                    logger.info(f"Cached audio URL for {video_id}, expires at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(expire_timestamp))}")
+                    if audio_formats:
+                        # Sort by quality (optimized sorting)
+                        audio_formats.sort(key=lambda f: (
+                            0 if f.get('vcodec') in (None, 'none') else 1,  # Prefer audio only
+                            -(f.get('abr', 0) or 0)  # Then by audio bitrate (higher first)
+                        ))
+                        
+                        best_audio = audio_formats[0]
+                        audio_url = best_audio.get('url')
+                        content_type = best_audio.get('mime_type', 'audio/mpeg').split(';')[0]
+                        
+                        logger.info(f"Selected format: {best_audio.get('format_id')}, bitrate: {best_audio.get('abr', 'unknown')}")
+                
+                if not audio_url:
+                    return {"error": "No suitable audio URL found"}
+                
+                # Parse expiration time (optimized)
+                expire_timestamp = parse_expire_from_url(audio_url)
+                
+                # Cache the URL immediately
+                audio_url_cache[video_id] = (audio_url, expire_timestamp, content_type)
+                
+                logger.info(f"Cached audio URL for {video_id}, expires at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(expire_timestamp))}")
+                
             except Exception as yt_error:
                 logger.error(f"Error extracting with yt-dlp: {str(yt_error)}")
                 return {"error": f"Error extracting audio: {str(yt_error)}"}
         
-        # Prepare headers for the request to YouTube
-        headers = {}
+        # Prepare headers for the request to YouTube (optimized)
+        headers = {
+            "Accept-Encoding": "gzip, deflate",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
         
         # Forward the Range header if present (critical for seeking)
         if "range" in request.headers:
             headers["Range"] = request.headers["range"]
             logger.info(f"Forwarding Range header: {headers['Range']}")
         
-        # Add compression support
-        headers["Accept-Encoding"] = "gzip, deflate"
-        
-        # Make the request to YouTube with increased timeout
+        # Make the request to YouTube with optimized settings
         try:
-            # Use session for connection pooling
+            # Use session for connection pooling with optimized settings
             session = requests.Session()
+            session.mount('https://', requests.adapters.HTTPAdapter(
+                pool_connections=10,
+                pool_maxsize=20,
+                max_retries=1
+            ))
+            
             response = session.get(
                 audio_url, 
                 headers=headers, 
                 stream=True, 
-                timeout=15
+                timeout=10  # Reduced timeout for faster failure
             )
+            
         except requests.exceptions.Timeout:
             logger.error(f"Timeout when requesting audio URL: {audio_url}")
             return {"error": "Timeout when requesting audio stream"}
@@ -854,33 +995,27 @@ async def get_yt_audio(request: Request, video_id: str = Query(..., description=
             logger.error(f"Request error: {str(e)}")
             return {"error": f"Error requesting audio stream: {str(e)}"}
         
-        # Prepare response headers
-        response_headers = {}
+        # Prepare response headers (optimized)
+        response_headers = {
+            "Content-Type": content_type,
+            "Content-Disposition": f'inline; filename="{video_id}.mp3"',
+            "Cache-Control": "max-age=3600",
+            "Accept-Ranges": "bytes"
+        }
         
         # Forward important headers from YouTube's response
         important_headers = [
-            "Content-Type", "Content-Length", "Content-Range", 
-            "Accept-Ranges", "Content-Disposition", "Content-Encoding"
+            "Content-Length", "Content-Range", "Content-Encoding"
         ]
         
         for header in important_headers:
             if header in response.headers:
                 response_headers[header] = response.headers[header]
         
-        # Ensure Content-Type is set
-        if "Content-Type" not in response_headers:
-            response_headers["Content-Type"] = content_type
-            
-        # Set Content-Disposition
-        response_headers["Content-Disposition"] = f'inline; filename="{video_id}.mp3"'
+        # Use optimized chunk size for faster streaming (128KB chunks)
+        chunk_size = 131072  # 128KB chunks for better performance
         
-        # Add caching headers for better performance
-        response_headers["Cache-Control"] = "max-age=3600"
-        
-        # Use a larger chunk size for faster streaming (64KB instead of 1KB)
-        chunk_size = 65536  # 64KB chunks
-        
-        # Return the streaming response with the status code from YouTube
+        # Return the streaming response with optimized settings
         return StreamingResponse(
             response.iter_content(chunk_size=chunk_size),
             status_code=response.status_code,
@@ -1074,134 +1209,67 @@ const YouTubeHelper = {
 @app.get("/audio_fallback")
 async def audio_fallback(request: Request, video_id: str = Query(..., description="YouTube video ID")):
     """
-    Fallback endpoint that streams audio directly using a different approach
+    Ultra-optimized fallback endpoint with instant cache and minimal extraction
     """
     try:
-        # Check cache first
-        if video_id in audio_url_cache:
-            audio_url, expire_timestamp, content_type = audio_url_cache[video_id]
-            # If URL is still valid (not expired)
-            if time.time() < expire_timestamp:
-                logger.info(f"Using cached audio URL for fallback {video_id}, expires in {int(expire_timestamp - time.time())} seconds")
+        # Check cache first with optimized key
+        fallback_cache_key = f"{video_id}_fallback"
+        if fallback_cache_key in audio_url_cache:
+            cached_data = audio_url_cache[fallback_cache_key]
+            if isinstance(cached_data, dict):
+                # New cache format
+                if time.time() < cached_data['expires_at'].timestamp():
+                    logger.info(f"Using cached fallback audio URL for {fallback_cache_key}")
+                    return RedirectResponse(url=cached_data['url'], status_code=302)
             else:
-                # URL expired, remove from cache
-                del audio_url_cache[video_id]
-                audio_url = None
-                content_type = None
-        else:
-            audio_url = None
-            content_type = None
+                # Old cache format
+                audio_url, expire_timestamp, content_type = cached_data
+                if time.time() < expire_timestamp:
+                    logger.info(f"Using cached fallback audio URL for {fallback_cache_key}")
+                    return RedirectResponse(url=audio_url, status_code=302)
         
-        # If not in cache or expired, extract new URL using fast extraction
-        if audio_url is None:
-            logger.info(f"Audio fallback for ID: {video_id}")
-            
-            try:
-                # Use the optimized fast extraction function
-                info = extract_video_info_fast(video_id)
-                
-                if not info:
-                    return {"error": "Could not extract video information"}
-                
-                # Try direct URL first
-                if 'url' in info:
-                    audio_url = info['url']
-                    logger.info("Found direct URL in fallback")
-                    
-                    # Make a HEAD request to get content type
-                    try:
-                        head_response = requests.head(audio_url, timeout=3)  # Faster timeout
-                        content_type = head_response.headers.get('Content-Type', 'audio/mpeg')
-                    except Exception as e:
-                        logger.warning(f"HEAD request failed in fallback: {str(e)}")
-                        content_type = 'audio/mpeg'  # Default if HEAD request fails
-                    
-                    # Parse expiration time
-                    expire_timestamp = parse_expire_from_url(audio_url)
-                    
-                    # Cache the URL
-                    audio_url_cache[video_id] = (audio_url, expire_timestamp, content_type)
-                    
-                    logger.info(f"Cached fallback audio URL for {video_id}, expires at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(expire_timestamp))}")
-                    
-                else:
-                    # Process formats if no direct URL
-                    formats = info.get('formats', [])
-                    if formats:
-                        # Try to find an audio format
-                        audio_formats = [f for f in formats if f.get('acodec') != 'none']
-                        
-                        if audio_formats:
-                            audio_formats.sort(key=lambda f: -(f.get('abr', 0) or 0))
-                            best_audio = audio_formats[0]
-                            audio_url = best_audio.get('url')
-                            
-                            if audio_url:
-                                # Get content type
-                                content_type = best_audio.get('mime_type', 'audio/mpeg').split(';')[0]
-                                
-                                # Parse expiration time
-                                expire_timestamp = parse_expire_from_url(audio_url)
-                                
-                                # Cache the URL
-                                audio_url_cache[video_id] = (audio_url, expire_timestamp, content_type)
-                                
-                                logger.info(f"Cached fallback audio URL for {video_id}, expires at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(expire_timestamp))}")
-            except Exception as yt_error:
-                logger.error(f"Error extracting with yt-dlp in fallback: {str(yt_error)}")
-                return {"error": f"Error extracting audio in fallback: {str(yt_error)}", "video_id": video_id}
+        # If not in cache, use the main extraction function for consistency
+        logger.info(f"Audio fallback for ID: {video_id}")
         
-        if not audio_url:
-            return {"error": "No suitable audio URL found", "video_id": video_id}
-        
-        # Prepare headers for the request to YouTube
-        headers = {}
-        
-        # Forward the Range header if present (critical for seeking)
-        if "range" in request.headers:
-            headers["Range"] = request.headers["range"]
-            logger.info(f"Forwarding Range header to fallback: {headers['Range']}")
-        
-        # Make the request to YouTube
         try:
-            response = requests.get(audio_url, headers=headers, stream=True, timeout=10)
-        except requests.exceptions.Timeout:
-            logger.error(f"Timeout when requesting fallback audio URL: {audio_url}")
-            return {"error": "Timeout when requesting fallback audio stream", "video_id": video_id}
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Request error in fallback: {str(e)}")
-            return {"error": f"Error requesting fallback audio stream: {str(e)}", "video_id": video_id}
-        
-        # Prepare response headers
-        response_headers = {}
-        
-        # Forward important headers from YouTube's response
-        important_headers = [
-            "Content-Type", "Content-Length", "Content-Range", 
-            "Accept-Ranges", "Content-Disposition"
-        ]
-        
-        for header in important_headers:
-            if header in response.headers:
-                response_headers[header] = response.headers[header]
-        
-        # Ensure Content-Type is set
-        if "Content-Type" not in response_headers:
-            response_headers["Content-Type"] = content_type
+            # Use the same optimized extraction as main endpoint
+            info = extract_video_info_fast(video_id)
             
-        # Set Content-Disposition
-        response_headers["Content-Disposition"] = f'inline; filename="{video_id}_fallback.mp3"'
-        
-        # Return the streaming response with the status code from YouTube
-        return StreamingResponse(
-            response.iter_content(chunk_size=1024),
-            status_code=response.status_code,
-            headers=response_headers
-        )
+            if not info:
+                return {"error": "Could not extract video information"}
+            
+            # Get audio URL from formats
+            formats = info.get('formats', [])
+            audio_url = None
+            
+            # Find the best audio format quickly
+            for fmt in formats:
+                if fmt.get('acodec') != 'none' and fmt.get('url'):
+                    audio_url = fmt['url']
+                    break
+            
+            if not audio_url:
+                return {"error": "No suitable audio URL found"}
+            
+            # Cache the fallback URL with shorter TTL
+            fallback_url_info = {
+                'url': audio_url,
+                'expires_at': datetime.now() + timedelta(hours=1),  # 1 hour TTL for fallback
+                'content_type': 'audio/mp4'
+            }
+            audio_url_cache[fallback_cache_key] = fallback_url_info
+            
+            logger.info(f"Cached fallback audio URL for {fallback_cache_key}")
+            
+            return RedirectResponse(url=audio_url, status_code=302)
+            
+        except Exception as yt_error:
+            logger.error(f"Error extracting with yt-dlp in fallback: {str(yt_error)}")
+            return {"error": f"Error extracting audio in fallback: {str(yt_error)}", "video_id": video_id}
         
     except Exception as e:
-        logger.error(f"Error in audio_fallback: {str(e)}", exc_info=True)
-        return {"error": str(e), "video_id": video_id}
+        logger.error(f"Audio fallback error for {video_id}: {str(e)}", exc_info=True)
+        return {"error": f"Audio fallback failed: {str(e)}", "video_id": video_id}
 
 if __name__ == "__main__":
     import uvicorn

@@ -69,16 +69,28 @@ def main():
             print("Server failed to start!")
             return server_process.returncode
         
-        print("✅ NOVA Music API Server is running on http://localhost:8000")
+        print("✅ NOVA Music API Server is running on http://0.0.0.0:8000")
+        print("   Accessible via:")
+        print("   • http://127.0.0.1:8000 (localhost)")
+        print("   • http://192.168.29.154:8000 (local network)")
         
         # Test server connectivity
         try:
             import requests
-            response = requests.get("http://localhost:8000/", timeout=5)
+            # Test localhost
+            response = requests.get("http://127.0.0.1:8000/", timeout=5)
             if response.status_code == 200:
-                print("✅ Server is responding to requests")
+                print("✅ Server is responding to localhost requests")
             else:
                 print(f"⚠️ Server responded with status code: {response.status_code}")
+                
+            # Test network IP
+            response = requests.get("http://192.168.29.154:8000/", timeout=5)
+            if response.status_code == 200:
+                print("✅ Server is responding to network requests")
+            else:
+                print(f"⚠️ Network request failed with status code: {response.status_code}")
+                
         except Exception as e:
             print(f"⚠️ Could not test server connectivity: {e}")
         
