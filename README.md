@@ -121,6 +121,6 @@ Wearable device integration
 Social sharing & collaborative playlists
 
 
-👨‍💻 Author
+👨‍💻 Developer
 
 Faseeh Jaleel - faseehj005@gmail.com
